@@ -176,7 +176,16 @@
   }
 
   async function detectDependencies(workflowJSON) {
-    var nodes = workflowJSON?.nodes || [];
+    // Collecter TOUS les nodes, y compris ceux dans les subgraphs (recursif)
+    function _collectAllNodes(wf) {
+      var allNodes = (wf?.nodes || []).slice();
+      var subgraphs = wf?.definitions?.subgraphs || [];
+      for (var sgi = 0; sgi < subgraphs.length; sgi++) {
+        allNodes = allNodes.concat(_collectAllNodes(subgraphs[sgi]));
+      }
+      return allNodes;
+    }
+    var nodes = _collectAllNodes(workflowJSON);
     var deps = { nodes: [], models: [], loras: [] };
     var seen = { nodes: {}, models: {}, loras: {} };
 
@@ -221,8 +230,8 @@
       var type = nodes[i].type || "";
       var widgets = nodes[i].widgets_values || [];
 
-      // Custom nodes
-      if (customTypeToPack[type] && !seen.nodes[type]) {
+      // Custom nodes (skip UUID subgraph wrappers)
+      if (customTypeToPack[type] && !seen.nodes[type] && type.indexOf('-') < 0) {
         seen.nodes[type] = true;
       }
 
