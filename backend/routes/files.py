@@ -79,8 +79,8 @@ def init_upload():
 
     if not filename or size <= 0:
         return jsonify({'error': 'filename et size requis'}), 400
-    if file_type not in ('model', 'node', 'screenshot'):
-        return jsonify({'error': 'type doit être model, node ou screenshot'}), 400
+    if file_type not in ('model', 'node', 'screenshot', 'checkpoint', 'lora', 'vae', 'clip', 'clip_vision', 'controlnet', 'unet', 'unet_gguf', 'upscale', 'gligen', 'hypernetwork', 'text_encoder', 'style_model'):
+        return jsonify({'error': f'type "{file_type}" non reconnu'}), 400
     if size > MAX_FILE_SIZE:
         return jsonify({'error': f'Fichier trop volumineux (max {MAX_FILE_SIZE // (1024**3)} GB)'}), 413
 

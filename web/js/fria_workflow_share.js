@@ -495,7 +495,7 @@
           for (var i = 0; i < deps.models.length; i++) {
             var m = deps.models[i];
             depsHtml += '<label style="display:flex;align-items:center;gap:6px;margin-left:12px;color:#ccc;cursor:pointer;font-size:11px;">' +
-              '<input type="checkbox" class="wf-upload-cb" data-type="model" data-name="' + esc(m.name) + '" style="accent-color:#6366f1;">' +
+              '<input type="checkbox" class="wf-upload-cb" data-type="' + esc(m.type || 'model') + '" data-name="' + esc(m.name) + '" style="accent-color:#6366f1;">' +
               '<span style="flex:1;">' + esc(m.name) + '</span></label>';
           }
           depsHtml += '</div>';
