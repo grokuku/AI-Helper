@@ -160,7 +160,7 @@
 
   async function getInstalledCustomNodes() {
     try {
-      var resp = await fetch('/fria/custom-nodes');
+      var resp = await fetch('/api/fria/custom-nodes');
       if (!resp.ok) {
         console.warn('[FR.IA] /fria/custom-nodes HTTP ' + resp.status + ' ' + resp.statusText + ' — route non enregistree ou erreur serveur');
         return [];
@@ -291,7 +291,7 @@
   async function getLocalModelFiles() {
     // Interroge l'endpoint Python /fria/models/list qui retourne les chemins + tailles
     try {
-      var resp = await fetch('/fria/models/list');
+      var resp = await fetch('/api/fria/models/list');
       if (!resp.ok) {
         console.warn('[FR.IA] /fria/models/list HTTP ' + resp.status + ' ' + resp.statusText + ' — route non enregistree ou erreur serveur');
         return {};
@@ -909,7 +909,7 @@
             btn.disabled = true;
             var toast = friaToast("Installation " + nodeName + "...", "progress");
             try {
-              var resp = await fetch("/fria/custom-nodes/install", {
+              var resp = await fetch("/api/fria/custom-nodes/install", {
                 method: "POST",
                 headers: {"Content-Type": "application/json"},
                 body: JSON.stringify({git_url: gitUrl, name: nodeName})

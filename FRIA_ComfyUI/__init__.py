@@ -138,26 +138,25 @@ async def _fria_download_model(request):
 # Enregistrer sur les deux:
 #   1) router.add_get/add_post → UrlDispatcher (actif immediatement)
 #   2) routes.get/routes.post  → RouteTableDef (si add_routes pas encore appele)
+# Sous /fria/ ET /api/fria/ (compatibilite reverse proxy)
 
 _router = _srv.app.router
 _routes = _srv.routes
 
-_router.add_get("/fria/ping", _fria_ping)
-_routes.get("/fria/ping")(_fria_ping)
+def _reg(path, handler):
+    _router.add_get(path, handler)
+    _routes.get(path)(handler)
 
-_router.add_get("/fria/custom-nodes", _fria_list_custom_nodes)
-_routes.get("/fria/custom-nodes")(_fria_list_custom_nodes)
+def _reg_post(path, handler):
+    _router.add_post(path, handler)
+    _routes.post(path)(handler)
 
-_router.add_post("/fria/custom-nodes/install", _fria_install_node)
-_routes.post("/fria/custom-nodes/install")(_fria_install_node)
+for prefix in ("/fria", "/api/fria"):
+    _reg(f"{prefix}/ping", _fria_ping)
+    _reg(f"{prefix}/custom-nodes", _fria_list_custom_nodes)
+    _reg_post(f"{prefix}/custom-nodes/install", _fria_install_node)
+    _reg(f"{prefix}/models/list", _fria_list_models)
+    _reg_post(f"{prefix}/models/upload", _fria_upload_model)
+    _reg_post(f"{prefix}/models/download", _fria_download_model)
 
-_router.add_get("/fria/models/list", _fria_list_models)
-_routes.get("/fria/models/list")(_fria_list_models)
-
-_router.add_post("/fria/models/upload", _fria_upload_model)
-_routes.post("/fria/models/upload")(_fria_upload_model)
-
-_router.add_post("/fria/models/download", _fria_download_model)
-_routes.post("/fria/models/download")(_fria_download_model)
-
-logging.info("[FR.IA] All routes registered (router + routes table)")
+logging.info("[FR.IA] All routes registered under /fria/ and /api/fria/")
