@@ -114,33 +114,37 @@ def _get_node_type_map():
 
 def _extract_node_types(node_dir):
     """Retourne les node types fournis par ce dossier custom_nodes.
-    Utilise le NODE_CLASS_MAPPINGS global de ComfyUI (fiable), avec fallback parsing."""
+    Priorite 1: NODE_CLASS_MAPPINGS global (sys.modules scan).
+    Priorite 2: ast.parse() du __init__.py (fiable, gere les dicts imbriques).
+    """
     folder_name = os.path.basename(node_dir)
     type_map = _get_node_type_map()
 
     if folder_name in type_map:
         return type_map[folder_name]
 
-    # Fallback: parsing __init__.py si le mapping global n'a pas trouve ce dossier
+    # Fallback: parsing AST du __init__.py
     init_file = os.path.join(node_dir, "__init__.py")
     if not os.path.isfile(init_file):
         return []
     try:
+        import ast
         with open(init_file, "r", encoding="utf-8", errors="ignore") as f:
             source = f.read()
-        # Chercher specifiquement le bloc NODE_CLASS_MAPPINGS
-        match = re.search(r'NODE_CLASS_MAPPINGS\s*=\s*\{([^}]+)\}', source, re.DOTALL)
-        if match:
-            block = match.group(1)
-            types = re.findall(r'["\']([A-Za-z0-9_]+)["\']', block)
-            # Dedup
-            seen = set()
-            result = []
-            for t in types:
-                if t not in seen and len(t) > 2:
-                    seen.add(t)
-                    result.append(t)
-            return result
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name) and target.id == 'NODE_CLASS_MAPPINGS':
+                        if isinstance(node.value, ast.Dict):
+                            keys = []
+                            for k in node.value.keys:
+                                if isinstance(k, ast.Constant) and isinstance(k.value, str):
+                                    keys.append(k.value)
+                            return keys
+        return []
+    except Exception as e:
+        logging.warning(f"[FR.IA] AST parse failed for {folder_name}: {e}")
         return []
     except Exception:
         return []

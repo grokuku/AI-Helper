@@ -70,7 +70,7 @@
       addRow: function(fileName, sizeMB) {
         totalCount++;
         var row = document.createElement("div");
-        row.style.cssText = "display:flex;align-items:center;gap:10px;padding:6px 8px;border-radius:6px;background:#2a2a2e;";
+        row.style.cssText = "display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;padding:6px 8px;border-radius:6px;background:#2a2a2e;";
         // Indeterminate progress bar
         var bar = document.createElement("div");
         bar.style.cssText = "flex:1;height:6px;background:rgba(255,255,255,0.1);border-radius:3px;overflow:hidden;position:relative;";
@@ -109,11 +109,16 @@
           r.row.style.background = "rgba(22,163,74,0.15)";
         } else {
           r.status.textContent = "❌";
-          r.status.title = errorMsg || "";
+          r.status.style.cursor = "help";
           r.fill.style.background = "#dc2626";
           r.fill.style.animation = "none";
           r.fill.style.width = "100%";
           r.row.style.background = "rgba(220,38,38,0.15)";
+          // Erreur visible sous la ligne
+          var errEl = document.createElement("div");
+          errEl.style.cssText = "font-size:10px;color:#f87171;word-break:break-all;width:100%;margin-left:26px;";
+          errEl.textContent = "Erreur: " + (errorMsg || "inconnue");
+          r.row.appendChild(errEl);
         }
         // Update header with progress
         header.textContent = "Upload des dependances (" + doneCount + "/" + totalCount + ")";
