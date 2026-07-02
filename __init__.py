@@ -1,4 +1,8 @@
 """
+#
+# ⚠️  CECI EST LE SEUL __init__.py EXECUTE PAR COMFYUI (celui a la racine du dossier custom_nodes/).
+# FRIA_ComfyUI/__init__.py est un FICHIER MORT — ne pas y mettre de logique.
+#
 FR.IA — ComfyUI extension.
 ComfyUI charge ce fichier quand le dossier est dans custom_nodes/.
 On importe les nodes depuis le sous-dossier FRIA_ComfyUI/.
@@ -113,6 +117,16 @@ _terminal_mod = _load_module(
 _update_manager_mod = _load_module(
     os.path.join(_base, "FRIA_ComfyUI", "update_manager.py"),
     "FRIAUpdateManager"
+)
+
+# Charger les modules workflow sharing
+_custom_nodes_mgr_mod = _load_module(
+    os.path.join(_nodes_dir, "custom_nodes_manager.py"),
+    "FRIACustomNodesManager"
+)
+_model_mgr_mod = _load_module(
+    os.path.join(_nodes_dir, "model_manager.py"),
+    "FRIAModelManager"
 )
 
 NODE_CLASS_MAPPINGS = {}
@@ -317,6 +331,87 @@ if _routes is not None and _update_manager_mod is not None:
             return _aio_web.json_response({"ok": False, "output": f"❌ Erreur: {e}", "log": traceback.format_exc()}, status=500)
 
     print("[FR.IA] Blobby exec route registered: POST /fr_ia/blobby/exec")
+
+# ── Routes workflow sharing ─────────────────────────────────────
+
+if _routes is not None:
+    _aio_web = web if 'web' in dir() else __import__('aiohttp').web
+
+    if _custom_nodes_mgr_mod is not None:
+        @_routes.get("/api/fria/custom-nodes")
+        async def _fria_list_custom_nodes(request):
+            try:
+                nodes = _custom_nodes_mgr_mod._get_installed_custom_nodes()
+                return _aio_web.json_response({"nodes": nodes})
+            except Exception as e:
+                import logging as _log
+                _log.exception(f"[FR.IA] custom-nodes error: {e}")
+                return _aio_web.json_response({"error": str(e)}, status=500)
+
+        @_routes.post("/api/fria/custom-nodes/install")
+        async def _fria_install_node(request):
+            try:
+                body = await request.json()
+                git_url = body.get("git_url", "").strip()
+                name = body.get("name", "").strip()
+                if not git_url:
+                    return _aio_web.json_response({"error": "git_url required"}, status=400)
+                result = _custom_nodes_mgr_mod._install_custom_node(git_url, name)
+                status = 200 if result["success"] else 400
+                return _aio_web.json_response(result, status=status)
+            except Exception as e:
+                import logging as _log
+                _log.exception(f"[FR.IA] install-node error: {e}")
+                return _aio_web.json_response({"error": str(e)}, status=500)
+
+        print("[FR.IA] Custom nodes routes registered: GET /api/fria/custom-nodes")
+
+    if _model_mgr_mod is not None:
+        @_routes.get("/api/fria/models/list")
+        async def _fria_list_models(request):
+            try:
+                models = _model_mgr_mod.list_local_models()
+                return _aio_web.json_response(models)
+            except Exception as e:
+                import logging as _log
+                _log.exception(f"[FR.IA] models-list error: {e}")
+                return _aio_web.json_response({"error": str(e)}, status=500)
+
+        @_routes.post("/api/fria/models/upload")
+        async def _fria_upload_model(request):
+            try:
+                body = await request.json()
+                filepath = body.get("path", "")
+                file_type = body.get("type", "model")
+                import os as _os
+                if not filepath or not _os.path.isfile(filepath):
+                    return _aio_web.json_response({"error": "path required and must exist"}, status=400)
+                result = _model_mgr_mod.upload_model_to_server(filepath, file_type)
+                status = 200 if result["success"] else 400
+                return _aio_web.json_response(result, status=status)
+            except Exception as e:
+                import logging as _log
+                _log.exception(f"[FR.IA] upload-model error: {e}")
+                return _aio_web.json_response({"error": str(e)}, status=500)
+
+        @_routes.post("/api/fria/models/download")
+        async def _fria_download_model(request):
+            try:
+                body = await request.json()
+                upload_id = body.get("upload_id", "")
+                filename = body.get("filename", "")
+                file_type = body.get("type", "model")
+                if not upload_id or not filename:
+                    return _aio_web.json_response({"error": "upload_id and filename required"}, status=400)
+                result = _model_mgr_mod.download_model_from_server(upload_id, filename, file_type)
+                status = 200 if result["success"] else 400
+                return _aio_web.json_response(result, status=status)
+            except Exception as e:
+                import logging as _log
+                _log.exception(f"[FR.IA] download-model error: {e}")
+                return _aio_web.json_response({"error": str(e)}, status=500)
+
+        print("[FR.IA] Model manager routes registered: GET /api/fria/models/list")
 
     # ── Route WebSocket Terminal (PAS DE MOT DE PASSE) ──────────────
     # Le widget FR.IA Terminal (fria_terminal_widget.js) ouvre un
