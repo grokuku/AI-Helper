@@ -193,17 +193,40 @@
       }
     }
 
+    // Helper recursif : scanne les widgets values (y compris subgraphs)
+    function _scanWidgetValue(wv, nodeType) {
+      if (typeof wv === "string" && wv.length > 3) {
+        var lower = wv.toLowerCase();
+        for (var ei = 0; ei < MODEL_EXTENSIONS.length; ei++) {
+          if (lower.endsWith(MODEL_EXTENSIONS[ei]) && !seen.models[wv] && !seen.loras[wv]) {
+            if (nodeType.toLowerCase().indexOf("lora") >= 0) {
+              seen.loras[wv] = true;
+              deps.loras.push({ name: wv, type: "lora" });
+            } else {
+              seen.models[wv] = true;
+              deps.models.push({ name: wv, type: "model" });
+            }
+            break;
+          }
+        }
+      } else if (Array.isArray(wv)) {
+        // Subgraph / widgets imbriques
+        for (var si = 0; si < wv.length; si++) {
+          _scanWidgetValue(wv[si], nodeType);
+        }
+      }
+    }
+
     for (var i = 0; i < nodes.length; i++) {
       var type = nodes[i].type || "";
       var widgets = nodes[i].widgets_values || [];
 
-      // Custom nodes : seulement si le type est declare par un pack custom_nodes
+      // Custom nodes
       if (customTypeToPack[type] && !seen.nodes[type]) {
         seen.nodes[type] = true;
-        // Pas besoin de l'ajouter individuellement, on groupe par pack apres
       }
 
-      // Models / LoRAs via le map des loaders connus
+      // Models / LoRAs via les loaders connus
       var loader = MODEL_LOADERS[type];
       if (loader) {
         var filename = widgets[loader.idx];
@@ -220,27 +243,15 @@
             }
           }
         }
-      }
-
-      // Detection dynamique : widget value qui ressemble a un fichier model
-      if (!loader) {
+        // Verifier les autres widgets (VAE, CLIP etc.)
         for (var wi = 0; wi < widgets.length; wi++) {
-          var wv = widgets[wi];
-          if (typeof wv === "string" && wv.length > 3) {
-            var lower = wv.toLowerCase();
-            for (var ei = 0; ei < MODEL_EXTENSIONS.length; ei++) {
-              if (lower.endsWith(MODEL_EXTENSIONS[ei]) && !seen.models[wv] && !seen.loras[wv]) {
-                if (type.toLowerCase().indexOf("lora") >= 0) {
-                  seen.loras[wv] = true;
-                  deps.loras.push({ name: wv, type: "lora" });
-                } else {
-                  seen.models[wv] = true;
-                  deps.models.push({ name: wv, type: "model" });
-                }
-                break;
-              }
-            }
-          }
+          if (wi === loader.idx) continue;
+          _scanWidgetValue(widgets[wi], type);
+        }
+      } else {
+        // Detection dynamique sur tous les widgets
+        for (var wi = 0; wi < widgets.length; wi++) {
+          _scanWidgetValue(widgets[wi], type);
         }
       }
     }
