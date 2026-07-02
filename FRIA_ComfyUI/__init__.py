@@ -144,12 +144,30 @@ _router = _srv.app.router
 _routes = _srv.routes
 
 def _reg(path, handler):
-    _router.add_get(path, handler)
-    _routes.get(path)(handler)
+    try:
+        _router.add_get(path, handler)
+    except Exception as e:
+        logging.error(f"[FR.IA] router.add_get({path}) failed: {e}")
+    try:
+        _routes.get(path)(handler)
+    except Exception as e:
+        logging.error(f"[FR.IA] routes.get({path}) failed: {e}")
 
 def _reg_post(path, handler):
-    _router.add_post(path, handler)
-    _routes.post(path)(handler)
+    try:
+        _router.add_post(path, handler)
+    except Exception as e:
+        logging.error(f"[FR.IA] router.add_post({path}) failed: {e}")
+    try:
+        _routes.post(path)(handler)
+    except Exception as e:
+        logging.error(f"[FR.IA] routes.post({path}) failed: {e}")
+
+# Verifier que le serveur et ses attributs existent
+logging.info(f"[FR.IA] PromptServer.instance = {_srv}")
+logging.info(f"[FR.IA] .app = {getattr(_srv, 'app', 'MISSING')}")
+logging.info(f"[FR.IA] .app.router = {getattr(getattr(_srv, 'app', None), 'router', 'MISSING')}")
+logging.info(f"[FR.IA] .routes = {getattr(_srv, 'routes', 'MISSING')}")
 
 for prefix in ("/fria", "/api/fria"):
     _reg(f"{prefix}/ping", _fria_ping)
@@ -159,4 +177,4 @@ for prefix in ("/fria", "/api/fria"):
     _reg_post(f"{prefix}/models/upload", _fria_upload_model)
     _reg_post(f"{prefix}/models/download", _fria_download_model)
 
-logging.info("[FR.IA] All routes registered under /fria/ and /api/fria/")
+logging.info("[FR.IA] Route registration complete")
