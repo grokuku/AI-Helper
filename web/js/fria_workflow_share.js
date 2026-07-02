@@ -584,6 +584,12 @@
             var fileType = cb.dataset.type;
             var fileName = cb.dataset.name;
             var localFile = allFilesMap[fileName];
+            // Fallback: le workflow peut avoir "gguf/krea2_turbo.gguf" mais la BDD juste "krea2_turbo.gguf"
+            if (!localFile && fileName.indexOf('/') >= 0) {
+              var base = fileName.substring(fileName.lastIndexOf('/') + 1);
+              localFile = allFilesMap[base];
+              if (localFile) console.log('[FR.IA] Resolved subfolder: ' + fileName + ' → ' + base);
+            }
 
             if (!localFile) {
               friaToast("⚠️ " + fileName + " non trouvé localement, skip", "info");
