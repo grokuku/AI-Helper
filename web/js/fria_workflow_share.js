@@ -42,6 +42,105 @@
     return d.innerHTML;
   }
 
+  // ── Upload progress panel ──
+
+  function createUploadPanel() {
+    var panel = document.createElement("div");
+    panel.style.cssText = "position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#1e1e24;border-radius:12px;box-shadow:0 16px 48px rgba(0,0,0,0.6);width:440px;max-height:70vh;z-index:99998;display:flex;flex-direction:column;overflow:hidden;";
+    // Header
+    var header = document.createElement("div");
+    header.style.cssText = "padding:12px 16px;border-bottom:1px solid #333;font-size:14px;font-weight:600;color:#e2e8f0;";
+    header.textContent = "Upload des dépendances";
+    panel.appendChild(header);
+    // Body (rows)
+    var body = document.createElement("div");
+    body.style.cssText = "padding:12px;overflow-y:auto;flex:1;display:flex;flex-direction:column;gap:8px;";
+    panel.appendChild(body);
+    // Footer
+    var footer = document.createElement("div");
+    footer.style.cssText = "padding:10px 16px;border-top:1px solid #333;display:flex;justify-content:flex-end;";
+    panel.appendChild(footer);
+    document.body.appendChild(panel);
+
+    var rows = {};
+    var doneCount = 0, totalCount = 0;
+    var startTime = Date.now();
+
+    return {
+      addRow: function(fileName, sizeMB) {
+        totalCount++;
+        var row = document.createElement("div");
+        row.style.cssText = "display:flex;align-items:center;gap:10px;padding:6px 8px;border-radius:6px;background:#2a2a2e;";
+        // Indeterminate progress bar
+        var bar = document.createElement("div");
+        bar.style.cssText = "flex:1;height:6px;background:rgba(255,255,255,0.1);border-radius:3px;overflow:hidden;position:relative;";
+        var fill = document.createElement("div");
+        fill.style.cssText = "height:100%;width:30%;background:#6366f1;border-radius:3px;animation:fria-upload-stripe 1.2s ease-in-out infinite;position:absolute;";
+        bar.appendChild(fill);
+        // Name
+        var nameEl = document.createElement("span");
+        nameEl.style.cssText = "font-size:12px;color:#ccc;min-width:120px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex-shrink:0;";
+        nameEl.textContent = fileName;
+        nameEl.title = fileName;
+        // Size
+        var sizeEl = document.createElement("span");
+        sizeEl.style.cssText = "font-size:11px;color:#888;min-width:60px;text-align:right;";
+        sizeEl.textContent = sizeMB + " MB";
+        // Status icon
+        var statusEl = document.createElement("span");
+        statusEl.style.cssText = "font-size:14px;min-width:20px;text-align:center;";
+        statusEl.textContent = "⏳";
+        row.appendChild(statusEl);
+        row.appendChild(nameEl);
+        row.appendChild(bar);
+        row.appendChild(sizeEl);
+        body.appendChild(row);
+        rows[fileName] = { row: row, fill: fill, status: statusEl };
+      },
+      setResult: function(fileName, success, errorMsg) {
+        var r = rows[fileName];
+        if (!r) return;
+        doneCount++;
+        if (success) {
+          r.status.textContent = "✅";
+          r.fill.style.background = "#16a34a";
+          r.fill.style.animation = "none";
+          r.fill.style.width = "100%";
+          r.row.style.background = "rgba(22,163,74,0.15)";
+        } else {
+          r.status.textContent = "❌";
+          r.status.title = errorMsg || "";
+          r.fill.style.background = "#dc2626";
+          r.fill.style.animation = "none";
+          r.fill.style.width = "100%";
+          r.row.style.background = "rgba(220,38,38,0.15)";
+        }
+        // Update header with progress
+        header.textContent = "Upload des dependances (" + doneCount + "/" + totalCount + ")";
+      },
+      done: function() {
+        var elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+        header.textContent = "Upload termine (" + totalCount + " fichiers, " + elapsed + "s)";
+        var closeBtn = document.createElement("button");
+        closeBtn.textContent = "Fermer";
+        closeBtn.style.cssText = "padding:6px 16px;border:1px solid #555;border-radius:6px;background:transparent;color:#999;font-size:12px;cursor:pointer;";
+        closeBtn.onclick = function() { panel.remove(); };
+        closeBtn.onmouseenter = function() { closeBtn.style.background = "#3a3a3e"; closeBtn.style.color = "#fff"; };
+        closeBtn.onmouseleave = function() { closeBtn.style.background = "transparent"; closeBtn.style.color = "#999"; };
+        footer.appendChild(closeBtn);
+      }
+    };
+  }
+
+  // Inject CSS animation for indeterminate progress
+  (function() {
+    if (document.getElementById("fria-upload-style")) return;
+    var s = document.createElement("style");
+    s.id = "fria-upload-style";
+    s.textContent = "@keyframes fria-upload-stripe{0%{left:-30%}100%{left:100%}}";
+    document.head.appendChild(s);
+  })();
+
   // ── Toast / progress ──
 
   var _toastContainer = null;
@@ -89,11 +188,12 @@
     if (span) span.textContent = message;
     var bar = el.querySelector("div > div");
     if (bar) bar.parentElement.remove();
+    // Garder les toasts 8s pour avoir le temps de lire
     setTimeout(function() {
       el.style.transition = "opacity 0.5s";
       el.style.opacity = "0";
       setTimeout(function() { el.remove(); }, 500);
-    }, 3000);
+    }, 8000);
   }
 
   // ── Types ComfyUI natifs ──
@@ -599,12 +699,14 @@
             }
           }
 
+          var uploadedCount = 0, failedCount = 0;
+          var panel = createUploadPanel();
           for (var ui = 0; ui < uploadCbs.length; ui++) {
             var cb = uploadCbs[ui];
             var fileType = cb.dataset.type;
             var fileName = cb.dataset.name;
             var localFile = allFilesMap[fileName];
-            // Fallback: le workflow peut avoir "gguf/krea2_turbo.gguf" mais la BDD juste "krea2_turbo.gguf"
+            // Fallback: basename
             if (!localFile && fileName.indexOf('/') >= 0) {
               var base = fileName.substring(fileName.lastIndexOf('/') + 1);
               localFile = allFilesMap[base];
@@ -612,16 +714,16 @@
             }
 
             if (!localFile) {
-              friaToast("⚠️ " + fileName + " non trouvé localement, skip", "info");
+              console.warn('[FR.IA] Non trouve localement: ' + fileName);
               continue;
             }
 
             var sizeMB = (localFile.size / 1048576).toFixed(1);
-            var toast = friaToast("Upload " + fileName + " (" + sizeMB + " MB)...", "progress");
+            panel.addRow(fileName, sizeMB);
 
             var upResult = await uploadModelToServer(localFile.path, fileType);
             if (upResult.success) {
-              // Lier l'upload_id au model/lora dans deps
+              console.log('[FR.IA] Upload OK: ' + fileName + (upResult.deduplicated ? ' (deja present)' : ''));
               var depArray = fileType === 'lora' ? deps.loras : deps.models;
               for (var di = 0; di < depArray.length; di++) {
                 if (depArray[di].name === fileName) {
@@ -630,11 +732,15 @@
                   break;
                 }
               }
-              friaToastDone(toast, "success", "✅ " + fileName + " uploadé" + (upResult.deduplicated ? " (déjà présent)" : ""));
+              uploadedCount++;
+              panel.setResult(fileName, true);
             } else {
-              friaToastDone(toast, "error", "❌ " + fileName + ": " + (upResult.error || "échec"));
+              console.error('[FR.IA] Upload FAIL: ' + fileName + ' → ' + (upResult.error || 'echec'));
+              failedCount++;
+              panel.setResult(fileName, false, upResult.error);
             }
           }
+          panel.done();
         }
 
         statusEl.textContent = "Publication...";
@@ -920,11 +1026,13 @@
                 btn.textContent = "❌";
                 btn.style.color = "#f87171";
                 friaToastDone(toast, "error", "❌ " + fileName + ": " + (result.error || "échec"));
+
               }
             } catch (e) {
               btn.textContent = "❌";
               btn.style.color = "#f87171";
               friaToastDone(toast, "error", "❌ " + fileName + ": " + e.message);
+
             }
           };
 
@@ -950,11 +1058,13 @@
                 btn.textContent = "❌";
                 btn.style.color = "#f87171";
                 friaToastDone(toast, "error", "❌ " + (data.message || "échec"));
+
               }
             } catch (e) {
               btn.textContent = "❌";
               btn.style.color = "#f87171";
               friaToastDone(toast, "error", "❌ " + e.message);
+
             }
           };
 
