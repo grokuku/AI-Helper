@@ -210,7 +210,7 @@ def upload_model_to_server(filepath, file_type="model", on_progress=None):
                     'chunk_index': str(i),
                 }, files={'data': (filename, chunk)}, headers=auth_headers, timeout=300)
                 if not resp.ok:
-                    return {'success': False, 'error': f'Chunk {i} failed: {resp.text}'}
+                    return {'success': False, 'error': f'Chunk {i} failed: HTTP {resp.status_code} {resp.text[:200]}'}
                 if on_progress:
                     on_progress(i + 1, total_chunks)
     except Exception as e:
