@@ -392,7 +392,13 @@ if _routes is not None:
                 import os as _os
                 if not filepath or not _os.path.isfile(filepath):
                     return _aio_web.json_response({"error": "path required and must exist"}, status=400)
-                result = _model_mgr_mod.upload_model_to_server(filepath, file_type)
+                # Lancer l'upload dans un thread pour ne pas bloquer l'event loop
+                import asyncio as _aio
+                import functools as _ft
+                loop = _aio.get_event_loop()
+                result = await loop.run_in_executor(
+                    None, _ft.partial(_model_mgr_mod.upload_model_to_server, filepath, file_type)
+                )
                 status = 200 if result["success"] else 400
                 return _aio_web.json_response(result, status=status)
             except Exception as e:
@@ -409,7 +415,12 @@ if _routes is not None:
                 file_type = body.get("type", "model")
                 if not upload_id or not filename:
                     return _aio_web.json_response({"error": "upload_id and filename required"}, status=400)
-                result = _model_mgr_mod.download_model_from_server(upload_id, filename, file_type)
+                import asyncio as _aio2
+                import functools as _ft2
+                loop = _aio2.get_event_loop()
+                result = await loop.run_in_executor(
+                    None, _ft2.partial(_model_mgr_mod.download_model_from_server, upload_id, filename, file_type)
+                )
                 status = 200 if result["success"] else 400
                 return _aio_web.json_response(result, status=status)
             except Exception as e:
