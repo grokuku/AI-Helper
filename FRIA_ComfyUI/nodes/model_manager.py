@@ -338,9 +338,11 @@ def get_upload_progress(filepath):
     }
 
 
-def download_model_from_server(upload_id, filename, file_type="model"):
+def download_model_from_server(upload_id, filename, file_type="model", dest_path=None):
     """
     Download un model depuis le serveur FR.IA et le sauvegarde dans le dossier local.
+    Si dest_path est fourni, sauvegarde a cet emplacement exact (chemin relatif au dossier du type).
+    Sinon, sauvegarde dans le dossier par defaut du type.
     Retourne {success, path} ou {success: False, error}.
     """
     import requests
@@ -378,7 +380,20 @@ def download_model_from_server(upload_id, filename, file_type="model"):
         return {'success': False, 'error': f'No model directory for type {file_type}'}
 
     dest_dir = dest_dirs[0]
-    dest_path = os.path.join(dest_dir, filename)
+    # Si dest_path est fourni, utiliser le chemin personnalise (peut inclure des sous-dossiers)
+    if dest_path:
+        # Nettoyer le chemin (enlever les ../ etc)
+        clean_path = os.path.normpath(dest_path).lstrip('/')
+        # Si le chemin contient des sous-dossiers, les creer
+        sub_dir = os.path.dirname(clean_path)
+        if sub_dir:
+            full_dir = os.path.join(dest_dir, sub_dir)
+            os.makedirs(full_dir, exist_ok=True)
+            dest_path = os.path.join(full_dir, os.path.basename(clean_path))
+        else:
+            dest_path = os.path.join(dest_dir, clean_path)
+    else:
+        dest_path = os.path.join(dest_dir, filename)
 
     try:
         resp = requests.get(f"{api_url}/files/{upload_id}/download",

@@ -490,13 +490,15 @@
     }
   }
 
-  async function downloadModelFromServer(uploadId, filename, fileType) {
+  async function downloadModelFromServer(uploadId, filename, fileType, destPath) {
     // Demande au Python de downloader et sauvegarder dans le bon dossier
     try {
+      var body = { upload_id: uploadId, filename: filename, type: fileType };
+      if (destPath) body.dest_path = destPath;
       var resp = await fetch('/api/fria/models/download', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ upload_id: uploadId, filename: filename, type: fileType })
+        body: JSON.stringify(body)
       });
       return await resp.json();
     } catch (e) {
@@ -1025,15 +1027,15 @@
                   var m = allDeps.models[i];
                   var installed = localModels.indexOf(m.name) >= 0;
                   var hasFile = !!m.upload_id;
-                  depHtml += '<label style="display:flex;align-items:center;gap:8px;padding:6px 10px;border-bottom:1px solid #3a3a3e;cursor:pointer;font-size:12px;color:' + (installed ? '#34d399' : '#ccc') + ';">' +
-                    '<input type="checkbox" class="wf-dep-cb" checked data-type="model" data-name="' + esc(m.name) + '" ' + (hasFile ? 'data-upload-id="' + esc(m.upload_id) + '"' : '') + ' style="accent-color:#6366f1;">' +
-                    '<span style="flex:1;">' + esc(m.name) + (installed ? ' ✅ déjà installé' : '') + '</span>';
+                  depHtml += '<div style="padding:6px 10px;border-bottom:1px solid #3a3a3e;font-size:12px;color:' + (installed ? '#34d399' : '#ccc') + ';">' +
+                    '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;">' +
+                    '<input type="checkbox" class="wf-dep-cb"' + (installed ? '' : ' checked') + ' data-type="model" data-name="' + esc(m.name) + '" ' + (hasFile ? 'data-upload-id="' + esc(m.upload_id) + '"' : '') + ' style="accent-color:#6366f1;">' +
+                    '<span style="flex:1;">' + esc(m.name) + (installed ? ' ✅ déjà installé' : '') + '</span>' +
+                    '<span style="font-size:10px;color:#666;">' + (m.type || 'modèle') + '</span></label>';
                   if (!installed && hasFile) {
-                    depHtml += '<button onclick="window._wfDownloadFile(\'' + esc(m.upload_id) + '\', \'' + esc(m.name) + '\', this)" style="padding:2px 8px;border:1px solid #555;border-radius:3px;background:#4a4a4e;color:#ccc;font-size:10px;cursor:pointer;">📥 Télécharger</button>';
-                  } else if (!installed && !hasFile) {
-                    depHtml += '<span style="font-size:10px;color:#666;">non uploadé</span>';
+                    depHtml += '<input type="text" class="wf-dep-path" value="' + esc(m.name) + '" data-orig="' + esc(m.name) + '" style="width:100%;margin-top:4px;padding:4px 6px;border:1px solid #555;border-radius:3px;background:#2a2a2e;color:#ccc;font-size:11px;font-family:monospace;box-sizing:border-box;" placeholder="chemin/nom.ext">';
                   }
-                  depHtml += '<span style="font-size:10px;color:#666;">' + (m.type || 'modèle') + '</span></label>';
+                  depHtml += '</div>';
                 }
               }
               if (allDeps.loras.length) {
@@ -1043,15 +1045,14 @@
                   var l = allDeps.loras[i];
                   var installed = localLoras.indexOf(l.name) >= 0;
                   var hasFile = !!l.upload_id;
-                  depHtml += '<label style="display:flex;align-items:center;gap:8px;padding:6px 10px;border-bottom:1px solid #3a3a3e;cursor:pointer;font-size:12px;color:' + (installed ? '#34d399' : '#ccc') + ';">' +
-                    '<input type="checkbox" class="wf-dep-cb" checked data-type="lora" data-name="' + esc(l.name) + '" ' + (hasFile ? 'data-upload-id="' + esc(l.upload_id) + '"' : '') + ' style="accent-color:#6366f1;">' +
-                    '<span style="flex:1;">' + esc(l.name) + (installed ? ' ✅ déjà installé' : '') + '</span>';
+                  depHtml += '<div style="padding:6px 10px;border-bottom:1px solid #3a3a3e;font-size:12px;color:' + (installed ? '#34d399' : '#ccc') + ';">' +
+                    '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;">' +
+                    '<input type="checkbox" class="wf-dep-cb"' + (installed ? '' : ' checked') + ' data-type="lora" data-name="' + esc(l.name) + '" ' + (hasFile ? 'data-upload-id="' + esc(l.upload_id) + '"' : '') + ' style="accent-color:#6366f1;">' +
+                    '<span style="flex:1;">' + esc(l.name) + (installed ? ' ✅ déjà installé' : '') + '</span></label>';
                   if (!installed && hasFile) {
-                    depHtml += '<button onclick="window._wfDownloadFile(\'' + esc(l.upload_id) + '\', \'' + esc(l.name) + '\', this)" style="padding:2px 8px;border:1px solid #555;border-radius:3px;background:#4a4a4e;color:#ccc;font-size:10px;cursor:pointer;">📥 Télécharger</button>';
-                  } else if (!installed && !hasFile) {
-                    depHtml += '<span style="font-size:10px;color:#666;">non uploadé</span>';
+                    depHtml += '<input type="text" class="wf-dep-path" value="' + esc(l.name) + '" data-orig="' + esc(l.name) + '" style="width:100%;margin-top:4px;padding:4px 6px;border:1px solid #555;border-radius:3px;background:#2a2a2e;color:#ccc;font-size:11px;font-family:monospace;box-sizing:border-box;" placeholder="chemin/nom.ext">';
                   }
-                  depHtml += '</label>';
+                  depHtml += '</div>';
                 }
               }
               depHtml += '</div>';
@@ -1059,34 +1060,7 @@
             });
           }
 
-          // Download a file from server (global for onclick)
-          window._wfDownloadFile = async function(uploadId, fileName, btn) {
-            var fileType = btn.getAttribute('data-file-type') || 'model';
-            btn.textContent = "⏳...";
-            btn.disabled = true;
-            var toast = friaToast("Download " + fileName + "...", "progress");
-            try {
-              var result = await downloadModelFromServer(uploadId, fileName, fileType);
-              if (result.success) {
-                btn.textContent = "✅ Installé";
-                btn.style.color = "#34d399";
-                btn.style.borderColor = "#34d399";
-                friaToastDone(toast, "success", "✅ " + fileName + " installé");
-              } else {
-                btn.textContent = "❌";
-                btn.style.color = "#f87171";
-                friaToastDone(toast, "error", "❌ " + fileName + ": " + (result.error || "échec"));
-
-              }
-            } catch (e) {
-              btn.textContent = "❌";
-              btn.style.color = "#f87171";
-              friaToastDone(toast, "error", "❌ " + fileName + ": " + e.message);
-
-            }
-          };
-
-          // Install custom node (global for onclick)
+// Install custom node (global for onclick)
           window._wfInstallNode = async function(gitUrl, nodeName, btn) {
             if (!gitUrl) { friaToast("Pas d URL git pour ce node.", "error"); return; }
             btn.textContent = "⏳ Clone...";
@@ -1118,61 +1092,153 @@
             }
           };
 
-          // Load button
-          detailBody.querySelector("#wf-load-btn").onclick = function () {
+          // Load button — download models with custom paths, modify workflow, then load
+          detailBody.querySelector("#wf-load-btn").onclick = async function () {
             var statusEl = detailBody.querySelector("#wf-load-status");
+            var loadBtn = detailBody.querySelector("#wf-load-btn");
             statusEl.style.display = "block";
             statusEl.style.color = "#fbbf24";
-            statusEl.textContent = "Téléchargement...";
+            statusEl.textContent = "Téléchargement du workflow...";
+            loadBtn.disabled = true;
+            loadBtn.style.opacity = "0.6";
 
-            fetch(getApiUrl() + "/workflows/" + workflowId + "/download", { headers: apiHeaders() })
-              .then(function (r) { return r.json(); })
-              .then(function (data) {
-                if (data.error) throw new Error(data.error);
-                var wfJson = data.workflow_json;
-                statusEl.textContent = "Chargement dans ComfyUI...";
+            try {
+              // 1. Download workflow JSON
+              var resp = await fetch(getApiUrl() + "/workflows/" + workflowId + "/download", { headers: apiHeaders() });
+              var data = await resp.json();
+              if (data.error) throw new Error(data.error);
+              var wfJson = data.workflow_json;
+              var parsed = JSON.parse(wfJson);
+              if (data.name) {
+                if (!parsed.extra) parsed.extra = {};
+                parsed.extra.title = data.name;
+              }
 
-                try {
-                  var parsed = JSON.parse(wfJson);
-                  // Renommer le workflow avec le nom qu'il a sur FR.IA
-                  if (data.name) {
-                    if (!parsed.extra) parsed.extra = {};
-                    parsed.extra.title = data.name;
-                  }
-                  var currentApp = getApp();
-                  if (currentApp && currentApp.loadGraphData) {
-                    currentApp.loadGraphData(parsed).then(function () {
-                      statusEl.style.color = "#34d399";
-                      statusEl.textContent = "✅ Workflow chargé !";
-                      setTimeout(function () { detailModal.remove(); }, 1500);
-                    }).catch(function (err) {
-                      statusEl.style.color = "#f87171";
-                      statusEl.textContent = "❌ Erreur de chargement : " + err.message;
-                    });
-                  } else if (currentApp && currentApp.graph) {
-                    currentApp.graph.clear();
-                    currentApp.loadGraphData(parsed);
-                    statusEl.style.color = "#34d399";
-                    statusEl.textContent = "✅ Workflow chargé !";
-                    setTimeout(function () { detailModal.remove(); }, 1500);
-                  } else {
-                    navigator.clipboard.writeText(wfJson).then(function () {
-                      statusEl.style.color = "#fbbf24";
-                      statusEl.textContent = "⚠️ Copié dans le presse-papier.";
-                    }).catch(function () {
-                      statusEl.style.color = "#f87171";
-                      statusEl.textContent = "❌ Impossible de charger.";
-                    });
-                  }
-                } catch (e) {
-                  statusEl.style.color = "#f87171";
-                  statusEl.textContent = "❌ Erreur : " + e.message;
+              // 2. Collect models/loras to download with custom paths
+              var cbs = detailBody.querySelectorAll(".wf-dep-cb:checked");
+              var toDownload = [];
+              var nameMap = {};  // originalName → newName
+
+              for (var i = 0; i < cbs.length; i++) {
+                var cb = cbs[i];
+                var dtype = cb.dataset.type;
+                var origName = cb.dataset.name;
+                var uploadId = cb.dataset.uploadId;
+                if (!uploadId || (dtype !== 'model' && dtype !== 'lora')) continue;
+
+                // Find the path input for this checkbox
+                var depDiv = cb.closest('div');
+                var pathInput = depDiv ? depDiv.querySelector('.wf-dep-path') : null;
+                var newPath = pathInput ? pathInput.value.trim() : origName;
+                if (!newPath) newPath = origName;
+
+                toDownload.push({
+                  upload_id: uploadId,
+                  origName: origName,
+                  newName: newPath,
+                  type: dtype === 'lora' ? 'lora' : 'model',
+                });
+
+                if (newPath !== origName) {
+                  nameMap[origName] = newPath;
                 }
-              })
-              .catch(function (e) {
-                statusEl.style.color = "#f87171";
-                statusEl.textContent = "❌ " + e.message;
-              });
+              }
+
+              // 3. Download each model
+              if (toDownload.length > 0) {
+                statusEl.textContent = "Téléchargement de " + toDownload.length + " model(s)...";
+                for (var d = 0; d < toDownload.length; d++) {
+                  var item = toDownload[d];
+                  statusEl.textContent = "Téléchargement " + (d + 1) + "/" + toDownload.length + ": " + esc(item.newName) + "...";
+                  var dlResp = await fetch('/api/fria/models/download', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      upload_id: item.upload_id,
+                      filename: item.origName,
+                      type: item.type,
+                      dest_path: item.newName,
+                    })
+                  });
+                  var dlResult = await dlResp.json();
+                  if (!dlResult.success) {
+                    console.warn('[FR.IA] Download failed: ' + item.origName + ' → ' + (dlResult.error || 'echec'));
+                  }
+                }
+              }
+
+              // 4. Modify workflow JSON: replace model names
+              if (Object.keys(nameMap).length > 0) {
+                statusEl.textContent = "Adaptation du workflow...";
+                var allNodes = [];
+                if (parsed.nodes) allNodes = allNodes.concat(parsed.nodes);
+                // Subgraphs recursifs
+                if (parsed.definition && parsed.definition.subgraphs) {
+                  for (var si = 0; si < parsed.definition.subgraphs.length; si++) {
+                    if (parsed.definition.subgraphs[si].nodes) {
+                      allNodes = allNodes.concat(parsed.definition.subgraphs[si].nodes);
+                    }
+                  }
+                }
+                for (var ni = 0; ni < allNodes.length; ni++) {
+                  var node = allNodes[ni];
+                  if (!node.inputs) continue;
+                  // Check all widget values for model names
+                  for (var widgetKey in node.inputs) {
+                    var val = node.inputs[widgetKey];
+                    if (typeof val !== 'string') continue;
+                    // Match exact name or basename
+                    if (nameMap[val]) {
+                      node.inputs[widgetKey] = nameMap[val];
+                    } else {
+                      // Try basename match (e.g. "gguf/model.gguf" → "model.gguf")
+                      var basename = val.split('/').pop();
+                      for (var origN in nameMap) {
+                        if (origN === basename || origN.split('/').pop() === basename) {
+                          node.inputs[widgetKey] = nameMap[origN];
+                          break;
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+
+              // 5. Load into ComfyUI
+              statusEl.textContent = "Chargement dans ComfyUI...";
+              var currentApp = getApp();
+              if (currentApp && currentApp.loadGraphData) {
+                currentApp.loadGraphData(parsed).then(function () {
+                  statusEl.style.color = "#34d399";
+                  statusEl.textContent = "✅ Workflow chargé !";
+                  setTimeout(function () { detailModal.remove(); }, 1500);
+                }).catch(function (err) {
+                  statusEl.style.color = "#f87171";
+                  statusEl.textContent = "❌ Erreur de chargement : " + err.message;
+                  loadBtn.disabled = false;
+                  loadBtn.style.opacity = "1";
+                });
+              } else if (currentApp && currentApp.graph) {
+                currentApp.graph.clear();
+                currentApp.loadGraphData(parsed);
+                statusEl.style.color = "#34d399";
+                statusEl.textContent = "✅ Workflow chargé !";
+                setTimeout(function () { detailModal.remove(); }, 1500);
+              } else {
+                navigator.clipboard.writeText(JSON.stringify(parsed)).then(function () {
+                  statusEl.style.color = "#fbbf24";
+                  statusEl.textContent = "⚠️ Copié dans le presse-papier.";
+                }).catch(function () {
+                  statusEl.style.color = "#f87171";
+                  statusEl.textContent = "❌ Impossible de charger.";
+                });
+              }
+            } catch (e) {
+              statusEl.style.color = "#f87171";
+              statusEl.textContent = "❌ " + e.message;
+              loadBtn.disabled = false;
+              loadBtn.style.opacity = "1";
+            }
           };
         })
         .catch(function () {

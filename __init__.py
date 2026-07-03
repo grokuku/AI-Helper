@@ -438,13 +438,14 @@ if _routes is not None:
                 upload_id = body.get("upload_id", "")
                 filename = body.get("filename", "")
                 file_type = body.get("type", "model")
+                dest_path = body.get("dest_path", None)
                 if not upload_id or not filename:
                     return _aio_web.json_response({"error": "upload_id and filename required"}, status=400)
                 import asyncio as _aio2
                 import functools as _ft2
                 loop = _aio2.get_event_loop()
                 result = await loop.run_in_executor(
-                    None, _ft2.partial(_model_mgr_mod.download_model_from_server, upload_id, filename, file_type)
+                    None, _ft2.partial(_model_mgr_mod.download_model_from_server, upload_id, filename, file_type, dest_path)
                 )
                 status = 200 if result["success"] else 400
                 return _aio_web.json_response(result, status=status)
