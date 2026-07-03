@@ -95,9 +95,7 @@ def init_upload():
     if type(storage).__name__ == 'SFTPStorage':
         # Streaming direct vers SFTP — pas de fichier local
         remote_path = f"workflows/{file_type}s/{upload_id}/{filename}"
-        # Nettoyer les fichiers orphelins d'une tentative precedente
-        try: storage.delete(remote_path)
-        except: pass
+        # create_empty ouvre en mode 'wb' → ecrase tout fichier precedent
         storage.create_empty(remote_path)
         temp_path = ""
     else:

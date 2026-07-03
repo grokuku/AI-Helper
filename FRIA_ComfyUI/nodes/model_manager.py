@@ -192,7 +192,7 @@ def upload_model_to_server(filepath, file_type="model", on_progress=None):
     try:
         resp = requests.post(f"{api_url}/files/init", json={
             'filename': filename, 'size': size, 'type': backend_type
-        }, headers={**auth_headers, 'Content-Type': 'application/json'}, timeout=10)
+        }, headers={**auth_headers, 'Content-Type': 'application/json'}, timeout=30)
         if not resp.ok:
             try:
                 err = resp.json().get('error', resp.text)
