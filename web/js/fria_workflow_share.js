@@ -1341,39 +1341,58 @@
               if (toDownload.length > 0) {
                 statusEl.textContent = "T\u00e9l\u00e9chargement de " + toDownload.length + " model(s)...";
                 var dlPanel = createDownloadPanel("T\u00e9l\u00e9chargement des d\u00e9pendances");
-                var dlPromises = [];
-                for (var d = 0; d < toDownload.length; d++) {
-                  (function(item) {
+                // Downloads sequentiels par batches de 2 pour ne pas saturer SFTP
+                var MAX_PARALLEL = 2;
+                var dlQueue = toDownload.slice();
+                var dlActive = 0;
+                var dlIndex = 0;
+
+                function startNext() {
+                  while (dlActive < MAX_PARALLEL && dlQueue.length > 0) {
+                    var item = dlQueue.shift();
+                    dlActive++;
                     dlPanel.addRow(item.newName, 0, item.upload_id);
-                    dlPromises.push(
+                    (function(it, idx) {
                       fetch('/api/fria/models/download', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
-                          upload_id: item.upload_id,
-                          filename: item.origName,
-                          type: item.type,
-                          dest_path: item.newName,
+                          upload_id: it.upload_id,
+                          filename: it.origName,
+                          type: it.type,
+                          dest_path: it.newName,
                         })
                       }).then(function(r) {
                         return r.json().then(function(result) {
                           if (!result.success && !result.error) {
                             result.error = 'Erreur inconnue (success=false sans message)';
                           }
-                          dlPanel.setResult(item.newName, result.success, result.error);
+                          dlPanel.setResult(it.newName, result.success, result.error);
                           return result;
                         }).catch(function() {
-                          dlPanel.setResult(item.newName, false, 'Reponse non-JSON');
+                          dlPanel.setResult(it.newName, false, 'Reponse non-JSON');
                           return { success: false, error: 'Reponse non-JSON' };
                         });
                       }).catch(function(e) {
-                        dlPanel.setResult(item.newName, false, e.message);
+                        dlPanel.setResult(it.newName, false, e.message);
                         return { success: false, error: e.message };
-                      })
-                    );
-                  })(toDownload[d]);
+                      }).then(function() {
+                        dlActive--;
+                        startNext();
+                      });
+                    })(item, dlIndex++);
+                  }
                 }
-                await Promise.all(dlPromises);
+                startNext();
+                // Attendre que tous les downloads soient termines
+                await new Promise(function(resolve) {
+                  var checkDone = setInterval(function() {
+                    if (dlActive === 0 && dlQueue.length === 0) {
+                      clearInterval(checkDone);
+                      resolve();
+                    }
+                  }, 500);
+                });
                 dlPanel.done();
               }
 
