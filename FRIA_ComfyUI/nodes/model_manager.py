@@ -190,8 +190,11 @@ def upload_model_to_server(filepath, file_type="model", on_progress=None):
             'filename': filename, 'size': size, 'type': backend_type
         }, headers={**auth_headers, 'Content-Type': 'application/json'}, timeout=10)
         if not resp.ok:
-            err = resp.json().get('error', resp.text)
-            return {'success': False, 'error': f'Init failed: {err}'}
+            try:
+                err = resp.json().get('error', resp.text)
+            except Exception:
+                err = resp.text[:300] or f'HTTP {resp.status_code} (body empty)'
+            return {'success': False, 'error': f'Init failed: HTTP {resp.status_code} {err}'}
         init_data = resp.json()
     except Exception as e:
         return {'success': False, 'error': f'Init failed: {e}'}
