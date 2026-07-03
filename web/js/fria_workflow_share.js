@@ -1355,9 +1355,17 @@
                           type: item.type,
                           dest_path: item.newName,
                         })
-                      }).then(function(r) { return r.json(); }).then(function(result) {
-                        dlPanel.setResult(item.newName, result.success, result.error);
-                        return result;
+                      }).then(function(r) {
+                        return r.json().then(function(result) {
+                          if (!result.success && !result.error) {
+                            result.error = 'Erreur inconnue (success=false sans message)';
+                          }
+                          dlPanel.setResult(item.newName, result.success, result.error);
+                          return result;
+                        }).catch(function() {
+                          dlPanel.setResult(item.newName, false, 'Reponse non-JSON');
+                          return { success: false, error: 'Reponse non-JSON' };
+                        });
                       }).catch(function(e) {
                         dlPanel.setResult(item.newName, false, e.message);
                         return { success: false, error: e.message };

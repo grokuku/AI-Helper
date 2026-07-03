@@ -53,12 +53,20 @@ def check_file_exists():
             (size, head, tail)
         ).fetchone()
         if row:
-            return jsonify({
-                'exists': True,
-                'upload_id': row['upload_id'],
-                'file_path': row['final_path'],
-                'filename': row['filename'],
-            })
+            # Verifier que le fichier existe reellement sur le stockage
+            storage = get_storage()
+            if storage.exists(row['final_path']):
+                return jsonify({
+                    'exists': True,
+                    'upload_id': row['upload_id'],
+                    'file_path': row['final_path'],
+                    'filename': row['filename'],
+                })
+            else:
+                logging.warning(f"[files] Dedup match {row['upload_id']} mais fichier absent: {row['final_path']}")
+                # Marquer comme error pour ne plus matcher
+                conn.execute("UPDATE file_uploads SET status = 'error' WHERE upload_id = ?", (row['upload_id'],))
+                conn.commit()
         return jsonify({'exists': False})
     finally:
         conn.close()
@@ -342,6 +350,9 @@ def download_info(upload_id):
 
     storage = get_storage()
     if type(storage).__name__ == 'SFTPStorage':
+        # Verifier que le fichier existe sur SFTP
+        if not storage.exists(row['final_path']):
+            return jsonify({'error': f'Fichier introuvable sur le stockage: {row["final_path"]}'}), 404
         return jsonify({
             'sftp': {
                 'host': storage.host,
