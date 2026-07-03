@@ -250,6 +250,7 @@ def complete_upload():
                 return jsonify({'error': 'Échec de l\'upload vers le stockage'}), 500
         else:
             # Mode direct SFTP : le fichier est deja sur le storage
+            actual_size = row["size"]
             pass
 
         # Marquer comme complete

@@ -72,7 +72,7 @@
         var r = rows[fn];
         if (r.status.textContent === "⏳") {
           var elapsed = ((Date.now() - r.startTime) / 1000).toFixed(1);
-          r.speedEl.textContent = elapsed + "s";
+          var mbps = (r.sizeBytes / 1048576 / elapsed).toFixed(1); r.speedEl.textContent = mbps + " MB/s";
         }
       }
     }, 500);
