@@ -454,7 +454,7 @@
   async function uploadModelToServer(filepath, fileType) {
     // Demande au Python d'uploader le fichier directement depuis le filesystem
     try {
-      var resp = await fetch('/fria/models/upload', {
+      var resp = await fetch('/api/fria/models/upload', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: filepath, type: fileType })
@@ -468,7 +468,7 @@
   async function downloadModelFromServer(uploadId, filename, fileType) {
     // Demande au Python de downloader et sauvegarder dans le bon dossier
     try {
-      var resp = await fetch('/fria/models/download', {
+      var resp = await fetch('/api/fria/models/download', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ upload_id: uploadId, filename: filename, type: fileType })
