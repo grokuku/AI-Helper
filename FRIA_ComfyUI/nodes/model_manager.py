@@ -161,13 +161,19 @@ def upload_model_to_server(filepath, file_type="model", on_progress=None):
     filename = os.path.basename(filepath)
     size = os.path.getsize(filepath)
 
+    # Headers pour JSON (check/init/complete)
+    # Headers pour multipart (chunk) — sans Content-Type, requests le met automatiquement
+    auth_headers = {}
+    if api_key:
+        auth_headers["Authorization"] = f"Bearer {api_key}"
+
     # 1. Fingerprint pour déduplication
     fp = _compute_fingerprint(filepath)
     if fp:
         try:
             resp = requests.post(f"{api_url}/files/check", json={
                 'size': fp['size'], 'head': fp['head'], 'tail': fp['tail']
-            }, headers=headers, timeout=10)
+            }, headers={**auth_headers, 'Content-Type': 'application/json'}, timeout=10)
             if resp.ok:
                 data = resp.json()
                 if data.get('exists'):
@@ -182,7 +188,7 @@ def upload_model_to_server(filepath, file_type="model", on_progress=None):
     try:
         resp = requests.post(f"{api_url}/files/init", json={
             'filename': filename, 'size': size, 'type': backend_type
-        }, headers=headers, timeout=10)
+        }, headers={**auth_headers, 'Content-Type': 'application/json'}, timeout=10)
         if not resp.ok:
             err = resp.json().get('error', resp.text)
             return {'success': False, 'error': f'Init failed: {err}'}
@@ -202,7 +208,7 @@ def upload_model_to_server(filepath, file_type="model", on_progress=None):
                 resp = requests.post(f"{api_url}/files/chunk", data={
                     'upload_id': upload_id,
                     'chunk_index': str(i),
-                }, files={'data': (filename, chunk)}, headers=headers, timeout=300)
+                }, files={'data': (filename, chunk)}, headers=auth_headers, timeout=300)
                 if not resp.ok:
                     return {'success': False, 'error': f'Chunk {i} failed: {resp.text}'}
                 if on_progress:
@@ -217,7 +223,7 @@ def upload_model_to_server(filepath, file_type="model", on_progress=None):
             complete_data['fingerprint_head'] = fp['head']
             complete_data['fingerprint_tail'] = fp['tail']
         resp = requests.post(f"{api_url}/files/complete", json=complete_data,
-                             headers=headers, timeout=60)
+                             headers={**auth_headers, 'Content-Type': 'application/json'}, timeout=60)
         if not resp.ok:
             err = resp.json().get('error', resp.text)
             return {'success': False, 'error': f'Complete failed: {err}'}
@@ -272,7 +278,7 @@ def download_model_from_server(upload_id, filename, file_type="model"):
 
     try:
         resp = requests.get(f"{api_url}/files/{upload_id}/download",
-                           headers=headers, stream=True, timeout=600)
+                           headers=auth_headers, stream=True, timeout=600)
         if not resp.ok:
             return {'success': False, 'error': f'HTTP {resp.status_code}'}
 
