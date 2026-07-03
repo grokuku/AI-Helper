@@ -27,7 +27,7 @@ except Exception:
     _HAS_FOLDER_PATHS = False
 
 # Chunk size pour l'upload (doit correspondre au backend)
-CHUNK_SIZE = 25 * 1024 * 1024  # 25 MB
+CHUNK_SIZE = 5 * 1024 * 1024  # 5 MB
 
 
 # Toutes les categories de models connues par ComfyUI

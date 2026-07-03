@@ -47,6 +47,21 @@ class StorageBackend:
         Par defaut non implemente (utilise un fichier temporaire local)."""
         raise NotImplementedError
 
+    def append_chunk_stream(self, remote_path: str, stream, buf_size: int = 65536) -> bool:
+        """Append un stream vers un fichier distant, par petits buffers.
+        Evite de charger tout le chunk en memoire (utile pour serveurs low-RAM).
+        Par defaut: lit le stream par buf_size et appelle append_chunk."""
+        try:
+            while True:
+                buf = stream.read(buf_size)
+                if not buf:
+                    break
+                if not self.append_chunk(remote_path, buf):
+                    return False
+            return True
+        except Exception:
+            return False
+
     def create_empty(self, remote_path: str) -> bool:
         """Cree un fichier vide sur le stockage (pour init d'upload direct)."""
         raise NotImplementedError
@@ -97,6 +112,22 @@ class LocalStorage(StorageBackend):
             return True
         except Exception as e:
             logging.warning(f"[LocalStorage] append_chunk failed: {e}")
+            return False
+
+    def append_chunk_stream(self, remote_path: str, stream, buf_size: int = 65536) -> bool:
+        """Stream direct vers le fichier local par petits buffers."""
+        try:
+            dest = self._full_path(remote_path)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            with open(str(dest), 'ab') as f:
+                while True:
+                    buf = stream.read(buf_size)
+                    if not buf:
+                        break
+                    f.write(buf)
+            return True
+        except Exception as e:
+            logging.warning(f"[LocalStorage] append_chunk_stream failed: {e}")
             return False
 
     def upload(self, local_path: str, remote_path: str) -> bool:
@@ -238,6 +269,23 @@ class SFTPStorage(StorageBackend):
             return True
         except Exception as e:
             logging.exception(f"[SFTP] append_chunk failed: {e}")
+            return False
+
+    def append_chunk_stream(self, remote_path: str, stream, buf_size: int = 65536) -> bool:
+        """Stream vers SFTP par petits buffers de 64KB.
+        Evite de charger tout le chunk en memoire — crucial pour serveurs low-RAM."""
+        try:
+            sftp = self._connect()
+            full = self._full_path(remote_path)
+            with sftp.open(full, 'ab') as f:
+                while True:
+                    buf = stream.read(buf_size)
+                    if not buf:
+                        break
+                    f.write(buf)
+            return True
+        except Exception as e:
+            logging.exception(f"[SFTP] append_chunk_stream failed: {e}")
             return False
 
     def upload(self, local_path: str, remote_path: str) -> bool:

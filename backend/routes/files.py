@@ -21,7 +21,7 @@ import secrets
 from context import *
 from storage import get_storage, StorageBackend
 
-CHUNK_SIZE = 25 * 1024 * 1024  # 25 MB par chunk
+CHUNK_SIZE = 5 * 1024 * 1024  # 5 MB par chunk
 MAX_FILE_SIZE = 10 * 1024 * 1024 * 1024  # 10 GB max
 TEMP_DIR = tempfile.gettempdir() + "/fria_uploads"
 os.makedirs(TEMP_DIR, exist_ok=True)
@@ -163,21 +163,24 @@ def upload_chunk():
             return jsonify({'error': f'Upload {row["status"]}, impossible de recevoir des chunks'}), 400
 
         temp_path = row['temp_path']
-        chunk_data = request.files['data'].read()
+        chunk_stream = request.files['data'].stream
 
         if temp_path:
-            # Ecriture locale (fallback)
+            # Ecriture locale (fallback) — streamer par 64KB
             with open(temp_path, 'ab') as f:
-                f.write(chunk_data)
+                while True:
+                    buf = chunk_stream.read(65536)
+                    if not buf:
+                        break
+                    f.write(buf)
         else:
-            # Streaming direct vers le storage (SFTP)
-            # Recuperer le remote_path — soit du champ final_path, soit on le construit
+            # Streaming direct vers le storage (SFTP) — streamer par 64KB
             if row['final_path']:
                 remote = row['final_path']
             else:
                 remote = f"workflows/{row['type']}s/{upload_id}/{row['filename']}"
             storage = get_storage()
-            success = storage.append_chunk(remote, chunk_data)
+            success = storage.append_chunk_stream(remote, chunk_stream)
             if not success:
                 return jsonify({'error': 'Échec du chunk sur le stockage distant'}), 500
 
