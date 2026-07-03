@@ -119,6 +119,12 @@ _update_manager_mod = _load_module(
     "FRIAUpdateManager"
 )
 
+# Charger _credentials (requis par model_manager pour l'auth API)
+_credentials_mod = _load_module(
+    os.path.join(_nodes_dir, "_credentials.py"),
+    "_credentials"
+)
+
 # Charger les modules workflow sharing
 _custom_nodes_mgr_mod = _load_module(
     os.path.join(_nodes_dir, "custom_nodes_manager.py"),
