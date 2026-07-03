@@ -434,10 +434,10 @@ if _routes is not None:
         @_routes.get("/api/fria/models/download/progress")
         async def _fria_download_progress(request):
             try:
-                filepath = request.query.get("path", "")
-                if not filepath:
-                    return _aio_web.json_response({"error": "path required"}, status=400)
-                p = _model_mgr_mod.get_download_progress(filepath)
+                upload_id = request.query.get("upload_id", "")
+                if not upload_id:
+                    return _aio_web.json_response({"error": "upload_id required"}, status=400)
+                p = _model_mgr_mod.get_download_progress(upload_id)
                 if p is None:
                     return _aio_web.json_response(None, status=200)
                 return _aio_web.json_response(p)

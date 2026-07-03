@@ -318,6 +318,52 @@ def upload_status(upload_id):
         conn.close()
 
 
+@app.route('/api/files/<upload_id>/download-info', methods=['GET'])
+def download_info(upload_id):
+    """Retourne la config SFTP + chemin distant pour download direct."""
+    guard = _login_required()
+    if guard:
+        return guard
+
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT final_path, filename, status, type, size FROM file_uploads WHERE upload_id = ?",
+            (upload_id,)
+        ).fetchone()
+        if not row:
+            return jsonify({'error': 'Fichier introuvable'}), 404
+        if row['status'] != 'complete':
+            return jsonify({'error': 'Upload pas finalisé'}), 400
+        if not row['final_path']:
+            return jsonify({'error': 'Chemin de stockage manquant'}), 500
+    finally:
+        conn.close()
+
+    storage = get_storage()
+    if type(storage).__name__ == 'SFTPStorage':
+        return jsonify({
+            'sftp': {
+                'host': storage.host,
+                'port': storage.port,
+                'username': storage.user,
+                'password': storage.password,
+                'key_path': storage.key_path,
+                'base_path': storage.base_path,
+                'remote_path': row['final_path'],
+            },
+            'filename': row['filename'],
+            'size': row['size'],
+        })
+    else:
+        # Storage local : pas de SFTP, fallback sur download HTTP classique
+        return jsonify({
+            'sftp': None,
+            'filename': row['filename'],
+            'size': row['size'],
+        })
+
+
 @app.route('/api/files/<upload_id>/download', methods=['GET'])
 def download_file(upload_id):
     """Download un fichier depuis le storage → streaming HTTP vers le client."""

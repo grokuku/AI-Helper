@@ -1125,30 +1125,54 @@
             var rows = {};
             return {
               panel: panel,
-              addRow: function(fileName) {
+              addRow: function(fileName, sizeBytes, uploadId) {
+                var sizeMB = sizeBytes > 0 ? (sizeBytes / 1048576).toFixed(1) + " MB" : "";
                 var row = document.createElement("div");
                 row.style.cssText = "display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;padding:6px 8px;border-radius:6px;background:#2a2a2e;";
                 var bar = document.createElement("div");
-                bar.style.cssText = "flex:1;height:6px;background:rgba(255,255,255,0.1);border-radius:3px;overflow:hidden;position:relative;";
+                bar.style.cssText = "flex:1;height:6px;background:rgba(255,255,255,0.1);border-radius:3px;overflow:hidden;";
                 var fill = document.createElement("div");
-                fill.style.cssText = "height:100%;width:30%;background:#6366f1;border-radius:3px;animation:fria-upload-stripe 1.2s ease-in-out infinite;position:absolute;";
+                fill.style.cssText = "height:100%;width:0%;background:#6366f1;border-radius:3px;transition:width 0.5s ease;";
                 bar.appendChild(fill);
                 var nameEl = document.createElement("span");
                 nameEl.style.cssText = "font-size:12px;color:#ccc;min-width:120px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex-shrink:0;";
                 nameEl.textContent = fileName;
                 nameEl.title = fileName;
+                var speedEl = document.createElement("span");
+                speedEl.style.cssText = "font-size:10px;color:#888;min-width:55px;text-align:right;font-family:monospace;";
+                speedEl.textContent = "0 MB/s";
+                var sizeEl = document.createElement("span");
+                sizeEl.style.cssText = "font-size:11px;color:#888;min-width:55px;text-align:right;";
+                sizeEl.textContent = sizeMB;
                 var statusEl = document.createElement("span");
                 statusEl.style.cssText = "font-size:14px;min-width:20px;text-align:center;";
                 statusEl.textContent = "\u23f3";
                 row.appendChild(statusEl);
                 row.appendChild(nameEl);
                 row.appendChild(bar);
+                row.appendChild(speedEl);
+                row.appendChild(sizeEl);
                 body.appendChild(row);
-                rows[fileName] = { row: row, fill: fill, status: statusEl };
+                // Polling de progression
+                var pollInterval = null;
+                if (uploadId) {
+                  pollInterval = setInterval(function() {
+                    fetch('/api/fria/models/download/progress?upload_id=' + encodeURIComponent(uploadId))
+                      .then(function(r) { return r.json(); })
+                      .then(function(p) {
+                        if (!p || typeof p.percent !== 'number') return;
+                        fill.style.width = p.percent + '%';
+                        if (p.speed_mbs > 0) speedEl.textContent = p.speed_mbs + ' MB/s';
+                      })
+                      .catch(function(){});
+                  }, 500);
+                }
+                rows[fileName] = { row: row, fill: fill, status: statusEl, speedEl: speedEl, pollInterval: pollInterval };
               },
               setResult: function(fileName, success, errorMsg) {
                 var r = rows[fileName];
                 if (!r) return;
+                if (r.pollInterval) { clearInterval(r.pollInterval); r.pollInterval = null; }
                 if (success) {
                   r.status.textContent = "\u2705";
                   r.fill.style.background = "#16a34a";
@@ -1320,7 +1344,7 @@
                 var dlPromises = [];
                 for (var d = 0; d < toDownload.length; d++) {
                   (function(item) {
-                    dlPanel.addRow(item.newName);
+                    dlPanel.addRow(item.newName, 0, item.upload_id);
                     dlPromises.push(
                       fetch('/api/fria/models/download', {
                         method: 'POST',
