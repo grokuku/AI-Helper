@@ -47,11 +47,27 @@
   function createUploadPanel() {
     var panel = document.createElement("div");
     panel.style.cssText = "position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#1e1e24;border-radius:12px;box-shadow:0 16px 48px rgba(0,0,0,0.6);width:440px;max-height:70vh;z-index:99998;display:flex;flex-direction:column;overflow:hidden;";
-    // Header
+    // Header (draggable)
     var header = document.createElement("div");
-    header.style.cssText = "padding:12px 16px;border-bottom:1px solid #333;font-size:14px;font-weight:600;color:#e2e8f0;";
+    header.style.cssText = "padding:12px 16px;border-bottom:1px solid #333;font-size:14px;font-weight:600;color:#e2e8f0;cursor:grab;user-select:none;";
     header.textContent = "Upload des dépendances";
     panel.appendChild(header);
+    // Drag logic
+    var drag = {active: false, sx: 0, sy: 0, ox: 0, oy: 0};
+    header.addEventListener("mousedown", function(e) {
+      drag.active = true; drag.sx = e.clientX; drag.sy = e.clientY;
+      var r = panel.getBoundingClientRect(); drag.ox = r.left; drag.oy = r.top;
+      header.style.cursor = "grabbing"; e.preventDefault();
+    });
+    document.addEventListener("mousemove", function(e) {
+      if (!drag.active) return;
+      panel.style.transform = "none";
+      panel.style.left = (drag.ox + e.clientX - drag.sx) + "px";
+      panel.style.top = (drag.oy + e.clientY - drag.sy) + "px";
+    });
+    document.addEventListener("mouseup", function() {
+      if (drag.active) { drag.active = false; header.style.cursor = "grab"; }
+    });
     // Body (rows)
     var body = document.createElement("div");
     body.style.cssText = "padding:12px;overflow-y:auto;flex:1;display:flex;flex-direction:column;gap:8px;";
@@ -724,44 +740,47 @@
 
           var uploadedCount = 0, failedCount = 0;
           var panel = createUploadPanel();
+
+          // Upload en parallele
+          var uploadPromises = [];
           for (var ui = 0; ui < uploadCbs.length; ui++) {
-            var cb = uploadCbs[ui];
-            var fileType = cb.dataset.type;
-            var fileName = cb.dataset.name;
-            var localFile = allFilesMap[fileName];
-            // Fallback: basename
-            if (!localFile && fileName.indexOf('/') >= 0) {
-              var base = fileName.substring(fileName.lastIndexOf('/') + 1);
-              localFile = allFilesMap[base];
-              if (localFile) console.log('[FR.IA] Resolved subfolder: ' + fileName + ' → ' + base);
-            }
-
-            if (!localFile) {
-              console.warn('[FR.IA] Non trouve localement: ' + fileName);
-              continue;
-            }
-
-            panel.addRow(fileName, localFile.size);
-
-            var upResult = await uploadModelToServer(localFile.path, fileType);
-            if (upResult.success) {
-              console.log('[FR.IA] Upload OK: ' + fileName + (upResult.deduplicated ? ' (deja present)' : ''));
-              var depArray = fileType === 'lora' ? deps.loras : deps.models;
-              for (var di = 0; di < depArray.length; di++) {
-                if (depArray[di].name === fileName) {
-                  depArray[di].upload_id = upResult.upload_id;
-                  depArray[di].file_path = upResult.file_path;
-                  break;
-                }
+            (function(cb) {
+              var fileType = cb.dataset.type;
+              var fileName = cb.dataset.name;
+              var localFile = allFilesMap[fileName];
+              if (!localFile && fileName.indexOf('/') >= 0) {
+                var base = fileName.substring(fileName.lastIndexOf('/') + 1);
+                localFile = allFilesMap[base];
               }
-              uploadedCount++;
-              panel.setResult(fileName, true);
-            } else {
-              console.error('[FR.IA] Upload FAIL: ' + fileName + ' → ' + (upResult.error || 'echec'));
-              failedCount++;
-              panel.setResult(fileName, false, upResult.error);
-            }
+              if (!localFile) {
+                console.warn('[FR.IA] Non trouve localement: ' + fileName);
+                return;
+              }
+              panel.addRow(fileName, localFile.size);
+              uploadPromises.push(
+                uploadModelToServer(localFile.path, fileType).then(function(upResult) {
+                  if (upResult.success) {
+                    console.log('[FR.IA] Upload OK: ' + fileName);
+                    var depArray = fileType === 'lora' ? deps.loras : deps.models;
+                    for (var di = 0; di < depArray.length; di++) {
+                      if (depArray[di].name === fileName) {
+                        depArray[di].upload_id = upResult.upload_id;
+                        depArray[di].file_path = upResult.file_path;
+                        break;
+                      }
+                    }
+                    uploadedCount++;
+                    panel.setResult(fileName, true);
+                  } else {
+                    console.error('[FR.IA] Upload FAIL: ' + fileName + ' → ' + (upResult.error || 'echec'));
+                    failedCount++;
+                    panel.setResult(fileName, false, upResult.error);
+                  }
+                })
+              );
+            })(uploadCbs[ui]);
           }
+          await Promise.all(uploadPromises);
           panel.done();
         }
 
