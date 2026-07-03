@@ -19,6 +19,7 @@ import json
 import logging
 import hashlib
 import subprocess
+import time
 
 try:
     import folder_paths
@@ -28,6 +29,9 @@ except Exception:
 
 # Chunk size pour l'upload (doit correspondre au backend)
 CHUNK_SIZE = 25 * 1024 * 1024  # 25 MB
+
+# Progression des uploads en cours : filepath → {chunk, total, speed_mbs, start}
+_upload_progress = {}
 
 
 # Toutes les categories de models connues par ComfyUI
@@ -204,6 +208,7 @@ def upload_model_to_server(filepath, file_type="model", on_progress=None):
     total_chunks = init_data['total_chunks']
 
     # 3. Upload chunks
+    _upload_progress[filepath] = {'chunk': 0, 'total': total_chunks, 'speed_mbs': 0.0, 'start': time.time()}
     try:
         with open(filepath, 'rb') as f:
             for i in range(total_chunks):
@@ -213,13 +218,21 @@ def upload_model_to_server(filepath, file_type="model", on_progress=None):
                     'chunk_index': str(i),
                 }, files={'data': (filename, chunk)}, headers=auth_headers, timeout=300)
                 if not resp.ok:
+                    _upload_progress.pop(filepath, None)
                     return {'success': False, 'error': f'Chunk {i} failed: HTTP {resp.status_code} {resp.text[:200]}'}
+                # Mettre a jour la progression
+                elapsed = time.time() - _upload_progress[filepath]['start']
+                mb_total = size / 1048576
+                speed = mb_total / elapsed if elapsed > 0 else 0
+                _upload_progress[filepath].update({'chunk': i + 1, 'speed_mbs': round(speed, 1)})
                 if on_progress:
                     on_progress(i + 1, total_chunks)
     except Exception as e:
-        return {'success': False, 'error': f'Chunk upload failed: {e}'}
+        _upload_progress.pop(filepath, None)
+    return {'success': False, 'error': f'Chunk upload failed: {e}'}
 
     # 4. Complete
+    _upload_progress.pop(filepath, None)
     try:
         complete_data = {'upload_id': upload_id}
         if fp:
@@ -235,6 +248,20 @@ def upload_model_to_server(filepath, file_type="model", on_progress=None):
                 'file_path': result.get('file_path', '')}
     except Exception as e:
         return {'success': False, 'error': f'Complete failed: {e}'}
+
+
+def get_upload_progress(filepath):
+    """Retourne la progression d'un upload en cours."""
+    p = _upload_progress.get(filepath)
+    if not p:
+        return None
+    pct = round(p['chunk'] / p['total'] * 100, 1) if p['total'] > 0 else 0
+    return {
+        'chunk': p['chunk'],
+        'total': p['total'],
+        'percent': pct,
+        'speed_mbs': p['speed_mbs'],
+    }
 
 
 def download_model_from_server(upload_id, filename, file_type="model"):

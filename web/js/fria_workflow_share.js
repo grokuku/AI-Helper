@@ -94,26 +94,26 @@
     }, 500);
 
     return {
-      addRow: function(fileName, sizeBytes) {
+      addRow: function(fileName, sizeBytes, filepath) {
         totalCount++;
         var sizeMB = (sizeBytes / 1048576).toFixed(1);
         var row = document.createElement("div");
         row.style.cssText = "display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;padding:6px 8px;border-radius:6px;background:#2a2a2e;";
-        // Indeterminate progress bar
+        // Progress bar (determinee)
         var bar = document.createElement("div");
-        bar.style.cssText = "flex:1;height:6px;background:rgba(255,255,255,0.1);border-radius:3px;overflow:hidden;position:relative;";
+        bar.style.cssText = "flex:1;height:6px;background:rgba(255,255,255,0.1);border-radius:3px;overflow:hidden;";
         var fill = document.createElement("div");
-        fill.style.cssText = "height:100%;width:30%;background:#6366f1;border-radius:3px;animation:fria-upload-stripe 1.2s ease-in-out infinite;position:absolute;";
+        fill.style.cssText = "height:100%;width:0%;background:#6366f1;border-radius:3px;transition:width 0.5s ease;";
         bar.appendChild(fill);
         // Name
         var nameEl = document.createElement("span");
         nameEl.style.cssText = "font-size:12px;color:#ccc;min-width:120px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex-shrink:0;";
         nameEl.textContent = fileName;
         nameEl.title = fileName;
-        // Speed / temps ecoule
+        // Speed (mis a jour via polling)
         var speedEl = document.createElement("span");
         speedEl.style.cssText = "font-size:10px;color:#888;min-width:55px;text-align:right;font-family:monospace;";
-        speedEl.textContent = "⏳...";
+        speedEl.textContent = "0 MB/s";
         // Size
         var sizeEl = document.createElement("span");
         sizeEl.style.cssText = "font-size:11px;color:#888;min-width:55px;text-align:right;";
@@ -128,11 +128,29 @@
         row.appendChild(speedEl);
         row.appendChild(sizeEl);
         body.appendChild(row);
-        rows[fileName] = { row: row, fill: fill, status: statusEl, startTime: Date.now(), speedEl: speedEl, sizeBytes: sizeBytes };
+
+        // Polling de progression toutes les 500ms
+        var pollInterval = null;
+        if (filepath) {
+          pollInterval = setInterval(function() {
+            fetch('/api/fria/models/upload/progress?path=' + encodeURIComponent(filepath))
+              .then(function(r) { return r.json(); })
+              .then(function(p) {
+                if (!p || typeof p.percent !== 'number') return;
+                fill.style.width = p.percent + '%';
+                if (p.speed_mbs > 0) {
+                  speedEl.textContent = p.speed_mbs + ' MB/s';
+                }
+              })
+              .catch(function(){});
+          }, 500);
+        }
+        rows[fileName] = { row: row, fill: fill, status: statusEl, startTime: Date.now(), speedEl: speedEl, sizeBytes: sizeBytes, pollInterval: pollInterval };
       },
       setResult: function(fileName, success, errorMsg) {
         var r = rows[fileName];
         if (!r) return;
+        if (r.pollInterval) { clearInterval(r.pollInterval); r.pollInterval = null; }
         doneCount++;
         var elapsed = (Date.now() - r.startTime) / 1000;
         var speed = (r.sizeBytes / 1048576 / elapsed).toFixed(1);
@@ -140,13 +158,11 @@
         if (success) {
           r.status.textContent = "✅";
           r.fill.style.background = "#16a34a";
-          r.fill.style.animation = "none";
           r.fill.style.width = "100%";
           r.row.style.background = "rgba(22,163,74,0.15)";
         } else {
           r.status.textContent = "❌";
           r.fill.style.background = "#dc2626";
-          r.fill.style.animation = "none";
           r.fill.style.width = "100%";
           r.row.style.background = "rgba(220,38,38,0.15)";
           var errEl = document.createElement("div");
@@ -171,14 +187,7 @@
     };
   }
 
-  // Inject CSS animation for indeterminate progress
-  (function() {
-    if (document.getElementById("fria-upload-style")) return;
-    var s = document.createElement("style");
-    s.id = "fria-upload-style";
-    s.textContent = "@keyframes fria-upload-stripe{0%{left:-30%}100%{left:100%}}";
-    document.head.appendChild(s);
-  })();
+  // Pas besoin d'animation CSS — la barre utilise le polling de progression
 
   // ── Toast / progress ──
 
@@ -756,7 +765,7 @@
                 console.warn('[FR.IA] Non trouve localement: ' + fileName);
                 return;
               }
-              panel.addRow(fileName, localFile.size);
+              panel.addRow(fileName, localFile.size, localFile.path);
               uploadPromises.push(
                 uploadModelToServer(localFile.path, fileType).then(function(upResult) {
                   if (upResult.success) {

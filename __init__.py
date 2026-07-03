@@ -406,6 +406,21 @@ if _routes is not None:
                 _log.exception(f"[FR.IA] upload-model error: {e}")
                 return _aio_web.json_response({"error": str(e)}, status=500)
 
+        @_routes.get("/api/fria/models/upload/progress")
+        async def _fria_upload_progress(request):
+            try:
+                filepath = request.query.get("path", "")
+                if not filepath:
+                    return _aio_web.json_response({"error": "path required"}, status=400)
+                p = _model_mgr_mod.get_upload_progress(filepath)
+                if p is None:
+                    return _aio_web.json_response(None, status=200)
+                return _aio_web.json_response(p)
+            except Exception as e:
+                import logging as _log
+                _log.exception(f"[FR.IA] upload-progress error: {e}")
+                return _aio_web.json_response({"error": str(e)}, status=500)
+
         @_routes.post("/api/fria/models/download")
         async def _fria_download_model(request):
             try:
