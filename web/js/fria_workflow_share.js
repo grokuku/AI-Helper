@@ -66,9 +66,21 @@
     var doneCount = 0, totalCount = 0;
     var startTime = Date.now();
 
+    var timer = setInterval(function() {
+      // Mettre a jour le temps ecoule pour les uploads en cours
+      for (var fn in rows) {
+        var r = rows[fn];
+        if (r.status.textContent === "⏳") {
+          var elapsed = ((Date.now() - r.startTime) / 1000).toFixed(1);
+          r.speedEl.textContent = elapsed + "s";
+        }
+      }
+    }, 500);
+
     return {
-      addRow: function(fileName, sizeMB) {
+      addRow: function(fileName, sizeBytes) {
         totalCount++;
+        var sizeMB = (sizeBytes / 1048576).toFixed(1);
         var row = document.createElement("div");
         row.style.cssText = "display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;padding:6px 8px;border-radius:6px;background:#2a2a2e;";
         // Indeterminate progress bar
@@ -82,9 +94,13 @@
         nameEl.style.cssText = "font-size:12px;color:#ccc;min-width:120px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex-shrink:0;";
         nameEl.textContent = fileName;
         nameEl.title = fileName;
+        // Speed / temps ecoule
+        var speedEl = document.createElement("span");
+        speedEl.style.cssText = "font-size:10px;color:#888;min-width:55px;text-align:right;font-family:monospace;";
+        speedEl.textContent = "⏳...";
         // Size
         var sizeEl = document.createElement("span");
-        sizeEl.style.cssText = "font-size:11px;color:#888;min-width:60px;text-align:right;";
+        sizeEl.style.cssText = "font-size:11px;color:#888;min-width:55px;text-align:right;";
         sizeEl.textContent = sizeMB + " MB";
         // Status icon
         var statusEl = document.createElement("span");
@@ -93,14 +109,18 @@
         row.appendChild(statusEl);
         row.appendChild(nameEl);
         row.appendChild(bar);
+        row.appendChild(speedEl);
         row.appendChild(sizeEl);
         body.appendChild(row);
-        rows[fileName] = { row: row, fill: fill, status: statusEl };
+        rows[fileName] = { row: row, fill: fill, status: statusEl, startTime: Date.now(), speedEl: speedEl, sizeBytes: sizeBytes };
       },
       setResult: function(fileName, success, errorMsg) {
         var r = rows[fileName];
         if (!r) return;
         doneCount++;
+        var elapsed = (Date.now() - r.startTime) / 1000;
+        var speed = (r.sizeBytes / 1048576 / elapsed).toFixed(1);
+        r.speedEl.textContent = speed + " MB/s";
         if (success) {
           r.status.textContent = "✅";
           r.fill.style.background = "#16a34a";
@@ -109,21 +129,19 @@
           r.row.style.background = "rgba(22,163,74,0.15)";
         } else {
           r.status.textContent = "❌";
-          r.status.style.cursor = "help";
           r.fill.style.background = "#dc2626";
           r.fill.style.animation = "none";
           r.fill.style.width = "100%";
           r.row.style.background = "rgba(220,38,38,0.15)";
-          // Erreur visible sous la ligne
           var errEl = document.createElement("div");
           errEl.style.cssText = "font-size:10px;color:#f87171;word-break:break-all;width:100%;margin-left:26px;";
           errEl.textContent = "Erreur: " + (errorMsg || "inconnue");
           r.row.appendChild(errEl);
         }
-        // Update header with progress
-        header.textContent = "Upload des dependances (" + doneCount + "/" + totalCount + ")";
+        header.textContent = "Upload (" + doneCount + "/" + totalCount + ")";
       },
       done: function() {
+        clearInterval(timer);
         var elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
         header.textContent = "Upload termine (" + totalCount + " fichiers, " + elapsed + "s)";
         var closeBtn = document.createElement("button");
@@ -723,8 +741,7 @@
               continue;
             }
 
-            var sizeMB = (localFile.size / 1048576).toFixed(1);
-            panel.addRow(fileName, sizeMB);
+            panel.addRow(fileName, localFile.size);
 
             var upResult = await uploadModelToServer(localFile.path, fileType);
             if (upResult.success) {

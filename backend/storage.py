@@ -272,14 +272,19 @@ class SFTPStorage(StorageBackend):
             return False
 
     def append_chunk_stream(self, remote_path: str, stream, buf_size: int = 65536) -> bool:
-        """Stream vers SFTP par petits buffers de 64KB.
-        Evite de charger tout le chunk en memoire — crucial pour serveurs low-RAM."""
+        """Stream vers SFTP par buffers de 1MB avec pipelining.
+        Paramiko ecrit par chunks de ~32KB par defaut (un ACK par chunk),
+        ce qui est tres lent. On passe a 1MB + pipelining."""
         try:
             sftp = self._connect()
+            # Buffer interne paramiko plus gros (2MB au lieu de 32KB)
+            sftp.sftp_chunk_size = 2 * 1024 * 1024
             full = self._full_path(remote_path)
             with sftp.open(full, 'ab') as f:
+                f.set_pipelined(True)
+                write_buf = 1024 * 1024
                 while True:
-                    buf = stream.read(buf_size)
+                    buf = stream.read(write_buf)
                     if not buf:
                         break
                     f.write(buf)
