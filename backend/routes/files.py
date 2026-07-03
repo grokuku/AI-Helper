@@ -95,6 +95,9 @@ def init_upload():
     if type(storage).__name__ == 'SFTPStorage':
         # Streaming direct vers SFTP — pas de fichier local
         remote_path = f"workflows/{file_type}s/{upload_id}/{filename}"
+        # Nettoyer les fichiers orphelins d'une tentative precedente
+        try: storage.delete(remote_path)
+        except: pass
         storage.create_empty(remote_path)
         temp_path = ""
     else:
@@ -251,7 +254,11 @@ def complete_upload():
         else:
             # Mode direct SFTP : le fichier est deja sur le storage
             actual_size = row["size"]
-            pass
+            # Fermer le handle SFTP ouvert pour ce fichier
+            try:
+                storage.close_handle(remote_path)
+            except Exception:
+                pass
 
         # Marquer comme complete
         # Store fingerprint for future deduplication

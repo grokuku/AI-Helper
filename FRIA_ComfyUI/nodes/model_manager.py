@@ -208,7 +208,7 @@ def upload_model_to_server(filepath, file_type="model", on_progress=None):
     total_chunks = init_data['total_chunks']
 
     # 3. Upload chunks
-    _upload_progress[filepath] = {'chunk': 0, 'total': total_chunks, 'speed_mbs': 0.0, 'start': time.time()}
+    _upload_progress[filepath] = {'chunk': 0, 'total': total_chunks, 'speed_mbs': 0.0, 'start': time.time(), 'last_chunk_time': time.time()}
     try:
         with open(filepath, 'rb') as f:
             for i in range(total_chunks):
@@ -220,16 +220,17 @@ def upload_model_to_server(filepath, file_type="model", on_progress=None):
                 if not resp.ok:
                     _upload_progress.pop(filepath, None)
                     return {'success': False, 'error': f'Chunk {i} failed: HTTP {resp.status_code} {resp.text[:200]}'}
-                # Mettre a jour la progression
-                elapsed = time.time() - _upload_progress[filepath]['start']
-                mb_total = size / 1048576
-                speed = mb_total / elapsed if elapsed > 0 else 0
-                _upload_progress[filepath].update({'chunk': i + 1, 'speed_mbs': round(speed, 1)})
+                # Mettre a jour la progression (vitesse du dernier chunk)
+                now = time.time()
+                chunk_elapsed = now - _upload_progress[filepath].get('last_chunk_time', now)
+                chunk_mb = chunk_size / 1048576
+                speed = chunk_mb / chunk_elapsed if chunk_elapsed > 0 else 0
+                _upload_progress[filepath].update({'chunk': i + 1, 'speed_mbs': round(speed, 1), 'last_chunk_time': now})
                 if on_progress:
                     on_progress(i + 1, total_chunks)
     except Exception as e:
         _upload_progress.pop(filepath, None)
-    return {'success': False, 'error': f'Chunk upload failed: {e}'}
+        return {'success': False, 'error': f'Chunk upload failed: {e}'}
 
     # 4. Complete
     _upload_progress.pop(filepath, None)

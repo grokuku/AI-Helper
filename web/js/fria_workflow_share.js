@@ -610,7 +610,7 @@
       container.innerHTML =
         '<div style="display:flex;flex-direction:column;gap:10px;">' +
         '<div><label style="font-size:11px;color:#888;display:block;margin-bottom:3px;">Nom *</label>' +
-        '<input id="wf-name" type="text" value="' + esc(workflowJSON?.extra?.title || workflowJSON?.title || workflowJSON?.name || '') + '" style="width:100%;padding:6px 8px;border-radius:4px;border:1px solid #555;background:#3a3a3e;color:#ccc;font-size:13px;box-sizing:border-box;"></div>' +
+        '<input id="wf-name" type="text" placeholder="Nom du workflow" value="' + esc(workflowJSON?.extra?.title || workflowJSON?.title || workflowJSON?.name || app?.ui?.title || app?.graph?.title || '') + '" style="width:100%;padding:6px 8px;border-radius:4px;border:1px solid #555;background:#3a3a3e;color:#ccc;font-size:13px;box-sizing:border-box;"></div>' +
         '<div><label style="font-size:11px;color:#888;display:block;margin-bottom:3px;">Description</label>' +
         '<textarea id="wf-desc" rows="2" style="width:100%;padding:6px 8px;border-radius:4px;border:1px solid #555;background:#3a3a3e;color:#ccc;font-size:12px;box-sizing:border-box;resize:vertical;"></textarea></div>' +
         '<div><label style="font-size:11px;color:#888;display:block;margin-bottom:3px;">Tags (virgules)</label>' +
@@ -1009,7 +1009,7 @@
                   var nodeCount = n.node_types ? n.node_types.length : 1;
                   var installed = n.url && installedUrls[n.url];
                   depHtml += '<label style="display:flex;align-items:center;gap:8px;padding:6px 10px;border-bottom:1px solid #3a3a3e;cursor:pointer;font-size:12px;color:' + (installed ? '#34d399' : '#ccc') + ';">' +
-                    '<input type="checkbox" class="wf-dep-cb" ' + (installed ? 'unchecked' : 'checked') + ' data-type="node" data-name="' + esc(n.name) + '" data-url="' + esc(n.url || '') + '" style="accent-color:#6366f1;">' +
+                    '<input type="checkbox" class="wf-dep-cb" checked data-type="node" data-name="' + esc(n.name) + '" data-url="' + esc(n.url || '') + '" style="accent-color:#6366f1;">' +
                     '<span style="flex:1;">' + esc(n.name) +
                     (nodeCount > 1 ? ' <span style="color:#888;font-size:10px;">(' + nodeCount + ' nodes)</span>' : '') +
                     (installed ? ' ✅ déjà installé' : '') + '</span>' +
@@ -1026,7 +1026,7 @@
                   var installed = localModels.indexOf(m.name) >= 0;
                   var hasFile = !!m.upload_id;
                   depHtml += '<label style="display:flex;align-items:center;gap:8px;padding:6px 10px;border-bottom:1px solid #3a3a3e;cursor:pointer;font-size:12px;color:' + (installed ? '#34d399' : '#ccc') + ';">' +
-                    '<input type="checkbox" class="wf-dep-cb" ' + (installed ? 'unchecked' : 'checked') + ' data-type="model" data-name="' + esc(m.name) + '" ' + (hasFile ? 'data-upload-id="' + esc(m.upload_id) + '"' : '') + ' style="accent-color:#6366f1;">' +
+                    '<input type="checkbox" class="wf-dep-cb" checked data-type="model" data-name="' + esc(m.name) + '" ' + (hasFile ? 'data-upload-id="' + esc(m.upload_id) + '"' : '') + ' style="accent-color:#6366f1;">' +
                     '<span style="flex:1;">' + esc(m.name) + (installed ? ' ✅ déjà installé' : '') + '</span>';
                   if (!installed && hasFile) {
                     depHtml += '<button onclick="window._wfDownloadFile(\'' + esc(m.upload_id) + '\', \'' + esc(m.name) + '\', this)" style="padding:2px 8px;border:1px solid #555;border-radius:3px;background:#4a4a4e;color:#ccc;font-size:10px;cursor:pointer;">📥 Télécharger</button>';
@@ -1044,7 +1044,7 @@
                   var installed = localLoras.indexOf(l.name) >= 0;
                   var hasFile = !!l.upload_id;
                   depHtml += '<label style="display:flex;align-items:center;gap:8px;padding:6px 10px;border-bottom:1px solid #3a3a3e;cursor:pointer;font-size:12px;color:' + (installed ? '#34d399' : '#ccc') + ';">' +
-                    '<input type="checkbox" class="wf-dep-cb" ' + (installed ? 'unchecked' : 'checked') + ' data-type="lora" data-name="' + esc(l.name) + '" ' + (hasFile ? 'data-upload-id="' + esc(l.upload_id) + '"' : '') + ' style="accent-color:#6366f1;">' +
+                    '<input type="checkbox" class="wf-dep-cb" checked data-type="lora" data-name="' + esc(l.name) + '" ' + (hasFile ? 'data-upload-id="' + esc(l.upload_id) + '"' : '') + ' style="accent-color:#6366f1;">' +
                     '<span style="flex:1;">' + esc(l.name) + (installed ? ' ✅ déjà installé' : '') + '</span>';
                   if (!installed && hasFile) {
                     depHtml += '<button onclick="window._wfDownloadFile(\'' + esc(l.upload_id) + '\', \'' + esc(l.name) + '\', this)" style="padding:2px 8px;border:1px solid #555;border-radius:3px;background:#4a4a4e;color:#ccc;font-size:10px;cursor:pointer;">📥 Télécharger</button>';

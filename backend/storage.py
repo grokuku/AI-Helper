@@ -192,6 +192,7 @@ class SFTPStorage(StorageBackend):
         self.base_path = base_path.rstrip("/")
         self._ssh = None
         self._sftp = None
+        self._open_handles = {}  # chemin_distant → Handle SFTP ouvert en append
 
     def _connect(self):
         """Ouvre la connexion SFTP si pas déjà active."""
@@ -273,25 +274,48 @@ class SFTPStorage(StorageBackend):
 
     def append_chunk_stream(self, remote_path: str, stream, buf_size: int = 65536) -> bool:
         """Stream vers SFTP par buffers de 1MB avec pipelining.
-        Paramiko ecrit par chunks de ~32KB par defaut (un ACK par chunk),
-        ce qui est tres lent. On passe a 1MB + pipelining."""
+        Garde le handle ouvert pour eviter de chercher la fin du fichier
+        a chaque chunk."""
         try:
             sftp = self._connect()
             # Buffer interne paramiko plus gros (2MB au lieu de 32KB)
             sftp.sftp_chunk_size = 2 * 1024 * 1024
             full = self._full_path(remote_path)
-            with sftp.open(full, 'ab') as f:
+
+            # Reutiliser le handle ouvert si deja cree (evite seek a chaque chunk)
+            if full not in self._open_handles:
+                self._mkdir_p(sftp, "/".join(full.split("/")[:-1]))
+                f = sftp.open(full, 'ab')
                 f.set_pipelined(True)
-                write_buf = 1024 * 1024
-                while True:
-                    buf = stream.read(write_buf)
-                    if not buf:
-                        break
-                    f.write(buf)
+                self._open_handles[full] = f
+            else:
+                f = self._open_handles[full]
+
+            write_buf = 1024 * 1024
+            while True:
+                buf = stream.read(write_buf)
+                if not buf:
+                    break
+                f.write(buf)
             return True
         except Exception as e:
+            self._close_handle_remote(remote_path)
             logging.exception(f"[SFTP] append_chunk_stream failed: {e}")
             return False
+
+    def _close_handle_remote(self, remote_path: str):
+        """Ferme le handle ouvert pour ce chemin distant."""
+        full = self._full_path(remote_path)
+        if full in self._open_handles:
+            try:
+                self._open_handles[full].close()
+            except Exception:
+                pass
+            del self._open_handles[full]
+
+    def close_handle(self, remote_path: str):
+        """Ferme le handle SFTP ouvert pour ce chemin."""
+        self._close_handle_remote(remote_path)
 
     def upload(self, local_path: str, remote_path: str) -> bool:
         try:
