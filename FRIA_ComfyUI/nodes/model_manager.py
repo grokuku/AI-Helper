@@ -365,9 +365,9 @@ def download_model_from_server(upload_id, filename, file_type="model", dest_path
     import requests
 
     api_url, api_key = _get_fria_credentials()
-    headers = {}
+    auth_headers = {}
     if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
+        auth_headers["Authorization"] = f"Bearer {api_key}"
 
     # Déterminer le dossier de destination selon le type
     dirs = _get_model_dirs()
