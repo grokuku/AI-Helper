@@ -1092,18 +1092,174 @@
             }
           };
 
-          // Load button — download models with custom paths, modify workflow, then load
+          // ── Download progress panel (reused for install) ──
+          function createDownloadPanel(title) {
+            var panel = document.createElement("div");
+            panel.style.cssText = "position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#1e1e24;border-radius:12px;box-shadow:0 16px 48px rgba(0,0,0,0.6);width:440px;max-height:70vh;z-index:99998;display:flex;flex-direction:column;overflow:hidden;";
+            var header = document.createElement("div");
+            header.style.cssText = "padding:12px 16px;border-bottom:1px solid #333;font-size:14px;font-weight:600;color:#e2e8f0;cursor:grab;user-select:none;";
+            header.textContent = title || "T\u00e9l\u00e9chargement";
+            panel.appendChild(header);
+            var drag = {active: false, sx: 0, sy: 0, ox: 0, oy: 0};
+            header.addEventListener("mousedown", function(e) {
+              drag.active = true; drag.sx = e.clientX; drag.sy = e.clientY;
+              var r = panel.getBoundingClientRect(); drag.ox = r.left; drag.oy = r.top;
+              header.style.cursor = "grabbing"; e.preventDefault();
+            });
+            document.addEventListener("mousemove", function(e) {
+              if (!drag.active) return;
+              panel.style.transform = "none";
+              panel.style.left = (drag.ox + e.clientX - drag.sx) + "px";
+              panel.style.top = (drag.oy + e.clientY - drag.sy) + "px";
+            });
+            document.addEventListener("mouseup", function() {
+              if (drag.active) { drag.active = false; header.style.cursor = "grab"; }
+            });
+            var body = document.createElement("div");
+            body.style.cssText = "padding:12px;overflow-y:auto;flex:1;display:flex;flex-direction:column;gap:8px;";
+            panel.appendChild(body);
+            var footer = document.createElement("div");
+            footer.style.cssText = "padding:10px 16px;border-top:1px solid #333;display:flex;justify-content:flex-end;";
+            panel.appendChild(footer);
+            document.body.appendChild(panel);
+            var rows = {};
+            return {
+              panel: panel,
+              addRow: function(fileName) {
+                var row = document.createElement("div");
+                row.style.cssText = "display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;padding:6px 8px;border-radius:6px;background:#2a2a2e;";
+                var bar = document.createElement("div");
+                bar.style.cssText = "flex:1;height:6px;background:rgba(255,255,255,0.1);border-radius:3px;overflow:hidden;position:relative;";
+                var fill = document.createElement("div");
+                fill.style.cssText = "height:100%;width:30%;background:#6366f1;border-radius:3px;animation:fria-upload-stripe 1.2s ease-in-out infinite;position:absolute;";
+                bar.appendChild(fill);
+                var nameEl = document.createElement("span");
+                nameEl.style.cssText = "font-size:12px;color:#ccc;min-width:120px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex-shrink:0;";
+                nameEl.textContent = fileName;
+                nameEl.title = fileName;
+                var statusEl = document.createElement("span");
+                statusEl.style.cssText = "font-size:14px;min-width:20px;text-align:center;";
+                statusEl.textContent = "\u23f3";
+                row.appendChild(statusEl);
+                row.appendChild(nameEl);
+                row.appendChild(bar);
+                body.appendChild(row);
+                rows[fileName] = { row: row, fill: fill, status: statusEl };
+              },
+              setResult: function(fileName, success, errorMsg) {
+                var r = rows[fileName];
+                if (!r) return;
+                if (success) {
+                  r.status.textContent = "\u2705";
+                  r.fill.style.background = "#16a34a";
+                  r.fill.style.animation = "none";
+                  r.fill.style.width = "100%";
+                  r.row.style.background = "rgba(22,163,74,0.15)";
+                } else {
+                  r.status.textContent = "\u274c";
+                  r.fill.style.background = "#dc2626";
+                  r.fill.style.animation = "none";
+                  r.fill.style.width = "100%";
+                  r.row.style.background = "rgba(220,38,38,0.15)";
+                  if (errorMsg) {
+                    var errEl = document.createElement("div");
+                    errEl.style.cssText = "font-size:10px;color:#f87171;word-break:break-all;width:100%;margin-left:26px;";
+                    errEl.textContent = "Erreur: " + errorMsg;
+                    r.row.appendChild(errEl);
+                  }
+                }
+              },
+              done: function() {
+                var closeBtn = document.createElement("button");
+                closeBtn.textContent = "Fermer";
+                closeBtn.style.cssText = "padding:6px 16px;border:1px solid #555;border-radius:6px;background:transparent;color:#999;font-size:12px;cursor:pointer;";
+                closeBtn.onclick = function() { panel.remove(); };
+                footer.appendChild(closeBtn);
+              },
+              close: function() { panel.remove(); }
+            };
+          }
+
+          // ── Reboot prompt modal ──
+          function showRebootPrompt() {
+            var modal = document.createElement("div");
+            modal.style.cssText = "position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#1e1e24;border-radius:12px;box-shadow:0 16px 48px rgba(0,0,0,0.6);width:380px;z-index:99999;padding:20px;text-align:center;";
+            modal.innerHTML = 
+              '<div style="font-size:24px;margin-bottom:8px;">\u26a0\ufe0f</div>' +
+              '<div style="font-size:14px;font-weight:600;color:#e2e8f0;margin-bottom:8px;">Nouveaux custom nodes install\u00e9s</div>' +
+              '<div style="font-size:12px;color:#aaa;margin-bottom:16px;">ComfyUI doit red\u00e9marrer pour charger les nouvelles nodes.</div>' +
+              '<div style="display:flex;gap:8px;justify-content:center;">' +
+              '<button id="reboot-cancel" style="padding:8px 16px;border:1px solid #555;border-radius:6px;background:transparent;color:#999;font-size:13px;cursor:pointer;">Plus tard</button>' +
+              '<button id="reboot-now" style="padding:8px 16px;border:none;border-radius:6px;background:#6366f1;color:#fff;font-size:13px;font-weight:600;cursor:pointer;">Red\u00e9marrer</button>' +
+              '</div>';
+            document.body.appendChild(modal);
+            modal.querySelector("#reboot-cancel").onclick = function() { modal.remove(); };
+            modal.querySelector("#reboot-now").onclick = function() {
+              modal.innerHTML = '<div style="padding:20px;color:#fbbf24;font-size:13px;">Red\u00e9marrage en cours...</div>';
+              setTimeout(function() { window.location.reload(); }, 500);
+            };
+          }
+
+          // ── Build model name map and apply to workflow ──
+          function buildNameMap(allDeps, downloadResults) {
+            var nameMap = {};
+            for (var i = 0; i < allDeps.models.length; i++) {
+              var m = allDeps.models[i];
+              var dlPath = downloadResults[m.name];
+              if (dlPath && dlPath !== m.name) nameMap[m.name] = dlPath;
+            }
+            for (var i = 0; i < allDeps.loras.length; i++) {
+              var l = allDeps.loras[i];
+              var dlPath = downloadResults[l.name];
+              if (dlPath && dlPath !== l.name) nameMap[l.name] = dlPath;
+            }
+            return nameMap;
+          }
+
+          function applyNameMap(parsed, nameMap) {
+            if (Object.keys(nameMap).length === 0) return;
+            var allNodes = [];
+            if (parsed.nodes) allNodes = allNodes.concat(parsed.nodes);
+            if (parsed.definition && parsed.definition.subgraphs) {
+              for (var si = 0; si < parsed.definition.subgraphs.length; si++) {
+                if (parsed.definition.subgraphs[si].nodes) {
+                  allNodes = allNodes.concat(parsed.definition.subgraphs[si].nodes);
+                }
+              }
+            }
+            for (var ni = 0; ni < allNodes.length; ni++) {
+              var node = allNodes[ni];
+              if (!node.inputs) continue;
+              for (var widgetKey in node.inputs) {
+                var val = node.inputs[widgetKey];
+                if (typeof val !== 'string') continue;
+                if (nameMap[val]) {
+                  node.inputs[widgetKey] = nameMap[val];
+                } else {
+                  var basename = val.split('/').pop();
+                  for (var origN in nameMap) {
+                    if (origN === basename || origN.split('/').pop() === basename) {
+                      node.inputs[widgetKey] = nameMap[origN];
+                      break;
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          // ── Load button: install nodes → download models → adapt workflow → load ──
           detailBody.querySelector("#wf-load-btn").onclick = async function () {
             var statusEl = detailBody.querySelector("#wf-load-status");
             var loadBtn = detailBody.querySelector("#wf-load-btn");
             statusEl.style.display = "block";
             statusEl.style.color = "#fbbf24";
-            statusEl.textContent = "Téléchargement du workflow...";
             loadBtn.disabled = true;
             loadBtn.style.opacity = "0.6";
 
             try {
               // 1. Download workflow JSON
+              statusEl.textContent = "T\u00e9l\u00e9chargement du workflow...";
               var resp = await fetch(getApiUrl() + "/workflows/" + workflowId + "/download", { headers: apiHeaders() });
               var data = await resp.json();
               if (data.error) throw new Error(data.error);
@@ -1114,107 +1270,100 @@
                 parsed.extra.title = data.name;
               }
 
-              // 2. Collect models/loras to download with custom paths
+              // 2. Install custom nodes (checked, not already installed)
+              var nodeCbs = detailBody.querySelectorAll('.wf-dep-cb[data-type="node"]:checked');
+              var newNodesInstalled = 0;
+              for (var ni = 0; ni < nodeCbs.length; ni++) {
+                var ncb = nodeCbs[ni];
+                var nurl = ncb.dataset.url;
+                var nname = ncb.dataset.name;
+                if (!nurl) continue;
+                statusEl.textContent = "Installation node " + (ni + 1) + "/" + nodeCbs.length + ": " + esc(nname) + "...";
+                try {
+                  var installResp = await fetch("/api/fria/custom-nodes/install", {
+                    method: "POST",
+                    headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify({git_url: nurl, name: nname})
+                  });
+                  var installData = await installResp.json();
+                  if (installData.success) newNodesInstalled++;
+                } catch(e) {
+                  console.warn("[FR.IA] Node install failed: " + nname, e);
+                }
+              }
+
+              // 3. Collect models/loras to download
               var cbs = detailBody.querySelectorAll(".wf-dep-cb:checked");
               var toDownload = [];
-              var nameMap = {};  // originalName → newName
-
+              var downloadResults = {};
               for (var i = 0; i < cbs.length; i++) {
                 var cb = cbs[i];
                 var dtype = cb.dataset.type;
                 var origName = cb.dataset.name;
                 var uploadId = cb.dataset.uploadId;
                 if (!uploadId || (dtype !== 'model' && dtype !== 'lora')) continue;
-
-                // Find the path input for this checkbox
                 var depDiv = cb.closest('div');
                 var pathInput = depDiv ? depDiv.querySelector('.wf-dep-path') : null;
                 var newPath = pathInput ? pathInput.value.trim() : origName;
                 if (!newPath) newPath = origName;
-
                 toDownload.push({
-                  upload_id: uploadId,
-                  origName: origName,
-                  newName: newPath,
+                  upload_id: uploadId, origName: origName, newName: newPath,
                   type: dtype === 'lora' ? 'lora' : 'model',
                 });
-
-                if (newPath !== origName) {
-                  nameMap[origName] = newPath;
-                }
+                downloadResults[origName] = newPath;
               }
 
-              // 3. Download each model
+              // 4. Download models with progress panel (parallel)
               if (toDownload.length > 0) {
-                statusEl.textContent = "Téléchargement de " + toDownload.length + " model(s)...";
+                statusEl.textContent = "T\u00e9l\u00e9chargement de " + toDownload.length + " model(s)...";
+                var dlPanel = createDownloadPanel("T\u00e9l\u00e9chargement des d\u00e9pendances");
+                var dlPromises = [];
                 for (var d = 0; d < toDownload.length; d++) {
-                  var item = toDownload[d];
-                  statusEl.textContent = "Téléchargement " + (d + 1) + "/" + toDownload.length + ": " + esc(item.newName) + "...";
-                  var dlResp = await fetch('/api/fria/models/download', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                      upload_id: item.upload_id,
-                      filename: item.origName,
-                      type: item.type,
-                      dest_path: item.newName,
-                    })
-                  });
-                  var dlResult = await dlResp.json();
-                  if (!dlResult.success) {
-                    console.warn('[FR.IA] Download failed: ' + item.origName + ' → ' + (dlResult.error || 'echec'));
-                  }
+                  (function(item) {
+                    dlPanel.addRow(item.newName);
+                    dlPromises.push(
+                      fetch('/api/fria/models/download', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                          upload_id: item.upload_id,
+                          filename: item.origName,
+                          type: item.type,
+                          dest_path: item.newName,
+                        })
+                      }).then(function(r) { return r.json(); }).then(function(result) {
+                        dlPanel.setResult(item.newName, result.success, result.error);
+                        return result;
+                      }).catch(function(e) {
+                        dlPanel.setResult(item.newName, false, e.message);
+                        return { success: false, error: e.message };
+                      })
+                    );
+                  })(toDownload[d]);
                 }
+                await Promise.all(dlPromises);
+                dlPanel.done();
               }
 
-              // 4. Modify workflow JSON: replace model names
-              if (Object.keys(nameMap).length > 0) {
-                statusEl.textContent = "Adaptation du workflow...";
-                var allNodes = [];
-                if (parsed.nodes) allNodes = allNodes.concat(parsed.nodes);
-                // Subgraphs recursifs
-                if (parsed.definition && parsed.definition.subgraphs) {
-                  for (var si = 0; si < parsed.definition.subgraphs.length; si++) {
-                    if (parsed.definition.subgraphs[si].nodes) {
-                      allNodes = allNodes.concat(parsed.definition.subgraphs[si].nodes);
-                    }
-                  }
-                }
-                for (var ni = 0; ni < allNodes.length; ni++) {
-                  var node = allNodes[ni];
-                  if (!node.inputs) continue;
-                  // Check all widget values for model names
-                  for (var widgetKey in node.inputs) {
-                    var val = node.inputs[widgetKey];
-                    if (typeof val !== 'string') continue;
-                    // Match exact name or basename
-                    if (nameMap[val]) {
-                      node.inputs[widgetKey] = nameMap[val];
-                    } else {
-                      // Try basename match (e.g. "gguf/model.gguf" → "model.gguf")
-                      var basename = val.split('/').pop();
-                      for (var origN in nameMap) {
-                        if (origN === basename || origN.split('/').pop() === basename) {
-                          node.inputs[widgetKey] = nameMap[origN];
-                          break;
-                        }
-                      }
-                    }
-                  }
-                }
-              }
+              // 5. Always verify and adapt model names in workflow
+              statusEl.textContent = "Adaptation du workflow...";
+              var nameMap = buildNameMap(allDeps, downloadResults);
+              applyNameMap(parsed, nameMap);
 
-              // 5. Load into ComfyUI
+              // 6. Load into ComfyUI (only after models are downloaded)
               statusEl.textContent = "Chargement dans ComfyUI...";
               var currentApp = getApp();
               if (currentApp && currentApp.loadGraphData) {
                 currentApp.loadGraphData(parsed).then(function () {
                   statusEl.style.color = "#34d399";
-                  statusEl.textContent = "✅ Workflow chargé !";
+                  statusEl.textContent = "\u2705 Workflow charg\u00e9 !";
                   setTimeout(function () { detailModal.remove(); }, 1500);
+                  if (newNodesInstalled > 0) {
+                    setTimeout(function() { showRebootPrompt(); }, 1600);
+                  }
                 }).catch(function (err) {
                   statusEl.style.color = "#f87171";
-                  statusEl.textContent = "❌ Erreur de chargement : " + err.message;
+                  statusEl.textContent = "\u274c Erreur : " + err.message;
                   loadBtn.disabled = false;
                   loadBtn.style.opacity = "1";
                 });
@@ -1222,20 +1371,23 @@
                 currentApp.graph.clear();
                 currentApp.loadGraphData(parsed);
                 statusEl.style.color = "#34d399";
-                statusEl.textContent = "✅ Workflow chargé !";
+                statusEl.textContent = "\u2705 Workflow charg\u00e9 !";
                 setTimeout(function () { detailModal.remove(); }, 1500);
+                if (newNodesInstalled > 0) {
+                  setTimeout(function() { showRebootPrompt(); }, 1600);
+                }
               } else {
                 navigator.clipboard.writeText(JSON.stringify(parsed)).then(function () {
                   statusEl.style.color = "#fbbf24";
-                  statusEl.textContent = "⚠️ Copié dans le presse-papier.";
+                  statusEl.textContent = "\u26a0\ufe0f Copi\u00e9 dans le presse-papier.";
                 }).catch(function () {
                   statusEl.style.color = "#f87171";
-                  statusEl.textContent = "❌ Impossible de charger.";
+                  statusEl.textContent = "\u274c Impossible de charger.";
                 });
               }
             } catch (e) {
               statusEl.style.color = "#f87171";
-              statusEl.textContent = "❌ " + e.message;
+              statusEl.textContent = "\u274c " + e.message;
               loadBtn.disabled = false;
               loadBtn.style.opacity = "1";
             }

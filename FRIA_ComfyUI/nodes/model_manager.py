@@ -33,6 +33,9 @@ CHUNK_SIZE = 25 * 1024 * 1024  # 25 MB
 # Progression des uploads en cours : filepath → {chunk, total, speed_mbs, start}
 _upload_progress = {}
 
+# Progression des downloads : filepath → {bytes_recv, bytes_total, speed_mbs, start}
+_download_progress = {}
+
 
 # Toutes les categories de models connues par ComfyUI
 _ALL_MODEL_CATEGORIES = [
@@ -301,6 +304,20 @@ def upload_model_to_server(filepath, file_type="model", on_progress=None):
         return {'success': False, 'error': f'Complete failed: {e}'}
 
 
+def get_download_progress(filepath):
+    """Retourne la progression d'un download en cours."""
+    p = _download_progress.get(filepath)
+    if not p:
+        return None
+    pct = round(p['bytes_recv'] / p['bytes_total'] * 100, 1) if p['bytes_total'] > 0 else 0
+    return {
+        'bytes_recv': p['bytes_recv'],
+        'bytes_total': p['bytes_total'],
+        'percent': pct,
+        'speed_mbs': p['speed_mbs'],
+    }
+
+
 def _sftp_mkdir_p(sftp, remote_dir):
     """Cree les dossiers parents recursivement sur SFTP."""
     if not remote_dir or remote_dir == "/":
@@ -401,11 +418,30 @@ def download_model_from_server(upload_id, filename, file_type="model", dest_path
         if not resp.ok:
             return {'success': False, 'error': f'HTTP {resp.status_code}'}
 
+        total = int(resp.headers.get('Content-Length', 0))
+        _download_progress[dest_path] = {
+            'bytes_recv': 0, 'bytes_total': total,
+            'speed_mbs': 0.0, 'start': time.time(), 'last_time': time.time(),
+        }
+
+        received = 0
         with open(dest_path, 'wb') as f:
             for chunk in resp.iter_content(chunk_size=CHUNK_SIZE):
                 f.write(chunk)
+                received += len(chunk)
+                now = time.time()
+                chunk_elapsed = now - _download_progress[dest_path].get('last_time', now)
+                chunk_mb = len(chunk) / 1048576
+                speed = chunk_mb / chunk_elapsed if chunk_elapsed > 0 else 0
+                _download_progress[dest_path].update({
+                    'bytes_recv': received,
+                    'speed_mbs': round(speed, 1),
+                    'last_time': now,
+                })
 
+        _download_progress.pop(dest_path, None)
         logging.info(f"[FR.IA] Downloaded {filename} → {dest_path}")
         return {'success': True, 'path': dest_path}
     except Exception as e:
+        _download_progress.pop(dest_path, None)
         return {'success': False, 'error': str(e)}
