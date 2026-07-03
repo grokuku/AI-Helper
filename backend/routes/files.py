@@ -89,36 +89,27 @@ def init_upload():
 
     # Verifier si le storage backend supporte l'ecriture directe (pas de temp local)
     storage = get_storage()
-    supports_direct = type(storage).__name__ == 'SFTPStorage'
     remote_path = ""
     temp_path = os.path.join(TEMP_DIR, f"{upload_id}.tmp")
 
-    if supports_direct:
-        # Streaming direct vers le storage (ex: SFTP) — pas de fichier local
+    if type(storage).__name__ == 'SFTPStorage':
+        # Streaming direct vers SFTP — pas de fichier local
         remote_path = f"workflows/{file_type}s/{upload_id}/{filename}"
         storage.create_empty(remote_path)
-        temp_path = ""  # pas de fichier local
+        temp_path = ""
     else:
-        # Fallback: fichier temporaire local
+        # Mode local : temp file pour ecriture atomique
         with open(temp_path, 'wb') as f:
             pass
 
     conn = get_db()
     try:
-        if supports_direct:
-            conn.execute("""
-                INSERT INTO file_uploads (upload_id, user_id, filename, size, type,
-                                           chunk_size, total_chunks, temp_path, final_path)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (upload_id, user_id, filename, size, file_type,
-                  CHUNK_SIZE, total_chunks, temp_path, remote_path))
-        else:
-            conn.execute("""
-                INSERT INTO file_uploads (upload_id, user_id, filename, size, type,
-                                           chunk_size, total_chunks, temp_path)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (upload_id, user_id, filename, size, file_type,
-                  CHUNK_SIZE, total_chunks, temp_path))
+        conn.execute("""
+            INSERT INTO file_uploads (upload_id, user_id, filename, size, type,
+                                       chunk_size, total_chunks, temp_path, final_path)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (upload_id, user_id, filename, size, file_type,
+              CHUNK_SIZE, total_chunks, temp_path, remote_path))
         conn.commit()
     finally:
         conn.close()
@@ -166,7 +157,7 @@ def upload_chunk():
         chunk_stream = request.files['data'].stream
 
         if temp_path:
-            # Ecriture locale (fallback) — streamer par 64KB
+            # Mode local (fallback)
             with open(temp_path, 'ab') as f:
                 while True:
                     buf = chunk_stream.read(65536)
@@ -174,7 +165,7 @@ def upload_chunk():
                         break
                     f.write(buf)
         else:
-            # Streaming direct vers le storage (SFTP) — streamer par 64KB
+            # Streaming direct SFTP (pas de fichier local)
             if row['final_path']:
                 remote = row['final_path']
             else:
@@ -182,7 +173,7 @@ def upload_chunk():
             storage = get_storage()
             success = storage.append_chunk_stream(remote, chunk_stream)
             if not success:
-                return jsonify({'error': 'Échec du chunk sur le stockage distant'}), 500
+                return jsonify({'error': 'Echec du chunk sur le stockage distant'}), 500
 
         new_received = row['received_chunks'] + 1
         conn.execute(
@@ -228,29 +219,38 @@ def complete_upload():
                 'error': f'Chunks manquants: {row["received_chunks"]}/{row["total_chunks"]}'
             }), 400
 
-        # Vérifier la taille du temp file
-        actual_size = os.path.getsize(row['temp_path'])
-        if actual_size != row['size']:
-            logging.warning(f"[files] Size mismatch: expected {row['size']}, got {actual_size}")
-
-        # Upload vers le storage
+        # Upload vers le storage — le fichier est forcement en local (temp_path)
         file_type = row['type']
         filename = row['filename']
-        remote_path = f"workflows/{file_type}s/{upload_id}/{filename}"
+        remote_path = row['final_path'] or f"workflows/{file_type}s/{upload_id}/{filename}"
+        temp_path = row['temp_path'] or ""
 
         storage = get_storage()
-        success = storage.upload(row['temp_path'], remote_path)
 
-        # Supprimer le temp file
-        try:
-            os.remove(row['temp_path'])
-        except Exception:
+        if temp_path:
+            # Mode fichier local : uploader vers le storage
+            if not os.path.isfile(temp_path):
+                conn.execute("UPDATE file_uploads SET status = 'error' WHERE upload_id = ?", (upload_id,))
+                conn.commit()
+                return jsonify({'error': 'Fichier temporaire introuvable'}), 500
+
+            actual_size = os.path.getsize(temp_path)
+            if actual_size != row['size']:
+                logging.warning(f"[files] Size mismatch: expected {row['size']}, got {actual_size}")
+
+            success = storage.upload(temp_path, remote_path)
+            try:
+                os.remove(temp_path)
+            except Exception:
+                pass
+
+            if not success:
+                conn.execute("UPDATE file_uploads SET status = 'error' WHERE upload_id = ?", (upload_id,))
+                conn.commit()
+                return jsonify({'error': 'Échec de l\'upload vers le stockage'}), 500
+        else:
+            # Mode direct SFTP : le fichier est deja sur le storage
             pass
-
-        if not success:
-            conn.execute("UPDATE file_uploads SET status = 'error' WHERE upload_id = ?", (upload_id,))
-            conn.commit()
-            return jsonify({'error': 'Échec de l\'upload vers le stockage'}), 500
 
         # Marquer comme complete
         # Store fingerprint for future deduplication
