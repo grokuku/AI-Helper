@@ -114,7 +114,7 @@ def init_upload():
     finally:
         conn.close()
 
-    logging.info(f"[files] Init upload {upload_id}: {filename} ({size} bytes, {total_chunks} chunks, direct={supports_direct})")
+    logging.info(f"[files] Init upload {upload_id}: {filename} ({size} bytes, {total_chunks} chunks)")
 
     return jsonify({
         'upload_id': upload_id,
