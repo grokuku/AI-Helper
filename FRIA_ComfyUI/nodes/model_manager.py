@@ -202,7 +202,7 @@ def upload_model_to_server(filepath, file_type="model", on_progress=None):
                 resp = requests.post(f"{api_url}/files/chunk", data={
                     'upload_id': upload_id,
                     'chunk_index': str(i),
-                }, files={'data': (filename, chunk)}, timeout=300)
+                }, files={'data': (filename, chunk)}, headers=headers, timeout=300)
                 if not resp.ok:
                     return {'success': False, 'error': f'Chunk {i} failed: {resp.text}'}
                 if on_progress:
