@@ -195,10 +195,23 @@ def _install_custom_node(git_url, name=""):
             ['git', 'clone', git_url, target],
             capture_output=True, text=True, timeout=120
         )
-        if result.returncode == 0:
-            return {"success": True, "message": f"Installed {name}", "path": target}
-        else:
+        if result.returncode != 0:
             return {"success": False, "message": f"git clone failed: {result.stderr[:200]}"}
+
+        # Installer les requirements Python si present
+        req_file = os.path.join(target, "requirements.txt")
+        if os.path.isfile(req_file):
+            try:
+                pip_result = subprocess.run(
+                    ['pip', 'install', '-r', req_file],
+                    capture_output=True, text=True, timeout=120
+                )
+                if pip_result.returncode != 0:
+                    logging.warning(f"[FR.IA] pip install failed for {name}: {pip_result.stderr[:200]}")
+            except Exception as e:
+                logging.warning(f"[FR.IA] pip install error for {name}: {e}")
+
+        return {"success": True, "message": f"Installed {name}", "path": target}
     except subprocess.TimeoutExpired:
         return {"success": False, "message": "git clone timed out (120s)"}
     except Exception as e:

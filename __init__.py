@@ -10,6 +10,16 @@ On importe les nodes depuis le sous-dossier FRIA_ComfyUI/.
 import importlib.util
 import os
 import sys
+import logging
+
+# Installer les requirements du pack au demarrage si besoin
+try:
+    _req = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'FRIA_ComfyUI', 'requirements.txt')
+    if os.path.isfile(_req):
+        import subprocess as _sp
+        _sp.run(['pip', 'install', '-r', _req], capture_output=True, text=True, timeout=60)
+except Exception as e:
+    logging.warning(f"[FR.IA] Failed to auto-install requirements: {e}")
 
 # Acces au serveur HTTP de ComfyUI pour enregistrer des routes
 try:

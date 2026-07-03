@@ -91,13 +91,21 @@ def init_upload():
     storage = get_storage()
     remote_path = ""
     temp_path = os.path.join(TEMP_DIR, f"{upload_id}.tmp")
+    sftp_config = None
 
     if type(storage).__name__ == 'SFTPStorage':
-        # Streaming direct vers SFTP — pas de fichier local
+        # Direct SFTP : le Python client uploade directement via paramiko
         remote_path = f"workflows/{file_type}s/{upload_id}/{filename}"
-        # create_empty ouvre en mode 'wb' → ecrase tout fichier precedent
-        storage.create_empty(remote_path)
         temp_path = ""
+        sftp_config = {
+            'host': storage.host,
+            'port': storage.port,
+            'username': storage.user,
+            'password': storage.password,
+            'key_path': storage.key_path,
+            'base_path': storage.base_path,
+            'remote_path': remote_path,
+        }
     else:
         # Mode local : temp file pour ecriture atomique
         with open(temp_path, 'wb') as f:
@@ -117,11 +125,14 @@ def init_upload():
 
     logging.info(f"[files] Init upload {upload_id}: {filename} ({size} bytes, {total_chunks} chunks)")
 
-    return jsonify({
+    resp_data = {
         'upload_id': upload_id,
         'chunk_size': CHUNK_SIZE,
         'total_chunks': total_chunks,
-    })
+    }
+    if sftp_config:
+        resp_data['sftp'] = sftp_config
+    return jsonify(resp_data)
 
 
 @app.route('/api/files/chunk', methods=['POST'])
@@ -215,21 +226,20 @@ def complete_upload():
             return jsonify({'error': 'Upload introuvable'}), 404
         if row['status'] != 'uploading':
             return jsonify({'error': f'Upload déjà {row["status"]}'}), 400
-        if row['received_chunks'] != row['total_chunks']:
-            return jsonify({
-                'error': f'Chunks manquants: {row["received_chunks"]}/{row["total_chunks"]}'
-            }), 400
 
-        # Upload vers le storage — le fichier est forcement en local (temp_path)
         file_type = row['type']
         filename = row['filename']
         remote_path = row['final_path'] or f"workflows/{file_type}s/{upload_id}/{filename}"
         temp_path = row['temp_path'] or ""
 
-        storage = get_storage()
-
         if temp_path:
+            # Mode chunked : verifier que tous les chunks sont la
+            if row['received_chunks'] != row['total_chunks']:
+                return jsonify({
+                    'error': f'Chunks manquants: {row["received_chunks"]}/{row["total_chunks"]}'
+                }), 400
             # Mode fichier local : uploader vers le storage
+            storage = get_storage()
             if not os.path.isfile(temp_path):
                 conn.execute("UPDATE file_uploads SET status = 'error' WHERE upload_id = ?", (upload_id,))
                 conn.commit()
@@ -250,13 +260,11 @@ def complete_upload():
                 conn.commit()
                 return jsonify({'error': 'Échec de l\'upload vers le stockage'}), 500
         else:
-            # Mode direct SFTP : le fichier est deja sur le storage
+            # Mode direct SFTP : le fichier est deja sur le storage (upload direct via paramiko)
             actual_size = row["size"]
-            # Fermer le handle SFTP ouvert pour ce fichier
-            try:
-                storage.close_handle(remote_path)
-            except Exception:
-                pass
+            # Marquer tous les chunks comme recus (l'upload direct ne passe pas par /chunk)
+            conn.execute("UPDATE file_uploads SET received_chunks = total_chunks WHERE upload_id = ?", (upload_id,))
+            conn.commit()
 
         # Marquer comme complete
         # Store fingerprint for future deduplication
