@@ -21,7 +21,7 @@ import secrets
 from context import *
 from storage import get_storage, StorageBackend
 
-CHUNK_SIZE = 5 * 1024 * 1024  # 5 MB par chunk
+CHUNK_SIZE = 25 * 1024 * 1024  # 25 MB par chunk
 MAX_FILE_SIZE = 10 * 1024 * 1024 * 1024  # 10 GB max
 TEMP_DIR = tempfile.gettempdir() + "/fria_uploads"
 os.makedirs(TEMP_DIR, exist_ok=True)
