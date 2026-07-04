@@ -1254,6 +1254,52 @@
             };
           }
 
+          // ── Conflict resolution modal ──
+          function showConflictModal(fileName, localInfo, remoteInfo) {
+            return new Promise(function(resolve) {
+              var modal = document.createElement("div");
+              modal.style.cssText = "position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#1e1e24;border-radius:12px;box-shadow:0 16px 48px rgba(0,0,0,0.6);width:440px;z-index:100002;padding:20px;";
+              modal.innerHTML =
+                '<div style="font-size:16px;font-weight:600;color:#fbbf24;margin-bottom:12px;">\u26a0\ufe0f Conflit de model</div>' +
+                '<div style="font-size:13px;color:#ccc;margin-bottom:8px;">Un model local avec le m\u00eame nom existe mais avec un contenu diff\u00e9rent :</div>' +
+                '<div style="background:#2a2a2e;padding:10px;border-radius:6px;margin-bottom:12px;font-size:12px;color:#aaa;font-family:monospace;">' +
+                '<div>\ud83d\udcc1 <b style="color:#e2e8f0;">' + esc(fileName) + '</b></div>' +
+                '<div style="margin-top:4px;">Local: ' + (localInfo.size/1048576).toFixed(1) + ' MB (' + (localInfo.path || 'chemin inconnu') + ')</div>' +
+                '<div>Server: ' + (remoteInfo.size/1048576).toFixed(1) + ' MB</div>' +
+                '</div>' +
+                '<div style="display:flex;flex-direction:column;gap:8px;">' +
+                '<button id="conflict-overwrite" style="padding:10px;border:1px solid #f59e0b;border-radius:6px;background:transparent;color:#f59e0b;font-size:13px;cursor:pointer;">\u2705 \u00c9craser le fichier local</button>' +
+                '<button id="conflict-suffix" style="padding:10px;border:1px solid #6366f1;border-radius:6px;background:transparent;color:#6366f1;font-size:13px;cursor:pointer;">\u2795 T\u00e9l\u00e9charger avec un autre nom</button>' +
+                '<button id="conflict-keep" style="padding:10px;border:1px solid #34d399;border-radius:6px;background:transparent;color:#34d399;font-size:13px;cursor:pointer;">\ud83d\udd0d Garder le model local (skip)</button>' +
+                '</div>';
+              document.body.appendChild(modal);
+
+              modal.querySelector("#conflict-overwrite").onclick = function() {
+                modal.remove();
+                resolve({action: 'overwrite', newName: fileName});
+              };
+              modal.querySelector("#conflict-suffix").onclick = function() {
+                // Generate suffix name: model_2.safetensors
+                var dotIdx = fileName.lastIndexOf('.');
+                var base = dotIdx > 0 ? fileName.substring(0, dotIdx) : fileName;
+                var ext = dotIdx > 0 ? fileName.substring(dotIdx) : '';
+                var suffixName = base + '_2' + ext;
+                // Check if _2 already exists, try _3, _4, etc.
+                var counter = 2;
+                while (localFilesFlat[suffixName]) {
+                  counter++;
+                  suffixName = base + '_' + counter + ext;
+                }
+                modal.remove();
+                resolve({action: 'suffix', newName: suffixName});
+              };
+              modal.querySelector("#conflict-keep").onclick = function() {
+                modal.remove();
+                resolve({action: 'keep', newName: fileName});
+              };
+            });
+          }
+
           // ── Build model name map and apply to workflow ──
           function buildNameMap(allDeps, downloadResults) {
             var nameMap = {};
@@ -1351,9 +1397,18 @@
               var toDownload = [];
               var downloadResults = {};
 
-              // Fetch all local model files for size comparison
+              // Fetch all local model files for size comparison + conflict detection
               var localFiles = await getLocalModelFiles();
               var localBySize = {};
+              var localFilesFlat = {};  // name → {name, path, size}
+              for (var cat in localFiles) {
+                for (var fi = 0; fi < localFiles[cat].length; fi++) {
+                  var lf = localFiles[cat][fi];
+                  if (!localBySize[lf.size]) localBySize[lf.size] = [];
+                  localBySize[lf.size].push(lf);
+                  localFilesFlat[lf.name] = lf;
+                }
+              }
               for (var cat in localFiles) {
                 for (var fi = 0; fi < localFiles[cat].length; fi++) {
                   var lf = localFiles[cat][fi];
@@ -1386,26 +1441,18 @@
                 if (!newPath) newPath = origName;
                 var modelType = dtype === 'lora' ? 'lora' : (cb.dataset.modelType || 'model');
 
+                // Get server fingerprint + size for this upload
+                var serverFp = null;
+                try {
+                  var fpResp = await fetch(getApiUrl() + '/files/' + uploadId + '/fingerprint', { headers: apiHeaders() });
+                  if (fpResp.ok) serverFp = await fpResp.json();
+                } catch(e) {}
+                var depSize = serverFp ? (serverFp.size || 0) : 0;
+
                 // Check if a local file with the same size already exists, then verify by fingerprint
-                var depSize = 0;
-                for (var mi = 0; mi < allDeps.models.length; mi++) {
-                  if (allDeps.models[mi].name === origName) { depSize = allDeps.models[mi].size || 0; break; }
-                }
-                if (!depSize) {
-                  for (var li = 0; li < allDeps.loras.length; li++) {
-                    if (allDeps.loras[li].name === origName) { depSize = allDeps.loras[li].size || 0; break; }
-                  }
-                }
                 var alreadyLocal = false;
                 if (depSize > 0 && localBySize[depSize]) {
                   var candidates = localBySize[depSize];
-                  // Get server fingerprint for this upload
-                  var serverFp = null;
-                  try {
-                    var fpResp = await fetch(getApiUrl() + '/files/' + uploadId + '/fingerprint', { headers: apiHeaders() });
-                    if (fpResp.ok) serverFp = await fpResp.json();
-                  } catch(e) {}
-
                   for (var ci = 0; ci < candidates.length; ci++) {
                     var match = false;
                     if (serverFp && serverFp.head && serverFp.tail) {
@@ -1429,6 +1476,37 @@
                 }
                 if (alreadyLocal) continue;
 
+                // Check for name conflict: a local file with the same name exists but different content
+                if (localFilesFlat[newPath]) {
+                  var localFile = localFilesFlat[newPath];
+                  var isDifferent = true;
+                  // If we have server fingerprint, verify
+                  if (serverFp && serverFp.head && serverFp.tail) {
+                    var localFp2 = await getLocalFingerprint(localFile.path);
+                    if (localFp2 && localFp2.head === serverFp.head && localFp2.tail === serverFp.tail) {
+                      isDifferent = false;  // Same content, already handled above
+                    }
+                  }
+                  if (isDifferent) {
+                    // Conflict! Ask the user
+                    statusEl.textContent = "R\u00e9solution du conflit: " + esc(newPath) + "...";
+                    var conflictResult = await showConflictModal(newPath,
+                      {size: localFile.size, path: localFile.name},
+                      {size: depSize}
+                    );
+                    if (conflictResult.action === 'keep') {
+                      // Skip download, use local file
+                      downloadResults[origName] = newPath;
+                      console.log('[FR.IA] Conflict resolved: keep local for ' + origName);
+                      continue;
+                    } else if (conflictResult.action === 'suffix') {
+                      newPath = conflictResult.newName;
+                      console.log('[FR.IA] Conflict resolved: suffix → ' + newPath);
+                    }
+                    // If 'overwrite', keep newPath as is
+                  }
+                }
+
                 toDownload.push({
                   upload_id: uploadId, origName: origName, newName: newPath,
                   type: modelType,
@@ -1444,14 +1522,17 @@
                 var MAX_PARALLEL = 2;
                 var dlQueue = toDownload.slice();
                 var dlActive = 0;
-                var dlIndex = 0;
+
+                // Afficher toutes les lignes immediatement (meme en attente)
+                for (var di = 0; di < dlQueue.length; di++) {
+                  dlPanel.addRow(dlQueue[di].newName, 0, dlQueue[di].upload_id);
+                }
 
                 function startNext() {
                   while (dlActive < MAX_PARALLEL && dlQueue.length > 0) {
                     var item = dlQueue.shift();
                     dlActive++;
-                    dlPanel.addRow(item.newName, 0, item.upload_id);
-                    (function(it, idx) {
+                    (function(it) {
                       fetch('/api/fria/models/download', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -1479,7 +1560,7 @@
                         dlActive--;
                         startNext();
                       });
-                    })(item, dlIndex++);
+                    })(item);
                   }
                 }
                 startNext();
