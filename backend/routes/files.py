@@ -350,9 +350,8 @@ def download_info(upload_id):
 
     storage = get_storage()
     if type(storage).__name__ == 'SFTPStorage':
-        # Verifier que le fichier existe sur SFTP
-        if not storage.exists(row['final_path']):
-            return jsonify({'error': f'Fichier introuvable sur le stockage: {row["final_path"]}'}), 404
+        # Pas de verification d'existence ici (SFTP stat = round-trip lent)
+        # Si le fichier n'existe pas, sftp.get() cote ComfyUI le dira
         return jsonify({
             'sftp': {
                 'host': storage.host,
