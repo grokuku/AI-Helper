@@ -45,33 +45,36 @@ def _get_node_types_from_sys_modules():
     Parcourt sys.modules pour trouver les modules charges dans
     custom_nodes/ qui ont un attribut NODE_CLASS_MAPPINGS.
     Retourne {folder_name: [node_type1, ...]}.
-    Cette approche ne depend pas de inspect.getmodule() qui echoue
-    sur certaines classes ComfyUI (built-in, wrappers, etc.).
+    Methode 1: scan sys.modules pour NODE_CLASS_MAPPINGS.
+    Methode 2: utilise class.__module__ depuis le registre global ComfyUI.
     """
     result = {}
-    try:
-        import sys as _sys
+    import sys as _sys
 
+    # Methode 1: scan sys.modules pour les modules avec NODE_CLASS_MAPPINGS
+    try:
         for mod_name, mod in _sys.modules.items():
             try:
-                if not hasattr(mod, 'NODE_CLASS_MAPPINGS'):
+                mapping = getattr(mod, 'NODE_CLASS_MAPPINGS', None)
+                if not isinstance(mapping, dict):
                     continue
                 filepath = getattr(mod, '__file__', None)
                 if not filepath:
+                    # Essayer __path__ pour les packages
+                    mod_path = getattr(mod, '__path__', None)
+                    if mod_path:
+                        try:
+                            filepath = list(mod_path)[0]
+                        except Exception:
+                            continue
+                if not filepath:
                     continue
-                # Normaliser
-                filepath = os.path.normpath(filepath)
-                # Chercher custom_nodes dans le chemin
+                filepath = os.path.normpath(str(filepath))
+                if 'custom_nodes' not in filepath:
+                    continue
                 parts = filepath.split('custom_nodes')
-                if len(parts) < 2:
-                    continue
-                # Le nom du dossier
                 sub = parts[1].lstrip(os.sep).split(os.sep)[0]
                 if not sub or sub.startswith('.'):
-                    continue
-                # Extraire les types
-                mapping = mod.NODE_CLASS_MAPPINGS
-                if not isinstance(mapping, dict):
                     continue
                 if sub not in result:
                     result[sub] = []
@@ -81,7 +84,46 @@ def _get_node_types_from_sys_modules():
             except Exception:
                 continue
     except Exception as e:
-        logging.warning(f"[FR.IA] _get_node_types_from_sys_modules error: {e}")
+        logging.warning(f"[FR.IA] sys.modules scan error: {e}")
+
+    # Methode 2: utilise class.__module__ depuis le registre global de ComfyUI
+    # Cette methode fonctionne meme si le pack construit NODE_CLASS_MAPPINGS dynamiquement
+    try:
+        import nodes as _comfy_nodes
+        global_mapping = getattr(_comfy_nodes, 'NODE_CLASS_MAPPINGS', {})
+        for node_type, node_class in global_mapping.items():
+            try:
+                module_name = getattr(node_class, '__module__', None)
+                if not module_name:
+                    continue
+                mod = _sys.modules.get(module_name)
+                if not mod:
+                    continue
+                filepath = getattr(mod, '__file__', None)
+                if not filepath:
+                    mod_path = getattr(mod, '__path__', None)
+                    if mod_path:
+                        try:
+                            filepath = list(mod_path)[0]
+                        except Exception:
+                            continue
+                if not filepath:
+                    continue
+                filepath = os.path.normpath(str(filepath))
+                if 'custom_nodes' not in filepath:
+                    continue
+                parts = filepath.split('custom_nodes')
+                sub = parts[1].lstrip(os.sep).split(os.sep)[0]
+                if not sub or sub.startswith('.'):
+                    continue
+                if sub not in result:
+                    result[sub] = []
+                if isinstance(node_type, str) and node_type not in result[sub]:
+                    result[sub].append(node_type)
+            except Exception:
+                continue
+    except Exception as e:
+        logging.warning(f"[FR.IA] comfy registry scan error: {e}")
 
     return result
 
@@ -132,21 +174,31 @@ def _extract_node_types(node_dir):
         with open(init_file, "r", encoding="utf-8", errors="ignore") as f:
             source = f.read()
         tree = ast.parse(source)
+        keys = []
         for node in ast.walk(tree):
+            # Cas 1: NODE_CLASS_MAPPINGS = {...}
             if isinstance(node, ast.Assign):
                 for target in node.targets:
                     if isinstance(target, ast.Name) and target.id == 'NODE_CLASS_MAPPINGS':
                         if isinstance(node.value, ast.Dict):
-                            keys = []
                             for k in node.value.keys:
                                 if isinstance(k, ast.Constant) and isinstance(k.value, str):
                                     keys.append(k.value)
-                            return keys
-        return []
+            # Cas 2: from .module import NODE_CLASS_MAPPINGS (on ne peut pas resoudre, mais on sait que ca existe)
+            # Cas 3: NODE_CLASS_MAPPINGS.update({...})
+            if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
+                func = node.value.func
+                if (isinstance(func, ast.Attribute) and
+                    isinstance(func.value, ast.Name) and
+                    func.value.id == 'NODE_CLASS_MAPPINGS' and
+                    func.attr == 'update'):
+                    if node.value.args and isinstance(node.value.args[0], ast.Dict):
+                        for k in node.value.args[0].keys:
+                            if isinstance(k, ast.Constant) and isinstance(k.value, str):
+                                keys.append(k.value)
+        return keys
     except Exception as e:
         logging.warning(f"[FR.IA] AST parse failed for {folder_name}: {e}")
-        return []
-    except Exception:
         return []
 
 

@@ -1033,7 +1033,8 @@
                     '<span style="flex:1;">' + esc(m.name) + (installed ? ' ✅ déjà installé' : '') + '</span>' +
                     '<span style="font-size:10px;color:#666;">' + (m.type || 'modèle') + '</span></label>';
                   if (!installed && hasFile) {
-                    var modelBase = (m.type || 'model') + 's/';
+                    var typeToFolder = {'checkpoint':'checkpoints','lora':'loras','vae':'vae','clip':'clip','clip_vision':'clip_vision','controlnet':'controlnet','unet':'unet','unet_gguf':'unet_gguf','upscale':'upscale_models','gligen':'gligen','hypernetwork':'hypernetworks','text_encoder':'text_encoders','style_model':'style_models','model':'checkpoints'};
+                    var modelBase = (typeToFolder[m.type] || 'checkpoints') + '/';
                     depHtml += '<div style="display:flex;align-items:center;gap:4px;margin-top:4px;">' +
                       '<span class="wf-dep-basepath" style="font-size:10px;color:#666;font-family:monospace;white-space:nowrap;flex-shrink:0;">' + esc(modelBase) + '</span>' +
                       '<input type="text" class="wf-dep-path" value="' + esc(m.name) + '" data-orig="' + esc(m.name) + '" style="flex:1;padding:4px 6px;border:1px solid #555;border-radius:3px;background:#2a2a2e;color:#ccc;font-size:11px;font-family:monospace;box-sizing:border-box;" placeholder="nom.ext">' +
