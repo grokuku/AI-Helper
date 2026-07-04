@@ -1029,7 +1029,7 @@
                   var hasFile = !!m.upload_id;
                   depHtml += '<div style="padding:6px 10px;border-bottom:1px solid #3a3a3e;font-size:12px;color:' + (installed ? '#34d399' : '#ccc') + ';">' +
                     '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;">' +
-                    '<input type="checkbox" class="wf-dep-cb"' + (installed ? '' : ' checked') + ' data-type="model" data-name="' + esc(m.name) + '" ' + (hasFile ? 'data-upload-id="' + esc(m.upload_id) + '"' : '') + ' style="accent-color:#6366f1;">' +
+                    '<input type="checkbox" class="wf-dep-cb"' + (installed ? '' : ' checked') + ' data-type="model" data-model-type="' + esc(m.type || 'model') + '" data-name="' + esc(m.name) + '" ' + (hasFile ? 'data-upload-id="' + esc(m.upload_id) + '"' : '') + ' style="accent-color:#6366f1;">' +
                     '<span style="flex:1;">' + esc(m.name) + (installed ? ' ✅ déjà installé' : '') + '</span>' +
                     '<span style="font-size:10px;color:#666;">' + (m.type || 'modèle') + '</span></label>';
                   if (!installed && hasFile) {
@@ -1332,7 +1332,7 @@
                 if (!newPath) newPath = origName;
                 toDownload.push({
                   upload_id: uploadId, origName: origName, newName: newPath,
-                  type: dtype === 'lora' ? 'lora' : 'model',
+                  type: dtype === 'lora' ? 'lora' : (cb.dataset.modelType || 'model'),
                 });
                 downloadResults[origName] = newPath;
               }
