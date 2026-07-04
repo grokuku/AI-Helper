@@ -286,6 +286,7 @@
     // Upscale
     "UpscaleModelLoader":      { idx: 0, cat: "upscale" },
     "ImageUpscaleWithModel":   { idx: 0, cat: "upscale" },
+    "UpscaleImageHolaf":      { idx: 0, cat: "upscale" },
     // GLIGEN
     "GLIGENLoader":            { idx: 0, cat: "gligen" },
     // Hypernetwork
@@ -337,6 +338,18 @@
     var deps = { nodes: [], models: [], loras: [] };
     var seen = { nodes: {}, models: {}, loras: {} };
 
+    // Recuperer les fichiers locaux pour determiner le vrai dossier de chaque model
+    var localModelFiles = await getLocalModelFiles();
+    var localFileToCat = {};  // filename → category (ex: "upscale_models")
+    var localFileByName = {};  // filename → {name, path, size}
+    for (var cat in localModelFiles) {
+      for (var fi = 0; fi < localModelFiles[cat].length; fi++) {
+        var lf = localModelFiles[cat][fi];
+        localFileToCat[lf.name] = cat;
+        localFileByName[lf.name] = lf;
+      }
+    }
+
     // Recuperer les packs installes pour trouver le git URL via .git/config
     var installedPacks = await getInstalledCustomNodes();
     var installedByName = {};
@@ -350,12 +363,26 @@
         var lower = wv.toLowerCase();
         for (var ei = 0; ei < MODEL_EXTENSIONS.length; ei++) {
           if (lower.endsWith(MODEL_EXTENSIONS[ei]) && !seen.models[wv] && !seen.loras[wv]) {
-            if (nodeType.toLowerCase().indexOf("lora") >= 0) {
+            var ntLower = nodeType.toLowerCase();
+            if (ntLower.indexOf("lora") >= 0) {
               seen.loras[wv] = true;
               deps.loras.push({ name: wv, type: "lora" });
             } else {
+              // Determiner le type depuis le dossier local du fichier
+              var realCat = localFileToCat[wv];
+              // Mapper le dossier ComfyUI vers un type court
+              var catToType = {
+                "checkpoints": "checkpoint", "loras": "lora", "vae": "vae",
+                "clip": "clip", "clip_vision": "clip_vision", "controlnet": "controlnet",
+                "unet": "unet", "unet_gguf": "unet_gguf", "upscale_models": "upscale",
+                "gligen": "gligen", "hypernetworks": "hypernetwork",
+                "text_encoders": "text_encoder", "style_models": "style_model",
+                "embeddings": "embedding", "configs": "config",
+                "diffusion_models": "unet", "bbxe/models": "model",
+              };
+              var modelType = (realCat && catToType[realCat]) ? catToType[realCat] : "model";
               seen.models[wv] = true;
-              deps.models.push({ name: wv, type: "model" });
+              deps.models.push({ name: wv, type: modelType, size: localFileByName[wv] ? localFileByName[wv].size : 0 });
             }
             break;
           }
@@ -414,7 +441,7 @@
           } else {
             if (!seen.models[filename]) {
               seen.models[filename] = true;
-              deps.models.push({ name: filename, type: loader.cat });
+              deps.models.push({ name: filename, type: loader.cat, size: localFileByName[filename] ? localFileByName[filename].size : 0 });
             }
           }
         }
