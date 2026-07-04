@@ -431,6 +431,23 @@ if _routes is not None:
                 _log.exception(f"[FR.IA] upload-progress error: {e}")
                 return _aio_web.json_response({"error": str(e)}, status=500)
 
+        @_routes.post("/api/fria/models/fingerprint")
+        async def _fria_fingerprint_model(request):
+            try:
+                body = await request.json()
+                filepath = body.get("path", "")
+                import os as _os
+                if not filepath or not _os.path.isfile(filepath):
+                    return _aio_web.json_response({"error": "path required and must exist"}, status=400)
+                fp = _model_mgr_mod._compute_fingerprint(filepath)
+                if fp:
+                    return _aio_web.json_response(fp)
+                return _aio_web.json_response({"error": "fingerprint failed"}, status=500)
+            except Exception as e:
+                import logging as _log
+                _log.exception(f"[FR.IA] fingerprint error: {e}")
+                return _aio_web.json_response({"error": str(e)}, status=500)
+
         @_routes.get("/api/fria/models/download/progress")
         async def _fria_download_progress(request):
             try:

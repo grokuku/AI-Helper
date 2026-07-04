@@ -375,6 +375,29 @@ def download_info(upload_id):
         })
 
 
+@app.route('/api/files/<upload_id>/fingerprint', methods=['GET'])
+def get_fingerprint(upload_id):
+    """Retourne le fingerprint (head/tail/size) d'un fichier uploadé."""
+    guard = _login_required()
+    if guard:
+        return guard
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT size, fingerprint_head, fingerprint_tail FROM file_uploads WHERE upload_id = ?",
+            (upload_id,)
+        ).fetchone()
+        if not row:
+            return jsonify({'error': 'Upload introuvable'}), 404
+        return jsonify({
+            'size': row['size'],
+            'head': row['fingerprint_head'] or '',
+            'tail': row['fingerprint_tail'] or '',
+        })
+    finally:
+        conn.close()
+
+
 @app.route('/api/files/<upload_id>/download', methods=['GET'])
 def download_file(upload_id):
     """Download un fichier depuis le storage → streaming HTTP vers le client."""

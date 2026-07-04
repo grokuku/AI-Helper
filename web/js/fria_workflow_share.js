@@ -1033,7 +1033,11 @@
                     '<span style="flex:1;">' + esc(m.name) + (installed ? ' ✅ déjà installé' : '') + '</span>' +
                     '<span style="font-size:10px;color:#666;">' + (m.type || 'modèle') + '</span></label>';
                   if (!installed && hasFile) {
-                    depHtml += '<input type="text" class="wf-dep-path" value="' + esc(m.name) + '" data-orig="' + esc(m.name) + '" style="width:100%;margin-top:4px;padding:4px 6px;border:1px solid #555;border-radius:3px;background:#2a2a2e;color:#ccc;font-size:11px;font-family:monospace;box-sizing:border-box;" placeholder="chemin/nom.ext">';
+                    var modelBase = (m.type || 'model') + 's/';
+                    depHtml += '<div style="display:flex;align-items:center;gap:4px;margin-top:4px;">' +
+                      '<span class="wf-dep-basepath" style="font-size:10px;color:#666;font-family:monospace;white-space:nowrap;flex-shrink:0;">' + esc(modelBase) + '</span>' +
+                      '<input type="text" class="wf-dep-path" value="' + esc(m.name) + '" data-orig="' + esc(m.name) + '" style="flex:1;padding:4px 6px;border:1px solid #555;border-radius:3px;background:#2a2a2e;color:#ccc;font-size:11px;font-family:monospace;box-sizing:border-box;" placeholder="nom.ext">' +
+                      '</div>';
                   }
                   depHtml += '</div>';
                 }
@@ -1050,7 +1054,10 @@
                     '<input type="checkbox" class="wf-dep-cb"' + (installed ? '' : ' checked') + ' data-type="lora" data-name="' + esc(l.name) + '" ' + (hasFile ? 'data-upload-id="' + esc(l.upload_id) + '"' : '') + ' style="accent-color:#6366f1;">' +
                     '<span style="flex:1;">' + esc(l.name) + (installed ? ' ✅ déjà installé' : '') + '</span></label>';
                   if (!installed && hasFile) {
-                    depHtml += '<input type="text" class="wf-dep-path" value="' + esc(l.name) + '" data-orig="' + esc(l.name) + '" style="width:100%;margin-top:4px;padding:4px 6px;border:1px solid #555;border-radius:3px;background:#2a2a2e;color:#ccc;font-size:11px;font-family:monospace;box-sizing:border-box;" placeholder="chemin/nom.ext">';
+                    depHtml += '<div style="display:flex;align-items:center;gap:4px;margin-top:4px;">' +
+                      '<span class="wf-dep-basepath" style="font-size:10px;color:#666;font-family:monospace;white-space:nowrap;flex-shrink:0;">loras/</span>' +
+                      '<input type="text" class="wf-dep-path" value="' + esc(l.name) + '" data-orig="' + esc(l.name) + '" style="flex:1;padding:4px 6px;border:1px solid #555;border-radius:3px;background:#2a2a2e;color:#ccc;font-size:11px;font-family:monospace;box-sizing:border-box;" placeholder="nom.ext">' +
+                      '</div>';
                   }
                   depHtml += '</div>';
                 }
@@ -1095,7 +1102,7 @@
           // ── Download progress panel (reused for install) ──
           function createDownloadPanel(title) {
             var panel = document.createElement("div");
-            panel.style.cssText = "position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#1e1e24;border-radius:12px;box-shadow:0 16px 48px rgba(0,0,0,0.6);width:440px;max-height:70vh;z-index:99998;display:flex;flex-direction:column;overflow:hidden;";
+            panel.style.cssText = "position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#1e1e24;border-radius:12px;box-shadow:0 16px 48px rgba(0,0,0,0.6);width:440px;max-height:70vh;z-index:100001;display:flex;flex-direction:column;overflow:hidden;";
             var header = document.createElement("div");
             header.style.cssText = "padding:12px 16px;border-bottom:1px solid #333;font-size:14px;font-weight:600;color:#e2e8f0;cursor:grab;user-select:none;";
             header.textContent = title || "T\u00e9l\u00e9chargement";
@@ -1316,10 +1323,34 @@
                 }
               }
 
-              // 3. Collect models/loras to download
+              // 3. Collect models/loras to download (with local existence check)
               var cbs = detailBody.querySelectorAll(".wf-dep-cb:checked");
               var toDownload = [];
               var downloadResults = {};
+
+              // Fetch all local model files for size comparison
+              var localFiles = await getLocalModelFiles();
+              var localBySize = {};
+              for (var cat in localFiles) {
+                for (var fi = 0; fi < localFiles[cat].length; fi++) {
+                  var lf = localFiles[cat][fi];
+                  if (!localBySize[lf.size]) localBySize[lf.size] = [];
+                  localBySize[lf.size].push(lf);
+                }
+              }
+
+              // Helper: compute fingerprint of a local file via Python
+              async function getLocalFingerprint(path) {
+                try {
+                  var r = await fetch('/api/fria/models/fingerprint', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ path: path })
+                  });
+                  if (!r.ok) return null;
+                  return await r.json();
+                } catch(e) { return null; }
+              }
               for (var i = 0; i < cbs.length; i++) {
                 var cb = cbs[i];
                 var dtype = cb.dataset.type;
@@ -1330,9 +1361,54 @@
                 var pathInput = depDiv ? depDiv.querySelector('.wf-dep-path') : null;
                 var newPath = pathInput ? pathInput.value.trim() : origName;
                 if (!newPath) newPath = origName;
+                var modelType = dtype === 'lora' ? 'lora' : (cb.dataset.modelType || 'model');
+
+                // Check if a local file with the same size already exists, then verify by fingerprint
+                var depSize = 0;
+                for (var mi = 0; mi < allDeps.models.length; mi++) {
+                  if (allDeps.models[mi].name === origName) { depSize = allDeps.models[mi].size || 0; break; }
+                }
+                if (!depSize) {
+                  for (var li = 0; li < allDeps.loras.length; li++) {
+                    if (allDeps.loras[li].name === origName) { depSize = allDeps.loras[li].size || 0; break; }
+                  }
+                }
+                var alreadyLocal = false;
+                if (depSize > 0 && localBySize[depSize]) {
+                  var candidates = localBySize[depSize];
+                  // Get server fingerprint for this upload
+                  var serverFp = null;
+                  try {
+                    var fpResp = await fetch(getApiUrl() + '/files/' + uploadId + '/fingerprint', { headers: apiHeaders() });
+                    if (fpResp.ok) serverFp = await fpResp.json();
+                  } catch(e) {}
+
+                  for (var ci = 0; ci < candidates.length; ci++) {
+                    var match = false;
+                    if (serverFp && serverFp.head && serverFp.tail) {
+                      // Full fingerprint comparison: compute local fingerprint via Python
+                      var localFp = await getLocalFingerprint(candidates[ci].path);
+                      if (localFp && localFp.head === serverFp.head && localFp.tail === serverFp.tail) {
+                        match = true;
+                        console.log('[FR.IA] Fingerprint match: ' + origName + ' = ' + candidates[ci].name);
+                      }
+                    } else {
+                      // No server fingerprint — fallback to size match only
+                      match = true;
+                      console.log('[FR.IA] Size match (no server fingerprint): ' + origName + ' = ' + candidates[ci].name);
+                    }
+                    if (match) {
+                      alreadyLocal = true;
+                      downloadResults[origName] = candidates[ci].name;
+                      break;
+                    }
+                  }
+                }
+                if (alreadyLocal) continue;
+
                 toDownload.push({
                   upload_id: uploadId, origName: origName, newName: newPath,
-                  type: dtype === 'lora' ? 'lora' : (cb.dataset.modelType || 'model'),
+                  type: modelType,
                 });
                 downloadResults[origName] = newPath;
               }
