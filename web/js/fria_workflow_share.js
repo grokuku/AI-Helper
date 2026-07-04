@@ -337,17 +337,11 @@
     var deps = { nodes: [], models: [], loras: [] };
     var seen = { nodes: {}, models: {}, loras: {} };
 
-    // Recuperer les types de custom nodes installes depuis ComfyUI
+    // Recuperer les packs installes pour trouver le git URL via .git/config
     var installedPacks = await getInstalledCustomNodes();
-    var customTypeToUrl = {};
-    var customTypeToPack = {};
+    var installedByName = {};
     for (var pi = 0; pi < installedPacks.length; pi++) {
-      var pack = installedPacks[pi];
-      var types = pack.node_types || [];
-      for (var t = 0; t < types.length; t++) {
-        if (pack.git_url) customTypeToUrl[types[t]] = pack.git_url;
-        customTypeToPack[types[t]] = pack.name;
-      }
+      installedByName[installedPacks[pi].name] = installedPacks[pi];
     }
 
     // Helper recursif : scanne les widgets values (y compris subgraphs)
@@ -367,20 +361,44 @@
           }
         }
       } else if (Array.isArray(wv)) {
-        // Subgraph / widgets imbriques
         for (var si = 0; si < wv.length; si++) {
           _scanWidgetValue(wv[si], nodeType);
         }
       }
     }
 
+    // Detecter les packs custom via properties.aux_id / properties.cnr_id du JSON
+    var packMap = {};  // packId -> {name, url, node_types: []}
     for (var i = 0; i < nodes.length; i++) {
       var type = nodes[i].type || "";
       var widgets = nodes[i].widgets_values || [];
+      var props = nodes[i].properties || {};
+      var auxId = props.aux_id || "";
+      var cnrId = props.cnr_id || "";
 
-      // Custom nodes (skip UUID subgraph wrappers)
-      if (customTypeToPack[type] && !seen.nodes[type] && type.indexOf('-') < 0) {
-        seen.nodes[type] = true;
+      // Determiner le pack : aux_id (owner/repo) ou cnr_id (registry ID)
+      var packId = auxId || cnrId || "";
+      if (!packId || packId === "comfy-core") {
+        // Node natif — skip la detection de pack mais continue les models
+      } else {
+        // Extraire le nom du pack (derniere partie apres /)
+        var packName = packId.indexOf("/") >= 0 ? packId.split("/").pop() : packId;
+        var packKey = packId;  // cle unique = ID complet
+        if (!packMap[packKey]) {
+          // Chercher le git URL dans les packs installes
+          var gitUrl = "";
+          var installed = installedByName[packName];
+          if (installed && installed.git_url) {
+            gitUrl = installed.git_url;
+          } else if (auxId.indexOf("/") >= 0) {
+            // Construire l'URL GitHub depuis aux_id (owner/repo)
+            gitUrl = "https://github.com/" + auxId;
+          }
+          packMap[packKey] = { name: packName, url: gitUrl, node_types: [] };
+        }
+        if (type && type.indexOf("-") < 0 && packMap[packKey].node_types.indexOf(type) < 0) {
+          packMap[packKey].node_types.push(type);
+        }
       }
 
       // Models / LoRAs via les loaders connus
@@ -400,34 +418,17 @@
             }
           }
         }
-        // Verifier les autres widgets (VAE, CLIP etc.)
         for (var wi = 0; wi < widgets.length; wi++) {
           if (wi === loader.idx) continue;
           _scanWidgetValue(widgets[wi], type);
         }
       } else {
-        // Detection dynamique sur tous les widgets
         for (var wi = 0; wi < widgets.length; wi++) {
           _scanWidgetValue(widgets[wi], type);
         }
       }
     }
 
-    // Grouper les custom nodes par pack (git_url)
-    var packMap = {};
-    for (var i = 0; i < nodes.length; i++) {
-      var type = nodes[i].type || "";
-      if (!customTypeToPack[type]) continue;
-      var url = customTypeToUrl[type] || "";
-      var packName = customTypeToPack[type];
-      var key = url || "__unknown_" + packName;
-      if (!packMap[key]) {
-        packMap[key] = { name: packName, url: url, node_types: [] };
-      }
-      if (packMap[key].node_types.indexOf(type) < 0) {
-        packMap[key].node_types.push(type);
-      }
-    }
     deps.nodes = Object.keys(packMap).map(function(k) { return packMap[k]; });
 
     return deps;
@@ -609,10 +610,31 @@
       var deps = await detectDependencies(workflowJSON);
       var existingId = null;
 
+      // Recuperer le nom du workflow actif depuis toutes les sources possibles
+      var wfTitle = '';
+      try {
+        var _app = getApp();
+        wfTitle = workflowJSON?.extra?.title || workflowJSON?.title || workflowJSON?.name
+          || _app?.ui?.title || _app?.graph?.title
+          || _app?.workflowName || _app?.ui?.workflowName
+          || '';
+        // Fallback: tab name depuis le DOM (ComfyUI new UI)
+        if (!wfTitle) {
+          var tabEl = document.querySelector('.tab-name, .workflow-tab-name, .comfy-tab.active .tab-name');
+          if (tabEl) wfTitle = tabEl.textContent?.trim() || '';
+        }
+        // Fallback: document.title (souvent "WorkflowName - ComfyUI")
+        if (!wfTitle) {
+          var dt = document.title || '';
+          if (dt.includes(' - ')) dt = dt.split(' - ')[0];
+          if (dt && dt !== 'ComfyUI') wfTitle = dt;
+        }
+      } catch(e) {}
+
       container.innerHTML =
         '<div style="display:flex;flex-direction:column;gap:10px;">' +
         '<div><label style="font-size:11px;color:#888;display:block;margin-bottom:3px;">Nom *</label>' +
-        '<input id="wf-name" type="text" placeholder="Nom du workflow" value="' + esc(workflowJSON?.extra?.title || workflowJSON?.title || workflowJSON?.name || app?.ui?.title || app?.graph?.title || '') + '" style="width:100%;padding:6px 8px;border-radius:4px;border:1px solid #555;background:#3a3a3e;color:#ccc;font-size:13px;box-sizing:border-box;"></div>' +
+        '<input id="wf-name" type="text" placeholder="Nom du workflow" value="' + esc(wfTitle) + '" style="width:100%;padding:6px 8px;border-radius:4px;border:1px solid #555;background:#3a3a3e;color:#ccc;font-size:13px;box-sizing:border-box;"></div>' +
         '<div><label style="font-size:11px;color:#888;display:block;margin-bottom:3px;">Description</label>' +
         '<textarea id="wf-desc" rows="2" style="width:100%;padding:6px 8px;border-radius:4px;border:1px solid #555;background:#3a3a3e;color:#ccc;font-size:12px;box-sizing:border-box;resize:vertical;"></textarea></div>' +
         '<div><label style="font-size:11px;color:#888;display:block;margin-bottom:3px;">Tags (virgules)</label>' +
