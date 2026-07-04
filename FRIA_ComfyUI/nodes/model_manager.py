@@ -415,7 +415,7 @@ def download_model_from_server(upload_id, filename, file_type="model", dest_path
     # 1. Récupérer la config de download (SFTP direct ou HTTP fallback)
     try:
         info_resp = requests.get(f"{api_url}/files/{upload_id}/download-info",
-                                 headers=auth_headers, timeout=10)
+                                 headers=auth_headers, timeout=30)
         if not info_resp.ok:
             try: err_msg = info_resp.text[:200]
             except: err_msg = ''
