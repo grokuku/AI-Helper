@@ -69,10 +69,6 @@
     const DEFAULTS = {
         fontSize: 13,
         theme: "dark",
-        panel_x: null,
-        panel_y: null,
-        panel_width: 720,
-        panel_height: 420,
         panel_is_fullscreen: false,
     };
     const THEMES = {
@@ -116,9 +112,12 @@
         isOpen() { return !!this.panelEl && this.panelEl.style.display === "flex"; },
 
         show() {
-            if (!this.panelEl) { this._createPanel(); }
-            this.panelEl.style.display = "flex";
-            this._bringToFront();
+            if (!this.panelEl) {
+                this._createPanel();
+            } else {
+                this.panelEl.style.display = "flex";
+                if (this._m) this._m.bringToFront();
+            }
             this._connectIfNeeded();
         },
 
@@ -128,101 +127,122 @@
 
         // ── Build DOM (once) ─────────────────────────────────────────
         _createPanel() {
-            // ---- Panel root ----
-            const panel = document.createElement("div");
+            var self = this;
+
+            // ── Créer la modale v2 ──────────────────────────────────────────
+            var m = friaOpenModalV2({
+                title: "💻 FR.IA Terminal",
+                width: "700px",
+                height: "480px",
+                minWidth: "400px",
+                minHeight: "200px",
+                storageKey: "fria-modal-terminal",
+                persistSize: true,
+                persistPos: true,
+                closeOnEscape: false,
+                className: "fria-terminal-modal",
+                onClose: function () {
+                    panel.style.display = "none";
+                },
+            });
+
+            var panel = m.modal;
             panel.id = "fria-terminal-panel";
-            Object.assign(panel.style, {
-                position: "fixed",
-                display: "flex", flexDirection: "column",
-                background: "#1a1a1e",
-                border: "1px solid #444",
-                borderRadius: "8px",
-                boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
-                overflow: "hidden",
-                zIndex: "9999",
-                fontFamily: "sans-serif",
-                minWidth: "400px", minHeight: "200px",
-            });
 
-            // ---- Header ----
-            const header = document.createElement("div");
-            Object.assign(header.style, {
-                padding: "8px 12px", background: "#2a2a2e",
-                color: "#ccc", fontSize: "12px", fontWeight: "600",
-                display: "flex", alignItems: "center", gap: "8px",
-                cursor: "move", userSelect: "none",
-                borderBottom: "1px solid #444",
-            });
-            const title = document.createElement("span");
-            title.innerHTML = "💻 FR.IA Terminal";
-            title.style.flex = "1";
-            header.appendChild(title);
-
-            // Theme selector
-            const themeSelect = document.createElement("select");
-            Object.assign(themeSelect.style, {
-                padding: "2px 4px", background: "#3a3a3e", color: "#ccc",
-                border: "1px solid #555", borderRadius: "3px", fontSize: "11px",
-            });
-            Object.keys(THEMES).forEach(t => {
-                const o = document.createElement("option");
-                o.value = t; o.textContent = t;
-                themeSelect.appendChild(o);
-            });
-            themeSelect.value = this.settings.theme;
-            themeSelect.onchange = () => {
-                this.settings.theme = themeSelect.value;
-                saveSettings({ theme: themeSelect.value });
-                this._applyTheme();
-            };
-            header.appendChild(themeSelect);
-
-            // Font size controls
-            const mkBtn = (label, title, onClick) => {
-                const b = document.createElement("button");
-                b.textContent = label; b.title = title;
-                Object.assign(b.style, {
-                    padding: "2px 6px", background: "#3a3a3e", color: "#ccc",
-                    border: "1px solid #555", borderRadius: "3px",
-                    fontSize: "11px", cursor: "pointer",
-                });
-                b.onmouseenter = () => b.style.background = "#4a4a4e";
-                b.onmouseleave = () => b.style.background = "#3a3a3e";
-                b.onclick = onClick;
-                return b;
-            };
-            header.appendChild(mkBtn("A-", "Decrease font size", () => {
-                this.settings.fontSize = Math.max(8, this.settings.fontSize - 1);
-                saveSettings({ fontSize: this.settings.fontSize });
-                if (this.terminal) { this.terminal.options.fontSize = this.settings.fontSize; this._fit(); }
-            }));
-            header.appendChild(mkBtn("A+", "Increase font size", () => {
-                this.settings.fontSize = Math.min(28, this.settings.fontSize + 1);
-                saveSettings({ fontSize: this.settings.fontSize });
-                if (this.terminal) { this.terminal.options.fontSize = this.settings.fontSize; this._fit(); }
-            }));
-
-            // Fullscreen toggle
-            header.appendChild(mkBtn("⛶", "Toggle fullscreen", () => this._toggleFullscreen()));
-
-            // Close
-            const closeBtn = mkBtn("✕", "Close", () => this.hide());
-            closeBtn.onmouseenter = () => { closeBtn.style.background = "#a33"; };
-            closeBtn.onmouseleave = () => { closeBtn.style.background = "#3a3a3e"; };
-            header.appendChild(closeBtn);
-
-            panel.appendChild(header);
-
-            // ---- Body ----
-            const body = document.createElement("div");
+            // ── Styliser le body v2 pour le terminal ────────────────────────
+            var body = m.body;
             Object.assign(body.style, {
-                display: "flex", flexDirection: "column", flex: "1",
-                background: "#1a1a1e", overflow: "hidden",
+                padding: "0",
+                display: "flex",
+                flexDirection: "column",
+                overflow: "hidden",
+                background: "#1a1a1e",
             });
-            panel.appendChild(body);
 
+            // ── Header : ajouter les contrôles custom dans header-right ─────
+            var headerRight = panel.querySelector(".fria-modal-header-right");
+            if (headerRight) {
+                // Theme selector
+                var themeSelect = document.createElement("select");
+                Object.assign(themeSelect.style, {
+                    padding: "2px 4px", background: "#3a3a3e", color: "#ccc",
+                    border: "1px solid #555", borderRadius: "3px", fontSize: "11px",
+                });
+                Object.keys(THEMES).forEach(function (t) {
+                    var o = document.createElement("option");
+                    o.value = t;
+                    o.textContent = t;
+                    if (t === self.settings.theme) o.selected = true;
+                    themeSelect.appendChild(o);
+                });
+                themeSelect.addEventListener("change", function () {
+                    self.settings.theme = this.value;
+                    saveSettings({ theme: this.value });
+                    self._applyTheme();
+                });
+                headerRight.appendChild(themeSelect);
+
+                // Decrease font size
+                var fsDown = document.createElement("button");
+                fsDown.textContent = "A-";
+                fsDown.title = "Réduire la police";
+                Object.assign(fsDown.style, {
+                    background: "none", border: "none", color: "#999",
+                    cursor: "pointer", fontSize: "11px", padding: "0 4px",
+                });
+                fsDown.onclick = function () {
+                    self.settings.fontSize = Math.max(8, self.settings.fontSize - 1);
+                    saveSettings({ fontSize: self.settings.fontSize });
+                    if (self.terminal) {
+                        self.terminal.options.fontSize = self.settings.fontSize;
+                        self._fit();
+                    }
+                };
+                headerRight.appendChild(fsDown);
+
+                // Increase font size
+                var fsUp = document.createElement("button");
+                fsUp.textContent = "A+";
+                fsUp.title = "Agrandir la police";
+                Object.assign(fsUp.style, {
+                    background: "none", border: "none", color: "#999",
+                    cursor: "pointer", fontSize: "11px", padding: "0 4px",
+                });
+                fsUp.onclick = function () {
+                    self.settings.fontSize = Math.min(28, self.settings.fontSize + 1);
+                    saveSettings({ fontSize: self.settings.fontSize });
+                    if (self.terminal) {
+                        self.terminal.options.fontSize = self.settings.fontSize;
+                        self._fit();
+                    }
+                };
+                headerRight.appendChild(fsUp);
+
+                // Fullscreen toggle
+                var fsBtn = document.createElement("button");
+                fsBtn.textContent = "⛶";
+                fsBtn.title = "Plein écran";
+                Object.assign(fsBtn.style, {
+                    background: "none", border: "none", color: "#999",
+                    cursor: "pointer", fontSize: "11px", padding: "0 4px",
+                });
+                fsBtn.onclick = function () { self._toggleFullscreen(); };
+                headerRight.appendChild(fsBtn);
+            }
+
+            // ── Remplacer le bouton close v2 (cacher, pas détruire) ────────
+            var closeBtn = panel.querySelector(".fria-modal-close");
+            if (closeBtn) {
+                var newCloseBtn = closeBtn.cloneNode(true);
+                closeBtn.parentNode.replaceChild(newCloseBtn, closeBtn);
+                newCloseBtn.addEventListener("click", function () {
+                    panel.style.display = "none";
+                });
+            }
+
+            // ── Body : contenu du terminal ──────────────────────────────────
             // Warning banner
-            const warning = document.createElement("div");
+            var warning = document.createElement("div");
             Object.assign(warning.style, {
                 background: "#5a1a1a", color: "#ffcccc",
                 padding: "4px 8px", fontSize: "10px", lineHeight: "1.3",
@@ -232,173 +252,93 @@
             body.appendChild(warning);
 
             // xterm container
-            const xtermContainer = document.createElement("div");
+            var xtermContainer = document.createElement("div");
             Object.assign(xtermContainer.style, {
-                flex: "1", background: THEMES[this.settings.theme]?.background || "#0a0a0a",
+                flex: "1",
+                background: (THEMES[self.settings.theme] || THEMES.dark).background,
                 padding: "4px", overflow: "hidden", boxSizing: "border-box",
             });
             body.appendChild(xtermContainer);
-            this.xtermContainer = xtermContainer;
-            this.contentEl = body;
+            self.xtermContainer = xtermContainer;
+            self.contentEl = body;
 
             // Status bar
-            const statusBar = document.createElement("div");
+            var statusBar = document.createElement("div");
             Object.assign(statusBar.style, {
                 padding: "4px 8px", background: "#2a2a2e", color: "#888",
                 fontSize: "11px", display: "flex", gap: "8px", alignItems: "center",
                 borderTop: "1px solid #444",
             });
-            const statusText = document.createElement("span");
+            var statusText = document.createElement("span");
             statusText.textContent = "Disconnected";
             statusText.id = "fria-terminal-status";
             statusBar.appendChild(statusText);
-            const spacer = document.createElement("span");
+            var spacer = document.createElement("span");
             spacer.style.flex = "1";
             statusBar.appendChild(spacer);
-            const connectBtn = document.createElement("button");
+            var connectBtn = document.createElement("button");
             connectBtn.textContent = "🔌 Connect";
             Object.assign(connectBtn.style, {
                 padding: "2px 10px", background: "#6366f1", color: "white",
                 border: "none", borderRadius: "3px", fontSize: "11px",
                 fontWeight: "600", cursor: "pointer",
             });
-            connectBtn.onmouseenter = () => connectBtn.style.background = "#5558e8";
-            connectBtn.onmouseleave = () => connectBtn.style.background = "#6366f1";
-            connectBtn.onclick = () => this._toggleConnection();
+            connectBtn.onmouseenter = function () { connectBtn.style.background = "#5558e8"; };
+            connectBtn.onmouseleave = function () { connectBtn.style.background = "#6366f1"; };
+            connectBtn.onclick = function () { self._toggleConnection(); };
             statusBar.appendChild(connectBtn);
             body.appendChild(statusBar);
-            this._statusText = statusText;
-            this._connectBtn = connectBtn;
+            self._statusText = statusText;
+            self._connectBtn = connectBtn;
 
-            // Resize handle (bottom-right)
-            const resizeHandle = document.createElement("div");
-            Object.assign(resizeHandle.style, {
-                position: "absolute", right: "0", bottom: "0",
-                width: "16px", height: "16px", cursor: "nwse-resize",
-                background: "linear-gradient(135deg, transparent 50%, #666 50%, #666 60%, transparent 60%, transparent 70%, #666 70%, #666 80%, transparent 80%)",
-            });
-            panel.appendChild(resizeHandle);
-
-            // ---- Position & size from settings ----
-            this._applyPosition(panel);
-            this._applySize(panel);
-
-            // ---- Drag (header only) ----
-            this._makeDraggable(panel, header);
-
-            // ---- Resize (handle only) ----
-            this._makeResizable(panel, resizeHandle);
-
-            // ---- Double-click header = fullscreen ----
-            header.ondblclick = (e) => {
-                if (e.target === header || e.target === title) this._toggleFullscreen();
+            // ── Override m.close : cacher, pas détruire ────────────────────
+            m.close = function () {
+                panel.style.display = "none";
             };
 
-            // ---- Bring to front on click ----
-            panel.addEventListener("mousedown", () => this._bringToFront());
+            // ── Double-click header = fullscreen ────────────────────────────
+            var header = m.header;
+            header.ondblclick = function (e) {
+                if (e.target.classList.contains("fria-modal-title") || e.target === header) {
+                    self._toggleFullscreen();
+                }
+            };
 
-            document.body.appendChild(panel);
-            this.panelEl = panel;
+            // ── Références ──────────────────────────────────────────────────
+            self.panelEl = panel;
+            self._m = m;
+
+            // ── Appliquer le thème initial ──────────────────────────────────
+            self._applyTheme();
         },
 
-        // ── Position / size / fullscreen ─────────────────────────────
-        _applyPosition(panel) {
-            const s = this.settings;
-            if (s.panel_x !== null && s.panel_y !== null) {
-                panel.style.left = s.panel_x + "px";
-                panel.style.top = s.panel_y + "px";
-                panel.style.right = "auto";
-            } else {
-                // First-time centering
-                panel.style.left = "50%";
-                panel.style.top = "50%";
-                panel.style.transform = "translate(-50%, -50%)";
-            }
-        },
-        _applySize(panel) {
-            panel.style.width = this.settings.panel_width + "px";
-            panel.style.height = this.settings.panel_height + "px";
-        },
+        // ── Fullscreen ───────────────────────────────────────────────
         _toggleFullscreen() {
+            var panel = this.panelEl;
+            if (!panel) return;
+
             this.settings.panel_is_fullscreen = !this.settings.panel_is_fullscreen;
             saveSettings({ panel_is_fullscreen: this.settings.panel_is_fullscreen });
+
             if (this.settings.panel_is_fullscreen) {
-                this.panelEl.style.left = "0";
-                this.panelEl.style.top = "0";
-                this.panelEl.style.width = "100vw";
-                this.panelEl.style.height = "100vh";
-                this.panelEl.style.transform = "none";
-            } else {
-                this._applyPosition(this.panelEl);
-                this._applySize(this.panelEl);
-            }
-            setTimeout(() => this._fit(), 50);
-        },
-        _bringToFront() {
-            // Find highest z-index among sibling panels (e.g. Holaf's), go above.
-            let maxZ = 9998;
-            document.querySelectorAll("body > div").forEach(el => {
-                const z = parseInt(getComputedStyle(el).zIndex) || 0;
-                if (el !== this.panelEl && z > maxZ) maxZ = z;
-            });
-            this.panelEl.style.zIndex = String(maxZ + 1);
-        },
-
-        // ── Drag ──────────────────────────────────────────────────────
-        _makeDraggable(panel, handle) {
-            let dragging = false, startX, startY, startLeft, startTop;
-            handle.addEventListener("mousedown", (e) => {
-                if (e.target.tagName === "BUTTON" || e.target.tagName === "SELECT") return;
-                dragging = true;
-                startX = e.clientX; startY = e.clientY;
-                const rect = panel.getBoundingClientRect();
-                startLeft = rect.left; startTop = rect.top;
+                panel.style.left = "0";
+                panel.style.top = "0";
+                panel.style.width = "100vw";
+                panel.style.height = "100vh";
                 panel.style.transform = "none";
-                e.preventDefault();
-            });
-            document.addEventListener("mousemove", (e) => {
-                if (!dragging) return;
-                const dx = e.clientX - startX, dy = e.clientY - startY;
-                const newLeft = startLeft + dx, newTop = startTop + dy;
-                panel.style.left = Math.max(0, newLeft) + "px";
-                panel.style.top = Math.max(0, newTop) + "px";
-            });
-            document.addEventListener("mouseup", () => {
-                if (!dragging) return;
-                dragging = false;
-                if (this.settings.panel_is_fullscreen) return;
-                const rect = panel.getBoundingClientRect();
-                saveSettings({ panel_x: Math.round(rect.left), panel_y: Math.round(rect.top) });
-            });
-        },
-
-        // ── Resize ────────────────────────────────────────────────────
-        _makeResizable(panel, handle) {
-            let resizing = false, startX, startY, startW, startH;
-            handle.addEventListener("mousedown", (e) => {
-                if (this.settings.panel_is_fullscreen) return;
-                resizing = true;
-                startX = e.clientX; startY = e.clientY;
-                startW = panel.offsetWidth; startH = panel.offsetHeight;
-                e.preventDefault(); e.stopPropagation();
-            });
-            document.addEventListener("mousemove", (e) => {
-                if (!resizing) return;
-                const w = Math.max(400, startW + (e.clientX - startX));
-                const h = Math.max(200, startH + (e.clientY - startY));
-                panel.style.width = w + "px";
-                panel.style.height = h + "px";
-            });
-            document.addEventListener("mouseup", () => {
-                if (!resizing) return;
-                resizing = false;
-                if (this.settings.panel_is_fullscreen) return;
-                saveSettings({
-                    panel_width: panel.offsetWidth,
-                    panel_height: panel.offsetHeight,
-                });
-                this._fit();
-            });
+                panel.style.borderRadius = "0";
+                panel.style.border = "none";
+            } else {
+                // Reset : la v2 reprend le contrôle via ses valeurs inline
+                panel.style.left = "";
+                panel.style.top = "";
+                panel.style.width = "";
+                panel.style.height = "";
+                panel.style.transform = "";
+                panel.style.borderRadius = "";
+                panel.style.border = "";
+            }
+            setTimeout(function () { this._fit(); }.bind(this), 50);
         },
 
         // ── xterm + WebSocket ─────────────────────────────────────────

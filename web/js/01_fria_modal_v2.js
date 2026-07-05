@@ -103,17 +103,18 @@
             "  font-size: 13px;",
             "  line-height: 1.5;",
             "}",
-            /* Poignée de redimensionnement */
-            ".fria-modal-resize-handle {",
-            "  position: absolute;",
-            "  right: 0;",
-            "  bottom: 0;",
-            "  width: 14px;",
-            "  height: 14px;",
-            "  cursor: nwse-resize;",
-            "  background: transparent;",
-            "  z-index: 1;",
-            "}",
+            /* Poignées de redimensionnement */
+            ".fria-modal-rh { position: absolute; z-index: 2; }",
+            /* Coins */
+            ".fria-modal-rh-nw { top: -4px; left: -4px; width: 12px; height: 12px; cursor: nw-resize; }",
+            ".fria-modal-rh-ne { top: -4px; right: -4px; width: 12px; height: 12px; cursor: ne-resize; }",
+            ".fria-modal-rh-sw { bottom: -4px; left: -4px; width: 12px; height: 12px; cursor: sw-resize; }",
+            ".fria-modal-rh-se { bottom: 0; right: 0; width: 14px; height: 14px; cursor: nwse-resize; background: linear-gradient(135deg, transparent 50%, #555 50%); border-radius: 0 0 12px 0; }",
+            /* Côtés */
+            ".fria-modal-rh-n { top: -4px; left: 8px; right: 8px; height: 8px; cursor: n-resize; }",
+            ".fria-modal-rh-s { bottom: -4px; left: 8px; right: 8px; height: 8px; cursor: s-resize; }",
+            ".fria-modal-rh-e { top: 8px; right: -4px; bottom: 8px; width: 8px; cursor: e-resize; }",
+            ".fria-modal-rh-w { top: 8px; left: -4px; bottom: 8px; width: 8px; cursor: w-resize; }",
             /* Style pour les alertes / confirms */
             ".fria-modal-actions {",
             "  display: flex;",
@@ -328,6 +329,11 @@
         modal.style.maxHeight = maxHeight;
         modal.style.zIndex = _friaModalNextZ();
         // Appliquer la classe active (premier plan)
+        // Retirer .active de toutes les modales existantes
+        var allExisting = document.querySelectorAll(".fria-modal");
+        for (var i = 0; i < allExisting.length; i++) {
+            allExisting[i].classList.remove("active");
+        }
         modal.classList.add("active");
 
         // Header
@@ -359,13 +365,28 @@
             body.appendChild(content);
         }
 
-        // Resize handle
-        var resizeHandle = document.createElement("div");
-        resizeHandle.className = "fria-modal-resize-handle";
+        // Resize handles (8 directions)
+        var resizeHandles = [];
+        var handleConfigs = [
+            { className: "fria-modal-rh-n", dir: "n" },
+            { className: "fria-modal-rh-s", dir: "s" },
+            { className: "fria-modal-rh-e", dir: "e" },
+            { className: "fria-modal-rh-w", dir: "w" },
+            { className: "fria-modal-rh-ne", dir: "ne" },
+            { className: "fria-modal-rh-nw", dir: "nw" },
+            { className: "fria-modal-rh-se", dir: "se" },
+            { className: "fria-modal-rh-sw", dir: "sw" },
+        ];
+        handleConfigs.forEach(function(cfg) {
+            var h = document.createElement("div");
+            h.className = "fria-modal-rh " + cfg.className;
+            h.dataset.dir = cfg.dir;
+            modal.appendChild(h);
+            resizeHandles.push(h);
+        });
 
         modal.appendChild(header);
         modal.appendChild(body);
-        modal.appendChild(resizeHandle);
         document.body.appendChild(modal);
 
         // ── Restauration de la position/taille ────────────────────────────────
@@ -501,31 +522,70 @@
 
         // ── Resize ────────────────────────────────────────────────────────────
         if (resizable) {
-            var resize = { active: false, startX: 0, startY: 0, origW: 0, origH: 0 };
+            var resize = { active: false, startX: 0, startY: 0, origW: 0, origH: 0, origLeft: 0, origTop: 0, dir: '' };
 
-            resizeHandle.addEventListener("mousedown", function (e) {
+            function startResize(e, dir) {
                 resize.active = true;
+                resize.dir = dir;
                 resize.startX = e.clientX;
                 resize.startY = e.clientY;
                 resize.origW = modal.offsetWidth;
                 resize.origH = modal.offsetHeight;
+                resize.origLeft = modal.offsetLeft;
+                resize.origTop = modal.offsetTop;
                 e.stopPropagation();
                 e.preventDefault();
+            }
+
+            resizeHandles.forEach(function(h) {
+                h.addEventListener("mousedown", function(e) {
+                    startResize(e, h.dataset.dir);
+                });
             });
 
             document.addEventListener("mousemove", function (e) {
                 if (!resize.active) return;
-                var newW = resize.origW + (e.clientX - resize.startX);
-                var newH = resize.origH + (e.clientY - resize.startY);
-                // Appliquer les contraintes de min/max
+                var dx = e.clientX - resize.startX;
+                var dy = e.clientY - resize.startY;
+                var newW = resize.origW;
+                var newH = resize.origH;
+                var newLeft = resize.origLeft;
+                var newTop = resize.origTop;
+                var dir = resize.dir;
+
+                if (dir.indexOf('e') >= 0) newW = resize.origW + dx;
+                if (dir.indexOf('w') >= 0) { newW = resize.origW - dx; newLeft = resize.origLeft + dx; }
+                if (dir.indexOf('s') >= 0) newH = resize.origH + dy;
+                if (dir.indexOf('n') >= 0) { newH = resize.origH - dy; newTop = resize.origTop + dy; }
+
+                // Appliquer les contraintes min/max
                 var minW = _parseCSSLength(modal.style.minWidth, window.innerWidth) || 280;
                 var minH = _parseCSSLength(modal.style.minHeight, window.innerHeight) || 120;
                 var maxW = _parseCSSLength(modal.style.maxWidth, window.innerWidth) || Math.round(window.innerWidth * 0.9);
                 var maxH = _parseCSSLength(modal.style.maxHeight, window.innerHeight) || Math.round(window.innerHeight * 0.85);
-                newW = _clamp(newW, minW, maxW);
-                newH = _clamp(newH, minH, maxH);
+
+                // Ajuster les positions si contraintes atteintes
+                if (newW < minW) {
+                    if (dir.indexOf('w') >= 0) newLeft = resize.origLeft + resize.origW - minW;
+                    newW = minW;
+                }
+                if (newW > maxW) {
+                    if (dir.indexOf('w') >= 0) newLeft = resize.origLeft + resize.origW - maxW;
+                    newW = maxW;
+                }
+                if (newH < minH) {
+                    if (dir.indexOf('n') >= 0) newTop = resize.origTop + resize.origH - minH;
+                    newH = minH;
+                }
+                if (newH > maxH) {
+                    if (dir.indexOf('n') >= 0) newTop = resize.origTop + resize.origH - maxH;
+                    newH = maxH;
+                }
+
                 modal.style.width = newW + "px";
                 modal.style.height = newH + "px";
+                if (dir.indexOf('w') >= 0) modal.style.left = newLeft + "px";
+                if (dir.indexOf('n') >= 0) modal.style.top = newTop + "px";
 
                 if (typeof onResize === "function") {
                     try { onResize(newW, newH); } catch (e) { /* silencieux */ }
