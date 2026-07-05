@@ -42,10 +42,11 @@
             "}",
             /* Modale active (premier plan) */
             ".fria-modal.active {",
-            "  border-color: #666;",
+            "  border-color: #6366f1;",
+            "  box-shadow: 0 16px 48px rgba(99,102,241,0.15);",
             "}",
             ".fria-modal.active .fria-modal-header {",
-            "  background: #333338;",
+            "  background: #38383d;",
             "}",
             /* Header */
             ".fria-modal-header {",
@@ -97,6 +98,7 @@
             "  flex: 1;",
             "  padding: 16px;",
             "  overflow-y: auto;",
+            "  overflow-x: hidden;",
             "  color: #fff;",
             "  font-size: 13px;",
             "  line-height: 1.5;",
@@ -255,6 +257,16 @@
     }
 
     // ─── Helpers ─────────────────────────────────────────────────────────────────
+    function _parseCSSLength(val, viewportDim) {
+        if (typeof val !== 'string') return parseInt(val) || 0;
+        val = val.trim();
+        if (val.endsWith('px')) return parseFloat(val);
+        if (val.endsWith('vw')) return (parseFloat(val) / 100) * window.innerWidth;
+        if (val.endsWith('vh')) return (parseFloat(val) / 100) * window.innerHeight;
+        if (val.endsWith('%')) return (parseFloat(val) / 100) * viewportDim;
+        return parseFloat(val) || 0;
+    }
+
     function _isElement(obj) {
         return obj && typeof obj === "object" && obj.nodeType === 1;
     }
@@ -506,10 +518,10 @@
                 var newW = resize.origW + (e.clientX - resize.startX);
                 var newH = resize.origH + (e.clientY - resize.startY);
                 // Appliquer les contraintes de min/max
-                var minW = parseInt(modal.style.minWidth) || 280;
-                var minH = parseInt(modal.style.minHeight) || 120;
-                var maxW = parseInt(modal.style.maxWidth) || window.innerWidth * 0.9;
-                var maxH = parseInt(modal.style.maxHeight) || window.innerHeight * 0.85;
+                var minW = _parseCSSLength(modal.style.minWidth, window.innerWidth) || 280;
+                var minH = _parseCSSLength(modal.style.minHeight, window.innerHeight) || 120;
+                var maxW = _parseCSSLength(modal.style.maxWidth, window.innerWidth) || Math.round(window.innerWidth * 0.9);
+                var maxH = _parseCSSLength(modal.style.maxHeight, window.innerHeight) || Math.round(window.innerHeight * 0.85);
                 newW = _clamp(newW, minW, maxW);
                 newH = _clamp(newH, minH, maxH);
                 modal.style.width = newW + "px";
