@@ -213,6 +213,9 @@
     }
 
     // ── Modale 2 colonnes (singleton) ──
+    // NOTE (migration future) : Cette modale utilise son propre système (drag, resize, overlay,
+    // pattern singleton, persistence localStorage). Elle sera migrée vers friaOpenModalV2 dans
+    // une future passe. Le z-index (99999) est compatible avec le système v2 (base 90000).
     function openPickerModal(opts) {
         var allItems = opts.allItems || [];
         var currentShortlist = opts.currentShortlist || [];
@@ -390,8 +393,11 @@
         // ── Dirty tracking ──
         var _dirty = false;
 
-        function tryClose() {
-            if (_dirty && !confirm('Modifications non sauvegardées. Annuler les changements ?')) return;
+        async function tryClose() {
+            if (_dirty) {
+                var confirmed = await window.friaShowConfirm('Modifications non sauvegardées', 'Annuler les changements ?');
+                if (!confirmed) return;
+            }
             _dirty = false;
             modal.style.display = 'none';
             if (overlay) overlay.style.display = 'none';

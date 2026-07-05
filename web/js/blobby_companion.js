@@ -1170,38 +1170,11 @@ const Blobby = {
             if (blobbyTab) switchSettingsTab('blobby', blobbyTab);
             return;
         }
-        // Fallback : si la modale FR.IA n'existe pas, on crée la notre
-        var existing = document.getElementById('blobby-chat-settings');
+        // Fallback : si la modale FR.IA n'existe pas, on crée la notre via v2
+        var existing = document.querySelector('.fria-modal.blobby-chat-settings');
         if (existing) { existing.style.display = 'flex'; return; }
 
         var _self = this;
-        var modal = document.createElement('div');
-        modal.id = 'blobby-chat-settings';
-        Object.assign(modal.style, {
-            position: 'fixed', left: '50%', top: '50%', transform: 'translate(-50%, -50%)',
-            width: '380px', background: '#1e1e24', borderRadius: '12px',
-            boxShadow: '0 12px 40px rgba(0,0,0,0.5)', zIndex: '100000',
-            border: '1px solid #333', overflow: 'hidden', fontSize: '13px',
-            display: 'flex', flexDirection: 'column', maxHeight: '80vh',
-        });
-
-        var header = document.createElement('div');
-        Object.assign(header.style, {
-            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-            padding: '8px 12px', borderBottom: '1px solid #333', background: '#2a2a2e', flexShrink: '0',
-        });
-        var title = document.createElement('span');
-        title.textContent = '⚙️ Blobby';
-        title.style.color = '#FF8F00';
-        title.style.fontWeight = '600';
-        var closeBtn = document.createElement('button');
-        closeBtn.textContent = '✕';
-        Object.assign(closeBtn.style, { background: 'none', border: 'none', color: '#888', cursor: 'pointer', fontSize: '16px', padding: '0 4px' });
-        closeBtn.onmouseenter = () => closeBtn.style.color = '#f87171';
-        closeBtn.onmouseleave = () => closeBtn.style.color = '#888';
-        closeBtn.onclick = () => modal.style.display = 'none';
-        header.appendChild(title);
-        header.appendChild(closeBtn);
 
         // Tabs
         var tabsBar = document.createElement('div');
@@ -1508,37 +1481,33 @@ const Blobby = {
         tabContent.appendChild(provContent);
         tabContent.appendChild(appContent);
 
-        modal.appendChild(header);
-        modal.appendChild(tabsBar);
-        modal.appendChild(tabContent);
-        document.body.appendChild(modal);
+        // ── Body wrapper pour la v2 (tabsBar + tabContent) ──
+        var bodyWrapper = document.createElement('div');
+        Object.assign(bodyWrapper.style, {
+            display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden',
+        });
+        tabsBar.style.flexShrink = '0';
+        bodyWrapper.appendChild(tabsBar);
+        tabContent.style.flex = '1';
+        tabContent.style.overflowY = 'auto';
+        bodyWrapper.appendChild(tabContent);
 
-        // Drag
-        (function(hdr, mdl) {
-            var d = { active: false, sx: 0, sy: 0, ox: 0, oy: 0 };
-            hdr.addEventListener('mousedown', function(e) {
-                if (e.target.tagName === 'BUTTON' || e.target.tagName === 'INPUT') return;
-                d.active = true;
-                var r = mdl.getBoundingClientRect();
-                d.sx = e.clientX; d.sy = e.clientY;
-                d.ox = r.left; d.oy = r.top;
-                mdl.style.position = 'fixed';
-                mdl.style.left = r.left + 'px';
-                mdl.style.top = r.top + 'px';
-                mdl.style.transform = 'none';
-                mdl.style.margin = '0';
-                hdr.style.cursor = 'grabbing';
-                e.preventDefault();
-            });
-            document.addEventListener('mousemove', function(e) {
-                if (!d.active) return;
-                mdl.style.left = (d.ox + e.clientX - d.sx) + 'px';
-                mdl.style.top = (d.oy + e.clientY - d.sy) + 'px';
-            });
-            document.addEventListener('mouseup', function() {
-                if (d.active) { d.active = false; hdr.style.cursor = ''; }
-            });
-        })(header, modal);
+        // ── Créer la modale via v2 ──
+        var m = window.friaOpenModalV2({
+            title: '⚙️ Blobby',
+            content: bodyWrapper,
+            width: '380px',
+            minWidth: '300px',
+            minHeight: '200px',
+            maxWidth: '90vw',
+            maxHeight: '80vh',
+            className: 'blobby-chat-settings',
+            resizable: false,
+            draggable: true,
+            closeOnEscape: true,
+        });
+        // Supprimer le padding par défaut du body v2 car on gère le layout nous-mêmes
+        m.body.style.padding = '0';
 
         // Activer le premier onglet
         switchTab('provider');
@@ -1563,163 +1532,23 @@ const Blobby = {
 
     _openChatModal() {
         // Si deja ouverte, la ramener au premier plan
-        var existing = document.getElementById('blobby-chat-modal');
+        var existing = document.querySelector('.fria-modal.blobby-chat-modal');
         if (existing) {
-            existing.style.display = 'flex';
-            existing.style.zIndex = '99999';
             existing.querySelector('.blobby-chat-input')?.focus();
             return;
         }
 
-        // Restaurer la position/taille/opacite sauvegardees
+        // Restaurer la position/taille/opacite sauvegardees (ancien système FRIA_config)
         var savedState = {};
         try { var scfg = JSON.parse(localStorage.getItem('FRIA_config')) || {}; savedState = scfg.blobbyChatState || {}; } catch {}
 
-        var modal = document.createElement('div');
-        modal.id = 'blobby-chat-modal';
-        Object.assign(modal.style, {
-            position: 'fixed',
-            width: (savedState.w || '360') + 'px',
-            height: (savedState.h || '420') + 'px',
-            background: '#1e1e24', borderRadius: '12px',
-            boxShadow: '0 12px 40px rgba(0,0,0,0.5)',
-            zIndex: '99999', display: 'flex', flexDirection: 'column',
-            border: '1px solid #333', overflow: 'hidden',
-            fontSize: '13px', resize: 'both', minWidth: '280px', minHeight: '200px',
+        var _self = this;
+
+        // ── Contenu interne : messages + ctx + input ──
+        var bodyWrapper = document.createElement('div');
+        Object.assign(bodyWrapper.style, {
+            display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden',
         });
-        modal.style.left = (savedState.x || '20') + 'px';
-        modal.style.bottom = (savedState.y || '20') + 'px';
-        modal.style.top = 'auto';
-
-        // Header
-        var header = document.createElement('div');
-        Object.assign(header.style, {
-            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-            padding: '8px 12px', cursor: 'grab', userSelect: 'none',
-            borderBottom: '1px solid #333', background: '#2a2a2e', flexShrink: '0',
-        });
-        var title = document.createElement('span');
-        title.innerHTML = '🧡 <b>Blobby</b>';
-        title.style.color = '#FF8F00';
-        var syncDot = document.createElement('span');
-        syncDot.id = 'blobby-sync-status';
-        Object.assign(syncDot.style, { fontSize: '9px', marginLeft: '4px', cursor: 'help' });
-        // Initialiser l'indicateur
-        setTimeout(function() { _blobbySyncIndicator(); }, 100);
-
-        // Transparence (depuis l'état sauvegardé, sans slider dans le header)
-        modal.style.opacity = (savedState.alpha || 100) / 100;
-
-        var headerRight = document.createElement('div');
-        Object.assign(headerRight.style, { display: 'flex', alignItems: 'center', gap: '6px' });
-        var settingsBtn = document.createElement('button');
-        settingsBtn.innerHTML = '⚙️';
-        Object.assign(settingsBtn.style, { background: 'none', border: 'none', color: '#888', cursor: 'pointer', fontSize: '14px', padding: '0 4px' });
-        settingsBtn.onmouseenter = () => settingsBtn.style.color = '#fff';
-        settingsBtn.onmouseleave = () => settingsBtn.style.color = '#888';
-        settingsBtn.onclick = (e) => { e.stopPropagation(); _self._openChatSettings(); };
-        var closeBtn = document.createElement('button');
-        closeBtn.textContent = '✕';
-        Object.assign(closeBtn.style, { background: 'none', border: 'none', color: '#888', cursor: 'pointer', fontSize: '16px', padding: '0 4px' });
-        closeBtn.onmouseenter = () => closeBtn.style.color = '#f87171';
-        closeBtn.onmouseleave = () => closeBtn.style.color = '#888';
-        function _saveChatState() {
-            try {
-                var r = modal.getBoundingClientRect();
-                var state = {
-                    x: Math.round(r.left), y: Math.round(window.innerHeight - r.top - r.height),
-                    w: Math.round(r.width), h: Math.round(r.height),
-                    alpha: parseInt((modal.style.opacity || 1) * 100),
-                };
-                _blobbySaveChatState(state);
-            } catch {}
-        }
-        // ResizeObserver pour sauvegarder lors du redimensionnement
-        var ro = new ResizeObserver(_saveChatState);
-        ro.observe(modal);
-
-        closeBtn.onclick = () => {
-            _saveChatState();
-            modal.style.display = 'none';
-        };
-        headerRight.appendChild(settingsBtn);
-        // Bouton Clear
-        var clearBtn = document.createElement('button');
-        clearBtn.textContent = '🗑';
-        clearBtn.title = 'Effacer la conversation';
-        Object.assign(clearBtn.style, { background: 'none', border: 'none', color: '#888', cursor: 'pointer', fontSize: '12px', padding: '0 4px' });
-        clearBtn.onmouseenter = () => clearBtn.style.color = '#f87171';
-        clearBtn.onmouseleave = () => clearBtn.style.color = '#888';
-        clearBtn.onclick = function(e) {
-            e.stopPropagation();
-            var msgs = document.getElementById('blobby-chat-msgs');
-            if (msgs) { msgs.innerHTML = ''; }
-            _blobbySaveChatHistory([]);
-            // Réajouter le message de bienvenue
-            if (typeof Blobby !== 'undefined' && Blobby._addChatMessage) {
-                Blobby._addChatMessage(msgs, 'blobby', '👋 Salut ! Clique sur un nœud ou pose-moi une question sur le workflow.');
-            }
-        };
-        headerRight.appendChild(clearBtn);
-        // Bouton Oublier (reset mémoire)
-        var forgetBtn = document.createElement('button');
-        forgetBtn.textContent = '🧹';
-        forgetBtn.title = 'Tout oublier (mémoire)';
-        Object.assign(forgetBtn.style, { background: 'none', border: 'none', color: '#888', cursor: 'pointer', fontSize: '12px', padding: '0 4px' });
-        forgetBtn.onmouseenter = () => forgetBtn.style.color = '#f87171';
-        forgetBtn.onmouseleave = () => forgetBtn.style.color = '#888';
-        forgetBtn.onclick = function(e) {
-            e.stopPropagation();
-            if (confirm('Blobby va tout oublier de vos conversations passées. Continuer ?')) {
-                _blobbyForgetAll();
-                _blobbyMsgCounter = 0;
-                _self._addChatMessage(document.getElementById('blobby-chat-msgs'), 'system', '🧹 Blobby a tout oublié. C\'est reparti !');
-            }
-        };
-        headerRight.appendChild(forgetBtn);
-        // Bouton Compact
-        var compactBtn = document.createElement('button');
-        compactBtn.textContent = '📦';
-        compactBtn.title = 'Mode compact';
-        Object.assign(compactBtn.style, { background: 'none', border: 'none', color: '#888', cursor: 'pointer', fontSize: '12px', padding: '0 4px' });
-        compactBtn.onmouseenter = () => compactBtn.style.color = '#fff';
-        compactBtn.onmouseleave = () => compactBtn.style.color = '#888';
-        compactBtn.onclick = function(e) {
-            e.stopPropagation();
-            var msgs = document.getElementById('blobby-chat-msgs');
-            if (!msgs) return;
-            var isCompact = compactBtn.dataset.compact === '1';
-            if (isCompact) {
-                msgs.querySelectorAll('.blobby-msg').forEach(function(el) {
-                    el.style.padding = '';
-                    el.style.fontSize = '';
-                    el.style.borderRadius = '';
-                });
-                msgs.querySelectorAll('.blobby-msg-compact').forEach(function(el) { el.remove(); });
-                compactBtn.dataset.compact = '0';
-                compactBtn.style.color = '#888';
-            } else {
-                msgs.querySelectorAll('.blobby-msg').forEach(function(el) {
-                    el.style.padding = '2px 8px';
-                    el.style.fontSize = '11px';
-                    el.style.borderRadius = '4px';
-                });
-                // Ajouter une notif discrète
-                var note = document.createElement('div');
-                note.className = 'blobby-msg-compact';
-                note.textContent = '📦 Mode compact';
-                Object.assign(note.style, { textAlign: 'center', color: '#666', fontSize: '10px', padding: '2px' });
-                msgs.appendChild(note);
-                compactBtn.dataset.compact = '1';
-                compactBtn.style.color = '#4ade80';
-            }
-        };
-        compactBtn.dataset.compact = '0';
-        headerRight.appendChild(compactBtn);
-        headerRight.appendChild(closeBtn);
-        header.appendChild(title);
-        title.appendChild(syncDot);
-        header.appendChild(headerRight);
 
         // Messages area
         var messages = document.createElement('div');
@@ -1815,7 +1644,6 @@ const Blobby = {
         sendBtn.onmouseenter = () => sendBtn.style.background = '#4f46e5';
         sendBtn.onmouseleave = () => sendBtn.style.background = '#6366f1';
 
-        var _self = this;
         function sendMessage() {
             var text = input.value.trim();
             if (!text) return;
@@ -1830,39 +1658,161 @@ const Blobby = {
         inputArea.appendChild(input);
         inputArea.appendChild(sendBtn);
 
-        modal.appendChild(header);
-        modal.appendChild(messages);
-        modal.appendChild(ctxBar);
-        modal.appendChild(inputArea);
-        document.body.appendChild(modal);
-        input.focus();
+        bodyWrapper.appendChild(messages);
+        bodyWrapper.appendChild(ctxBar);
+        bodyWrapper.appendChild(inputArea);
 
-        // Drag
-        (function(header, modal) {
-            var drag = { active: false, startX: 0, startY: 0, origX: 0, origY: 0 };
-            header.addEventListener('mousedown', (e) => {
-                if (e.target === closeBtn) return;
-                drag.active = true;
-                var rect = modal.getBoundingClientRect();
-                drag.startX = e.clientX; drag.startY = e.clientY;
-                drag.origX = rect.left; drag.origY = rect.top;
-                header.style.cursor = 'grabbing';
-                e.preventDefault();
-            });
-            document.addEventListener('mousemove', (e) => {
-                if (!drag.active) return;
-                modal.style.left = (drag.origX + e.clientX - drag.startX) + 'px';
-                modal.style.top = (drag.origY + e.clientY - drag.startY) + 'px';
-                modal.style.bottom = 'auto';
-            });
-            document.addEventListener('mouseup', () => {
-                if (drag.active) {
-                    drag.active = false;
-                    header.style.cursor = 'grab';
-                    _saveChatState();
-                }
-            });
-        })(header, modal);
+        // ── Créer la modale via v2 ──
+        var m = window.friaOpenModalV2({
+            title: '🧡 Blobby',
+            content: bodyWrapper,
+            width: (savedState.w || '360') + 'px',
+            height: (savedState.h || '420') + 'px',
+            minWidth: '280px',
+            minHeight: '200px',
+            maxWidth: '90vw',
+            maxHeight: '85vh',
+            className: 'blobby-chat-modal',
+            resizable: true,
+            draggable: true,
+            closeOnEscape: false, // Le chat a son propre handling via l'input
+            onClose: function() {
+                _saveChatState();
+            },
+        });
+        // Supprimer le padding du body v2 (on a notre propre padding dans les enfants)
+        m.body.style.padding = '0';
+        m.body.style.overflow = 'hidden';
+
+        // Restaurer la position bottom-relative depuis l'ancien système
+        if (savedState.x) m.modal.style.left = savedState.x + 'px';
+        if (savedState.y) {
+            var modalH = parseInt(m.modal.style.height) || 420;
+            m.modal.style.top = (window.innerHeight - savedState.y - modalH) + 'px';
+        }
+        // Transparence
+        m.modal.style.opacity = (savedState.alpha || 100) / 100;
+
+        // SyncDot dans le titre
+        var titleEl = m.header.querySelector('.fria-modal-title');
+        titleEl.innerHTML = '🧡 <b>Blobby</b>';
+        titleEl.style.color = '#FF8F00';
+        var syncDot = document.createElement('span');
+        syncDot.id = 'blobby-sync-status';
+        Object.assign(syncDot.style, { fontSize: '9px', marginLeft: '4px', cursor: 'help' });
+        titleEl.appendChild(syncDot);
+        setTimeout(function() { _blobbySyncIndicator(); }, 100);
+
+        // ── Header right buttons ──
+        var headerRight = m.header.querySelector('.fria-modal-header-right');
+
+        // Settings button
+        var settingsBtn = document.createElement('button');
+        settingsBtn.innerHTML = '⚙️';
+        Object.assign(settingsBtn.style, { background: 'none', border: 'none', color: '#888', cursor: 'pointer', fontSize: '14px', padding: '0 4px' });
+        settingsBtn.onmouseenter = () => settingsBtn.style.color = '#fff';
+        settingsBtn.onmouseleave = () => settingsBtn.style.color = '#888';
+        settingsBtn.onclick = (e) => { e.stopPropagation(); _self._openChatSettings(); };
+        headerRight.appendChild(settingsBtn);
+
+        // Clear button
+        var clearBtn = document.createElement('button');
+        clearBtn.textContent = '🗑';
+        clearBtn.title = 'Effacer la conversation';
+        Object.assign(clearBtn.style, { background: 'none', border: 'none', color: '#888', cursor: 'pointer', fontSize: '12px', padding: '0 4px' });
+        clearBtn.onmouseenter = () => clearBtn.style.color = '#f87171';
+        clearBtn.onmouseleave = () => clearBtn.style.color = '#888';
+        clearBtn.onclick = function(e) {
+            e.stopPropagation();
+            var msgs = document.getElementById('blobby-chat-msgs');
+            if (msgs) { msgs.innerHTML = ''; }
+            _blobbySaveChatHistory([]);
+            if (typeof Blobby !== 'undefined' && Blobby._addChatMessage) {
+                Blobby._addChatMessage(msgs, 'blobby', '👋 Salut ! Clique sur un nœud ou pose-moi une question sur le workflow.');
+            }
+        };
+        headerRight.appendChild(clearBtn);
+
+        // Forget button (confirmation via v2)
+        var forgetBtn = document.createElement('button');
+        forgetBtn.textContent = '🧹';
+        forgetBtn.title = 'Tout oublier (mémoire)';
+        Object.assign(forgetBtn.style, { background: 'none', border: 'none', color: '#888', cursor: 'pointer', fontSize: '12px', padding: '0 4px' });
+        forgetBtn.onmouseenter = () => forgetBtn.style.color = '#f87171';
+        forgetBtn.onmouseleave = () => forgetBtn.style.color = '#888';
+        forgetBtn.onclick = async function(e) {
+            e.stopPropagation();
+            var confirmed = await window.friaShowConfirm(
+                'Tout oublier',
+                'Blobby va tout oublier de vos conversations passées. Continuer ?'
+            );
+            if (confirmed) {
+                _blobbyForgetAll();
+                _blobbyMsgCounter = 0;
+                _self._addChatMessage(document.getElementById('blobby-chat-msgs'), 'system', '🧹 Blobby a tout oublié. C\'est reparti !');
+            }
+        };
+        headerRight.appendChild(forgetBtn);
+
+        // Compact button
+        var compactBtn = document.createElement('button');
+        compactBtn.textContent = '📦';
+        compactBtn.title = 'Mode compact';
+        Object.assign(compactBtn.style, { background: 'none', border: 'none', color: '#888', cursor: 'pointer', fontSize: '12px', padding: '0 4px' });
+        compactBtn.onmouseenter = () => compactBtn.style.color = '#fff';
+        compactBtn.onmouseleave = () => compactBtn.style.color = '#888';
+        compactBtn.onclick = function(e) {
+            e.stopPropagation();
+            var msgs = document.getElementById('blobby-chat-msgs');
+            if (!msgs) return;
+            var isCompact = compactBtn.dataset.compact === '1';
+            if (isCompact) {
+                msgs.querySelectorAll('.blobby-msg').forEach(function(el) {
+                    el.style.padding = '';
+                    el.style.fontSize = '';
+                    el.style.borderRadius = '';
+                });
+                msgs.querySelectorAll('.blobby-msg-compact').forEach(function(el) { el.remove(); });
+                compactBtn.dataset.compact = '0';
+                compactBtn.style.color = '#888';
+            } else {
+                msgs.querySelectorAll('.blobby-msg').forEach(function(el) {
+                    el.style.padding = '2px 8px';
+                    el.style.fontSize = '11px';
+                    el.style.borderRadius = '4px';
+                });
+                var note = document.createElement('div');
+                note.className = 'blobby-msg-compact';
+                note.textContent = '📦 Mode compact';
+                Object.assign(note.style, { textAlign: 'center', color: '#666', fontSize: '10px', padding: '2px' });
+                msgs.appendChild(note);
+                compactBtn.dataset.compact = '1';
+                compactBtn.style.color = '#4ade80';
+            }
+        };
+        compactBtn.dataset.compact = '0';
+        headerRight.appendChild(compactBtn);
+
+        // ── Sauvegarde d'état via l'ancien système (FRIA_config.blobbyChatState) ──
+        function _saveChatState() {
+            try {
+                var r = m.modal.getBoundingClientRect();
+                var state = {
+                    x: Math.round(r.left),
+                    y: Math.round(window.innerHeight - r.top - r.height),
+                    w: Math.round(r.width),
+                    h: Math.round(r.height),
+                    alpha: parseInt((m.modal.style.opacity || 1) * 100),
+                };
+                _blobbySaveChatState(state);
+            } catch {}
+        }
+        // ResizeObserver pour sauvegarder via l'ancien système
+        var ro = new ResizeObserver(_saveChatState);
+        ro.observe(m.modal);
+
+        // Focus input
+        input.focus();
     },
 
     _addChatMessage(container, role, text) {
@@ -2393,7 +2343,7 @@ window.BlobbyCompanion = {
         }
     },
     chatVisible: () => {
-        var m = document.getElementById('blobby-chat-modal');
+        var m = document.querySelector('.fria-modal.blobby-chat-modal');
         return m && m.style.display !== 'none';
     }
 };

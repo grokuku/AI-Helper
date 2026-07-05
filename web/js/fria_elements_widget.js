@@ -928,109 +928,69 @@ function hideWidget(node, name) {
 // Utilitaires : modales et toots
 // ========================
 
+/** Escaping HTML pour injection sécurisée dans innerHTML */
+function esc(str) {
+    if (typeof str !== "string") return "";
+    var d = document.createElement("div");
+    d.textContent = str;
+    return d.innerHTML;
+}
+
 function showFilterPicker(filters, currentUserId, onSelect) {
-    const overlay = document.createElement("div");
-    Object.assign(overlay.style, {
-        position: "fixed", inset: "0", zIndex: "99999",
-        background: "rgba(0,0,0,0.5)", display: "flex",
-        alignItems: "center", justifyContent: "center",
-    });
+    var mine = currentUserId
+        ? filters.filter(function(f) { return f.user_id === currentUserId && !f.is_public; })
+        : filters.filter(function(f) { return f.user_id && !f.is_public; });
+    var pub = filters.filter(function(f) { return f.is_public; });
 
-    const modal = document.createElement("div");
-    Object.assign(modal.style, {
-        background: "#2a2a2e", borderRadius: "12px", padding: "16px",
-        width: "380px", maxHeight: "70vh", overflowY: "auto",
-        boxShadow: "0 16px 48px rgba(0,0,0,0.5)",
-    });
-
-    const mine = currentUserId
-        ? filters.filter(f => f.user_id === currentUserId && !f.is_public)
-        : filters.filter(f => f.user_id && !f.is_public);
-    const pub = filters.filter(f => f.is_public);
-
-    let html = `<h3 style="margin:0 0 12px; font-size:14px; color:#fff;">Choisir un filtre</h3>`;
+    var html = '<div style="max-height:50vh;overflow-y:auto;">';
 
     if (mine.length > 0) {
-        html += `<p style="margin:8px 0 4px; font-size:11px; color:#888;">Mes filtres</p>`;
-        mine.forEach(f => {
-            html += `<div onclick="window._friaPickFilter(${f.id})" style="padding:6px 8px; cursor:pointer; border-radius:4px; font-size:12px; color:#ccc; background:#3a3a3e; margin-bottom:2px;" onmouseenter="this.style.background='#4a4a4e'" onmouseleave="this.style.background='#3a3a3e'">${f.name} ${f.nsfw ? '🔞' : ''}</div>`;
+        html += '<p style="margin:8px 0 4px;font-size:11px;color:#888;">Mes filtres</p>';
+        mine.forEach(function(f) {
+            html += '<div class="fria-filter-item" data-id="' + f.id + '" style="padding:6px 8px;cursor:pointer;border-radius:4px;font-size:12px;color:#ccc;background:#3a3a3e;margin-bottom:2px;">' +
+                esc(f.name) + (f.nsfw ? ' 🔞' : '') + '</div>';
         });
     }
     if (pub.length > 0) {
-        html += `<p style="margin:8px 0 4px; font-size:11px; color:#888;">Filtres publics</p>`;
-        pub.forEach(f => {
-            html += `<div onclick="window._friaPickFilter(${f.id})" style="padding:6px 8px; cursor:pointer; border-radius:4px; font-size:12px; color:#ccc; background:#3a3a3e; margin-bottom:2px;" onmouseenter="this.style.background='#4a4a4e'" onmouseleave="this.style.background='#3a3a3e'">${f.name} ${f.nsfw ? '🔞' : ''} <span style="color:#888;font-size:10px;">par ${f.user_id?.substring(0,6) || '?'}</span></div>`;
+        html += '<p style="margin:8px 0 4px;font-size:11px;color:#888;">Filtres publics</p>';
+        pub.forEach(function(f) {
+            html += '<div class="fria-filter-item" data-id="' + f.id + '" style="padding:6px 8px;cursor:pointer;border-radius:4px;font-size:12px;color:#ccc;background:#3a3a3e;margin-bottom:2px;">' +
+                esc(f.name) + (f.nsfw ? ' 🔞' : '') + ' <span style="color:#888;font-size:10px;">par ' + esc(f.user_id ? f.user_id.substring(0,6) : '?') + '</span></div>';
         });
     }
-
     if (filters.length === 0) {
-        html += `<p style="font-size:12px; color:#666;">Aucun filtre disponible.</p>`;
+        html += '<p style="font-size:12px;color:#666;">Aucun filtre disponible.</p>';
     }
+    html += '</div>';
 
-    html += `<div style="margin-top:12px; text-align:right;">
-        <button id="fria-picker-cancel" style="padding:6px 12px; border-radius:4px; border:1px solid #555; background:transparent; color:#ccc; cursor:pointer; font-size:12px;">Fermer</button>
-    </div>`;
+    var m = friaOpenModalV2({
+        title: "Choisir un filtre",
+        content: html,
+        width: "380px",
+        height: "auto",
+        minHeight: "150px",
+        maxHeight: "70vh",
+        resizable: false,
+        storageKey: null
+    });
 
-    modal.innerHTML = html;
-    overlay.appendChild(modal);
-    document.body.appendChild(overlay);
-
-    const pickerData = filters;
-    window._friaPickFilter = (id) => {
-        const f = pickerData.find(x => x.id === id);
-        if (f && onSelect) onSelect(f);
-        overlay.remove();
-        delete window._friaPickFilter;
-    };
-
-    document.getElementById("fria-picker-cancel").onclick = () => {
-        overlay.remove();
-        delete window._friaPickFilter;
-    };
-    overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+    // Attacher les événements aux items
+    m.modal.querySelectorAll(".fria-filter-item").forEach(function(el) {
+        el.onclick = function() {
+            var id = parseInt(el.dataset.id);
+            var f = filters.find(function(x) { return x.id === id; });
+            if (f && onSelect) onSelect(f);
+            m.close();
+        };
+        el.onmouseenter = function() { el.style.background = '#4a4a4e'; };
+        el.onmouseleave = function() { el.style.background = '#3a3a3e'; };
+    });
 }
 
 function showPrompt(title, msg, placeholder, cb) {
-    const overlay = document.createElement("div");
-    Object.assign(overlay.style, {
-        position: "fixed", inset: "0", zIndex: "99999",
-        background: "rgba(0,0,0,0.5)", display: "flex",
-        alignItems: "center", justifyContent: "center",
+    friaShowPrompt(title, msg, placeholder).then(function(value) {
+        if (cb) cb(value);
     });
-
-    const modal = document.createElement("div");
-    Object.assign(modal.style, {
-        background: "#2a2a2e", borderRadius: "12px", padding: "16px",
-        width: "340px", boxShadow: "0 16px 48px rgba(0,0,0,0.5)",
-    });
-
-    modal.innerHTML = `
-        <h3 style="margin:0 0 8px; font-size:14px; color:#fff;">${title}</h3>
-        <p style="margin:0 0 12px; font-size:12px; color:#888;">${msg}</p>
-        <input id="fria-prompt-input" type="text" placeholder="${placeholder || ''}"
-               style="width:100%; padding:8px; border-radius:6px; border:1px solid #555;
-                      background:#1a1a1e; color:#fff; font-size:13px; box-sizing:border-box;">
-        <div style="margin-top:12px; display:flex; gap:8px; justify-content:flex-end;">
-            <button id="fria-prompt-cancel" style="padding:6px 12px; border-radius:4px; border:1px solid #555; background:transparent; color:#ccc; cursor:pointer; font-size:12px;">Annuler</button>
-            <button id="fria-prompt-ok" style="padding:6px 12px; border-radius:4px; border:none; background:#6366f1; color:white; cursor:pointer; font-size:12px; font-weight:600;">OK</button>
-        </div>
-    `;
-
-    overlay.appendChild(modal);
-    document.body.appendChild(overlay);
-
-    const input = document.getElementById("fria-prompt-input");
-    setTimeout(() => input.focus(), 50);
-
-    const close = (result) => {
-        overlay.remove();
-        if (cb && result !== null) cb(result);
-    };
-
-    document.getElementById("fria-prompt-ok").onclick = () => close(input.value.trim());
-    document.getElementById("fria-prompt-cancel").onclick = () => close(null);
-    input.onkeydown = (e) => { if (e.key === "Enter") close(input.value.trim()); };
-    overlay.onclick = (e) => { if (e.target === overlay) close(null); };
 }
 
 function showToast(title, msg) {

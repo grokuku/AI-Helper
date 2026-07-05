@@ -4,7 +4,7 @@
  * Onglet 1 : 📤 Partager — upload du workflow actif + dépendances auto-détectées
  * Onglet 2 : 🌐 Parcourir — liste paginée des workflows publics + installation
  *
- * Autonome — ne dépend plus de fria_menu.js pour la création de modales.
+ * Utilise friaOpenModalV2 (01_fria_modal_v2.js) pour les fenêtres flottantes.
  */
 
 (function () {
@@ -45,38 +45,16 @@
   // ── Upload progress panel ──
 
   function createUploadPanel() {
-    var panel = document.createElement("div");
-    panel.style.cssText = "position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#1e1e24;border-radius:12px;box-shadow:0 16px 48px rgba(0,0,0,0.6);width:440px;max-height:70vh;z-index:99998;display:flex;flex-direction:column;overflow:hidden;";
-    // Header (draggable)
-    var header = document.createElement("div");
-    header.style.cssText = "padding:12px 16px;border-bottom:1px solid #333;font-size:14px;font-weight:600;color:#e2e8f0;cursor:grab;user-select:none;";
-    header.textContent = "Upload des dépendances";
-    panel.appendChild(header);
-    // Drag logic
-    var drag = {active: false, sx: 0, sy: 0, ox: 0, oy: 0};
-    header.addEventListener("mousedown", function(e) {
-      drag.active = true; drag.sx = e.clientX; drag.sy = e.clientY;
-      var r = panel.getBoundingClientRect(); drag.ox = r.left; drag.oy = r.top;
-      header.style.cursor = "grabbing"; e.preventDefault();
+    var m = friaOpenModalV2({
+      title: "Upload des dépendances",
+      width: "440px",
+      height: "auto",
+      maxHeight: "70vh",
+      minHeight: "200px",
+      storageKey: "fria-modal-upload",
+      content: '<div id="fria-upload-body" style="display:flex;flex-direction:column;gap:8px;padding:0;"></div>',
     });
-    document.addEventListener("mousemove", function(e) {
-      if (!drag.active) return;
-      panel.style.transform = "none";
-      panel.style.left = (drag.ox + e.clientX - drag.sx) + "px";
-      panel.style.top = (drag.oy + e.clientY - drag.sy) + "px";
-    });
-    document.addEventListener("mouseup", function() {
-      if (drag.active) { drag.active = false; header.style.cursor = "grab"; }
-    });
-    // Body (rows)
-    var body = document.createElement("div");
-    body.style.cssText = "padding:12px;overflow-y:auto;flex:1;display:flex;flex-direction:column;gap:8px;";
-    panel.appendChild(body);
-    // Footer
-    var footer = document.createElement("div");
-    footer.style.cssText = "padding:10px 16px;border-top:1px solid #333;display:flex;justify-content:flex-end;";
-    panel.appendChild(footer);
-    document.body.appendChild(panel);
+    var body = m.modal.querySelector("#fria-upload-body");
 
     var rows = {};
     var doneCount = 0, totalCount = 0;
@@ -170,24 +148,26 @@
           errEl.textContent = "Erreur: " + (errorMsg || "inconnue");
           r.row.appendChild(errEl);
         }
-        header.textContent = "Upload (" + doneCount + "/" + totalCount + ")";
+        m.setTitle("Upload (" + doneCount + "/" + totalCount + ")");
       },
       done: function() {
         clearInterval(timer);
         var elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-        header.textContent = "Upload termine (" + totalCount + " fichiers, " + elapsed + "s)";
+        m.setTitle("Upload terminé (" + totalCount + " fichiers, " + elapsed + "s)");
         var closeBtn = document.createElement("button");
         closeBtn.textContent = "Fermer";
         closeBtn.style.cssText = "padding:6px 16px;border:1px solid #555;border-radius:6px;background:transparent;color:#999;font-size:12px;cursor:pointer;";
-        closeBtn.onclick = function() { panel.remove(); };
+        closeBtn.onclick = function() { m.close(); };
         closeBtn.onmouseenter = function() { closeBtn.style.background = "#3a3a3e"; closeBtn.style.color = "#fff"; };
         closeBtn.onmouseleave = function() { closeBtn.style.background = "transparent"; closeBtn.style.color = "#999"; };
-        footer.appendChild(closeBtn);
+        // Append close button inline at the bottom of body
+        var footerDiv = document.createElement("div");
+        footerDiv.style.cssText = "display:flex;justify-content:flex-end;padding-top:8px;border-top:1px solid #333;margin-top:4px;";
+        footerDiv.appendChild(closeBtn);
+        body.appendChild(footerDiv);
       }
     };
   }
-
-  // Pas besoin d'animation CSS — la barre utilise le polling de progression
 
   // ── Toast / progress ──
 
@@ -563,7 +543,16 @@
   // ── Modale unique ──
 
   window.openWorkflowManager = function () {
-    var _m = friaOpenModal("📤  Workflows", "", "680px");
+    var _m = friaOpenModalV2({
+        title: "📤  Workflows",
+        width: "680px",
+        height: "auto",
+        minWidth: "480px",
+        minHeight: "400px",
+        storageKey: "fria-modal-workflows",
+        persistSize: true,
+        persistPos: true
+    });
     var modal = _m.modal;
     var body = _m.body;
 
@@ -980,7 +969,8 @@
     window._wfDeleteWorkflow = async function(btn) {
       var id = parseInt(btn.getAttribute("data-wf-id"));
       var name = btn.getAttribute("data-wf-name") || "?";
-      if (!confirm("Supprimer le workflow \x22" + name + "\x22 ?\n\nLes models associés non utilisés par d\'autres workflows seront aussi supprimés.")) return;
+      var confirmed = await friaShowConfirm("Supprimer", 'Supprimer le workflow "' + name + '" ?<br><br>Les modèles associés non utilisés par d\'autres workflows seront aussi supprimés.');
+      if (!confirmed) return;
       btn.textContent = "⏳";
       try {
         var resp = await fetch(getApiUrl() + "/workflows/" + id, { method: "DELETE", headers: apiHeaders() });
@@ -994,13 +984,19 @@
       }
     };
 
-    window.friaOpenModalClose = function(btn) {
-      var modal = btn.closest('[style*="position: fixed"]');
-      if (modal) modal.remove();
-    };
+
 
     window._wfOpenDetail = function (workflowId) {
-      var _dm = friaOpenModal("📥 Workflow", "", "580px");
+      var _dm = friaOpenModalV2({
+          title: "📥 Workflow",
+          width: "580px",
+          height: "auto",
+          minWidth: "400px",
+          minHeight: "300px",
+          storageKey: "fria-modal-workflow-detail",
+          persistSize: true,
+          persistPos: true
+      });
       var detailModal = _dm.modal;
       var detailBody = _dm.body;
       detailBody.innerHTML = '<p style="color:#888;font-size:13px;text-align:center;padding:30px 0;">Chargement...</p>';
@@ -1018,10 +1014,11 @@
             '<div id="wf-install-deps" style="margin-bottom:12px;"></div>' +
             '<div style="display:flex;gap:8px;">' +
             '<button id="wf-load-btn" style="flex:1;padding:10px;border:none;border-radius:6px;background:#6366f1;color:#fff;font-size:13px;font-weight:600;cursor:pointer;">📥 Charger le workflow</button>' +
-            '<button onclick="friaOpenModalClose(this)" style="padding:10px 16px;border:1px solid #555;border-radius:6px;background:transparent;color:#999;font-size:13px;cursor:pointer;">Fermer</button></div>' +
+            '<button id="wf-close-btn" style="padding:10px 16px;border:1px solid #555;border-radius:6px;background:transparent;color:#999;font-size:13px;cursor:pointer;">Fermer</button></div>' +
             '<div id="wf-load-status" style="font-size:11px;color:#888;display:none;margin-top:8px;"></div>';
 
           detailBody.innerHTML = html;
+          detailBody.querySelector("#wf-close-btn").onclick = function() { _dm.close(); };
 
           // Dépendances — vérifier les models/loras locaux en async
           var allDeps = {
@@ -1263,20 +1260,22 @@
 
           // ── Reboot prompt modal ──
           function showRebootPrompt() {
-            var modal = document.createElement("div");
-            modal.style.cssText = "position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#1e1e24;border-radius:12px;box-shadow:0 16px 48px rgba(0,0,0,0.6);width:380px;z-index:99999;padding:20px;text-align:center;";
-            modal.innerHTML = 
-              '<div style="font-size:24px;margin-bottom:8px;">\u26a0\ufe0f</div>' +
-              '<div style="font-size:14px;font-weight:600;color:#e2e8f0;margin-bottom:8px;">Nouveaux custom nodes install\u00e9s</div>' +
-              '<div style="font-size:12px;color:#aaa;margin-bottom:16px;">ComfyUI doit red\u00e9marrer pour charger les nouvelles nodes.</div>' +
-              '<div style="display:flex;gap:8px;justify-content:center;">' +
-              '<button id="reboot-cancel" style="padding:8px 16px;border:1px solid #555;border-radius:6px;background:transparent;color:#999;font-size:13px;cursor:pointer;">Plus tard</button>' +
-              '<button id="reboot-now" style="padding:8px 16px;border:none;border-radius:6px;background:#6366f1;color:#fff;font-size:13px;font-weight:600;cursor:pointer;">Red\u00e9marrer</button>' +
-              '</div>';
-            document.body.appendChild(modal);
-            modal.querySelector("#reboot-cancel").onclick = function() { modal.remove(); };
-            modal.querySelector("#reboot-now").onclick = function() {
-              modal.innerHTML = '<div style="padding:20px;color:#fbbf24;font-size:13px;">Red\u00e9marrage en cours...</div>';
+            var m = friaOpenModalV2({
+              title: "⚠️ Redémarrage nécessaire",
+              width: "380px",
+              height: "auto",
+              minHeight: "auto",
+              resizable: false,
+              storageKey: null,
+              content: '<p style="color:#aaa;font-size:13px;margin-bottom:16px;text-align:center;">Nouveaux custom nodes installés.<br>ComfyUI doit redémarrer pour les charger.</p>' +
+                '<div style="display:flex;gap:8px;justify-content:center;">' +
+                '<button id="reboot-cancel" style="padding:8px 16px;border:1px solid #555;border-radius:6px;background:transparent;color:#999;font-size:13px;cursor:pointer;">Plus tard</button>' +
+                '<button id="reboot-now" style="padding:8px 16px;border:none;border-radius:6px;background:#6366f1;color:#fff;font-size:13px;font-weight:600;cursor:pointer;">Redémarrer</button>' +
+                '</div>',
+            });
+            m.modal.querySelector("#reboot-cancel").onclick = function() { m.close(); };
+            m.modal.querySelector("#reboot-now").onclick = function() {
+              m.setBody('<div style="padding:20px;text-align:center;color:#fbbf24;font-size:13px;">Redémarrage en cours...</div>');
               setTimeout(function() { window.location.reload(); }, 500);
             };
           }
@@ -1284,44 +1283,41 @@
           // ── Conflict resolution modal ──
           function showConflictModal(fileName, localInfo, remoteInfo) {
             return new Promise(function(resolve) {
-              var modal = document.createElement("div");
-              modal.style.cssText = "position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#1e1e24;border-radius:12px;box-shadow:0 16px 48px rgba(0,0,0,0.6);width:440px;z-index:100002;padding:20px;";
-              modal.innerHTML =
-                '<div style="font-size:16px;font-weight:600;color:#fbbf24;margin-bottom:12px;">\u26a0\ufe0f Conflit de model</div>' +
-                '<div style="font-size:13px;color:#ccc;margin-bottom:8px;">Un model local avec le m\u00eame nom existe mais avec un contenu diff\u00e9rent :</div>' +
-                '<div style="background:#2a2a2e;padding:10px;border-radius:6px;margin-bottom:12px;font-size:12px;color:#aaa;font-family:monospace;">' +
-                '<div>\ud83d\udcc1 <b style="color:#e2e8f0;">' + esc(fileName) + '</b></div>' +
-                '<div style="margin-top:4px;">Local: ' + (localInfo.size/1048576).toFixed(1) + ' MB (' + (localInfo.path || 'chemin inconnu') + ')</div>' +
-                '<div>Server: ' + (remoteInfo.size/1048576).toFixed(1) + ' MB</div>' +
-                '</div>' +
-                '<div style="display:flex;flex-direction:column;gap:8px;">' +
-                '<button id="conflict-overwrite" style="padding:10px;border:1px solid #f59e0b;border-radius:6px;background:transparent;color:#f59e0b;font-size:13px;cursor:pointer;">\u2705 \u00c9craser le fichier local</button>' +
-                '<button id="conflict-suffix" style="padding:10px;border:1px solid #6366f1;border-radius:6px;background:transparent;color:#6366f1;font-size:13px;cursor:pointer;">\u2795 T\u00e9l\u00e9charger avec un autre nom</button>' +
-                '<button id="conflict-keep" style="padding:10px;border:1px solid #34d399;border-radius:6px;background:transparent;color:#34d399;font-size:13px;cursor:pointer;">\ud83d\udd0d Garder le model local (skip)</button>' +
-                '</div>';
-              document.body.appendChild(modal);
-
-              modal.querySelector("#conflict-overwrite").onclick = function() {
-                modal.remove();
+              var m = friaOpenModalV2({
+                title: "⚠️ Conflit de modèle",
+                width: "440px",
+                height: "auto",
+                minHeight: "auto",
+                resizable: false,
+                content: '<div style="font-size:13px;color:#ccc;margin-bottom:8px;">Un modèle local avec le même nom existe mais avec un contenu différent :</div>' +
+                  '<div style="background:#1a1a1e;padding:10px;border-radius:6px;margin-bottom:12px;font-size:12px;color:#aaa;font-family:monospace;">' +
+                  '<div>📁 <b style="color:#e2e8f0;">' + esc(fileName) + '</b></div>' +
+                  '<div style="margin-top:4px;">Local: ' + (localInfo.size/1048576).toFixed(1) + ' MB (' + (localInfo.path || 'chemin inconnu') + ')</div>' +
+                  '<div>Server: ' + (remoteInfo.size/1048576).toFixed(1) + ' MB</div></div>' +
+                  '<div style="display:flex;flex-direction:column;gap:8px;">' +
+                  '<button id="conflict-overwrite" class="fria-btn-warning" style="padding:10px;border:1px solid #f59e0b;border-radius:6px;background:transparent;color:#f59e0b;font-size:13px;cursor:pointer;">✅ Écraser le fichier local</button>' +
+                  '<button id="conflict-suffix" class="fria-btn-primary" style="padding:10px;border:1px solid #6366f1;border-radius:6px;background:transparent;color:#6366f1;font-size:13px;cursor:pointer;">➕ Télécharger avec un autre nom</button>' +
+                  '<button id="conflict-keep" class="fria-btn-success" style="padding:10px;border:1px solid #34d399;border-radius:6px;background:transparent;color:#34d399;font-size:13px;cursor:pointer;">🔍 Garder le modèle local (skip)</button></div>',
+              });
+              m.modal.querySelector("#conflict-overwrite").onclick = function() {
+                m.close();
                 resolve({action: 'overwrite', newName: fileName});
               };
-              modal.querySelector("#conflict-suffix").onclick = function() {
-                // Generate suffix name: model_2.safetensors
+              m.modal.querySelector("#conflict-suffix").onclick = function() {
                 var dotIdx = fileName.lastIndexOf('.');
                 var base = dotIdx > 0 ? fileName.substring(0, dotIdx) : fileName;
                 var ext = dotIdx > 0 ? fileName.substring(dotIdx) : '';
                 var suffixName = base + '_2' + ext;
-                // Check if _2 already exists, try _3, _4, etc.
                 var counter = 2;
                 while (localFilesFlat[suffixName]) {
                   counter++;
                   suffixName = base + '_' + counter + ext;
                 }
-                modal.remove();
+                m.close();
                 resolve({action: 'suffix', newName: suffixName});
               };
-              modal.querySelector("#conflict-keep").onclick = function() {
-                modal.remove();
+              m.modal.querySelector("#conflict-keep").onclick = function() {
+                m.close();
                 resolve({action: 'keep', newName: fileName});
               };
             });
@@ -1615,7 +1611,7 @@
                 currentApp.loadGraphData(parsed).then(function () {
                   statusEl.style.color = "#34d399";
                   statusEl.textContent = "\u2705 Workflow charg\u00e9 !";
-                  setTimeout(function () { detailModal.remove(); }, 1500);
+                  setTimeout(function () { _dm.close(); }, 1500);
                   if (newNodesInstalled > 0) {
                     setTimeout(function() { showRebootPrompt(); }, 1600);
                   }
@@ -1630,7 +1626,7 @@
                 currentApp.loadGraphData(parsed);
                 statusEl.style.color = "#34d399";
                 statusEl.textContent = "\u2705 Workflow charg\u00e9 !";
-                setTimeout(function () { detailModal.remove(); }, 1500);
+                setTimeout(function () { _dm.close(); }, 1500);
                 if (newNodesInstalled > 0) {
                   setTimeout(function() { showRebootPrompt(); }, 1600);
                 }

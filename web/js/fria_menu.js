@@ -17,7 +17,7 @@ function setConfig(cfg) {
 
 // ── Modale draggable (style FR.IA, pas de fermeture au clic extérieur) ──
 
-// friaOpenModal est maintenant dans 00_fria_modal.js (chargé avant tous les autres fichiers)
+// Utilise friaOpenModalV2 (01_fria_modal_v2.js) pour toutes les fenêtres flottantes.
 
 // Wait for ComfyUI app to be available
 (function waitForApp() {
@@ -74,7 +74,7 @@ function initMenu(appInstance) {
         });
         el.onmouseenter = () => el.style.background = "#3a3a3e";
         el.onmouseleave = () => el.style.background = "";
-        el.onclick = () => { cb(); dd.style.display = "none"; };
+        el.onclick = async () => { await cb(); dd.style.display = "none"; };
         return el;
     };
 
@@ -84,14 +84,14 @@ function initMenu(appInstance) {
     }));
     dd.appendChild(mkItem("Workflows", "📤", () => {
         if (window.openWorkflowManager) window.openWorkflowManager();
-        else alert("Workflow Sharing pas encore chargé. Reessaye.");
+        else friaShowAlert("Info", "Workflow Sharing pas encore chargé. Réessaie.", "info");
     }));
     dd.appendChild(mkItem("Terminal", "💻", () => {
         if (window.friaTerminal) {
             window.friaTerminal.toggle();
         } else {
             console.warn("[FR.IA] Terminal widget pas encore charge.");
-            alert("FR.IA Terminal: widget pas encore chargé. Reessaye dans une seconde.");
+            friaShowAlert("Info", "FR.IA Terminal: widget pas encore chargé. Réessaie dans une seconde.", "info");
         }
     }));
     dd.appendChild(mkItem("Membres", "👥", () => openMembers()));
@@ -199,7 +199,16 @@ async function openMembers() {
     const baseUrl = (cfg.serverUrl || "https://kw.holaf.fr").replace(/\/+$/, "");
     const apiKey = cfg.apiKey || "";
 
-    const modal = friaOpenModal("👥 Membres", "<p style='color:#888;font-size:12px;'>Chargement...</p>", "560px");
+    const modal = friaOpenModalV2({
+        title: "👥 Membres",
+        content: "<p style='color:#888;font-size:12px;'>Chargement...</p>",
+        width: "560px",
+        height: "auto",
+        minHeight: "200px",
+        storageKey: "fria-modal-members",
+        persistSize: true,
+        persistPos: true
+    });
 
     try {
         const headers = {};
@@ -332,22 +341,16 @@ async function checkServerStatus(el) {
 
 function openSettings() {
     const cfg = getConfig();
-    const modal = friaOpenModal("", "", "720px");
-    // Cacher le titre par defaut
-    const titleSpan = modal.modal.querySelector("div:first-child span");
-    if (titleSpan) titleSpan.style.display = "none";
-
-    // Header custom
-    const header = document.createElement("div");
-    Object.assign(header.style, {
-        padding: "12px 16px", borderBottom: "1px solid #444", display: "flex",
-        alignItems: "center", justifyContent: "space-between",
+    const modal = friaOpenModalV2({
+        title: "⚙️ Paramètres FR.IA",
+        width: "720px",
+        height: "600px",
+        minWidth: "480px",
+        minHeight: "350px",
+        storageKey: "fria-modal-settings",
+        persistSize: true,
+        persistPos: true
     });
-    const title = document.createElement("h2");
-    title.textContent = "⚙️ Paramètres FR.IA";
-    Object.assign(title.style, { margin: "0", fontSize: "15px", color: "#fff", fontWeight: "600" });
-    header.appendChild(title);
-    modal.modal.querySelector("div:first-child").appendChild(header);
 
     // Tabs
     const tabsBar = document.createElement("div");
@@ -486,14 +489,14 @@ async function renderProvidersTab(container, cfg) {
                 try {
                     await _friaFetchApi("presets", { method: "POST", body });
                     reloadPresets();
-                } catch (e) { alert("Erreur duplication : " + e.message); }
+                } catch (e) { await friaShowAlert("Erreur", "Erreur duplication : " + e.message, "error"); }
             });
             const delBtn = mkBtn("Del", "padding:6px 12px;border-radius:4px;border:none;background:#7f1d1d;color:white;cursor:pointer;font-size:12px;", async () => {
-                if (!confirm("Supprimer " + p.name + " ?")) return;
+                var ok = await friaShowConfirm("Supprimer", "Supprimer " + p.name + " ?"); if (!ok) return;
                 try {
                     await _friaFetchApi(`presets/${p.id}`, { method: "DELETE" });
                     reloadPresets();
-                } catch (e) { alert("Erreur suppression : " + e.message); }
+                } catch (e) { await friaShowAlert("Erreur", "Erreur suppression : " + e.message, "error"); }
             });
             actions.append(editBtn, dupBtn, delBtn);
             row.append(left, actions);
@@ -558,7 +561,7 @@ async function renderProvidersTab(container, cfg) {
     const listModelsBtn = mkBtn("Lister", "padding:6px 10px;border-radius:4px;border:1px solid #6366f1;background:transparent;color:#6366f1;cursor:pointer;font-size:11px;flex:0 0 auto;height:28px;");
     listModelsBtn.onclick = async () => {
         const url = fUrl.input.value.trim();
-        if (!url) { alert("Saisis l'URL d'abord"); return; }
+        if (!url) { await friaShowAlert("Info", "Saisis l'URL d'abord", "info"); return; }
         try {
             let models;
             const isClient = fClientInput.checked;
@@ -581,13 +584,10 @@ async function renderProvidersTab(container, cfg) {
                 models = resp;
             }
             // Proposer un select inline pour choisir
-            const choice = prompt(
-                "Modèles trouves :\n" + models.map(m => "- " + m.id).join("\n") + "\n\nColle l'ID du modele desire :",
-                models[0]?.id || ""
-            );
+            var choice = await friaShowPrompt("Choisir un modèle", "Modèles trouvés :\n" + models.map(m => "- " + m.id).join("\n") + "\n\nColle l'ID du modèle désiré :", models[0]?.id || "");
             if (choice) fModel.value = choice.trim();
         } catch (e) {
-            alert("Erreur listage modeles : " + e.message);
+            await friaShowAlert("Erreur", "Erreur listage modèles : " + e.message, "error");
         }
     };
     modelRow.appendChild(listModelsBtn);
@@ -631,7 +631,7 @@ async function renderProvidersTab(container, cfg) {
             is_client_side: fClientInput.checked ? 1 : 0,
         };
         if (!body.name || !body.base_url || !body.model) {
-            alert("Nom, URL et modele sont requis"); return;
+            await friaShowAlert("Info", "Nom, URL et modèle sont requis", "info"); return;
         }
         try {
             if (editingId.value) {
@@ -645,7 +645,7 @@ async function renderProvidersTab(container, cfg) {
             fModel.value = ""; fGlobal.input.checked = false; fClientInput.checked = false;
             reloadPresets();
         } catch (e) {
-            alert("Erreur sauvegarde : " + e.message);
+            await friaShowAlert("Erreur", "Erreur sauvegarde : " + e.message, "error");
         }
     });
     btnRow.append(cancelBtn, saveBtn);
@@ -803,7 +803,9 @@ function renderCompteTab(container, cfg) {
 
 async function openUpdate() {
     // Modale d'attente
-    const modal = friaOpenModal("🔄 Update FR.IA", `
+    const modal = friaOpenModalV2({
+        title: "🔄 Update FR.IA",
+        content: `
         <div style="padding:8px 0;">
             <p style="color:#ccc; font-size:13px; margin:0 0 12px;">
                 Mise à jour du repo <code style="background:#1a1a1e; padding:1px 5px; border-radius:3px;">FRIA_Tools</code> en cours...
@@ -814,7 +816,12 @@ async function openUpdate() {
             <div id="fria-update-log" style="background:#1a1a1e; border:1px solid #333; border-radius:6px; padding:10px; font-family:monospace; font-size:11px; color:#aaa; max-height:280px; overflow-y:auto; white-space:pre-wrap; display:none;"></div>
         </div>
         <style>@keyframes fria-spin { to { transform: rotate(360deg); } }</style>
-    `, "520px");
+        `,
+        width: "520px",
+        height: "auto",
+        minHeight: "250px",
+        storageKey: null
+    });
 
     const logEl = modal.body.querySelector("#fria-update-log");
     const spinnerEl = modal.body.querySelector("#fria-update-spinner");
