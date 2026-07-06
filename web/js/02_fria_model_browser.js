@@ -1243,7 +1243,7 @@
                     if (typeof friaShowConfirm === 'function') {
                         friaShowConfirm('Supprimer', 'Supprimer "' + _esc(item.filename || displayName) + '" ?').then(function (ok) {
                             if (!ok) return;
-                            fetch('/api/fria/models/remote/' + (item.upload_id || item.id || item._id), { method: 'DELETE' })
+                            _fetchFriaApi('fria/models/remote/' + (item.upload_id || item.id || item._id), { method: 'DELETE' })
                                 .then(function (r) { return r.json(); })
                                 .then(function (d) {
                                     if (d.status === 'ok') {
