@@ -481,7 +481,7 @@
 
         m._localList.innerHTML = '<div class="mb-loading"><span class="mb-loading-spinner"></span> Chargement...</div>';
 
-        fetch(url, { headers: apiHeaders() })
+        fetch(url)
             .then(function (r) {
                 if (!r.ok) throw new Error('HTTP ' + r.status);
                 return r.json();
@@ -523,7 +523,7 @@
             m._remoteList.innerHTML = '<div class="mb-loading"><span class="mb-loading-spinner"></span> Chargement...</div>';
         }
 
-        fetch(url, { headers: apiHeaders() })
+        fetch(url)
             .then(function (r) {
                 if (!r.ok) throw new Error('HTTP ' + r.status);
                 return r.json();
@@ -775,9 +775,8 @@
 
         var progressEl = showProgress(m, filename || filepath);
 
-        fetch(getApiUrl() + '/fria/models/upload', {
+        fetch('/api/fria/models/upload', {
             method: 'POST',
-            headers: apiHeaders(),
             body: JSON.stringify({
                 path: filepath,
                 type: fileType || 'other',
@@ -815,9 +814,8 @@
 
         var progressEl = showProgress(m, filename);
 
-        fetch(getApiUrl() + '/fria/models/download', {
+        fetch('/api/fria/models/download', {
             method: 'POST',
-            headers: apiHeaders(),
             body: JSON.stringify({
                 upload_id: uploadId,
                 filename: filename,
@@ -891,9 +889,8 @@
             conflict_resolution: resolution,
         };
 
-        fetch(getApiUrl() + '/fria/models/download', {
+        fetch('/api/fria/models/download', {
             method: 'POST',
-            headers: apiHeaders(),
             body: JSON.stringify(body),
         })
             .then(function (r) {
