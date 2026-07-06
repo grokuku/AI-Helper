@@ -578,6 +578,46 @@ def increment_model_download(upload_id):
         conn.close()
 
 
+@app.route('/api/fria/models/remote/<upload_id>', methods=['DELETE'])
+def delete_remote_model(upload_id):
+    """
+    Supprime un modèle distant (admin uniquement).
+    - Vérifie que l'utilisateur est admin
+    - Supprime le fichier du storage (si final_path existe)
+    - Supprime l'enregistrement en base
+    """
+    guard = _admin_required()
+    if guard:
+        return guard
+
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT final_path, filename, status FROM file_uploads WHERE upload_id = ?",
+            (upload_id,)
+        ).fetchone()
+
+        if not row:
+            return jsonify({'error': 'Modèle introuvable'}), 404
+
+        # Supprimer le fichier physique si présent et complet
+        if row['final_path'] and row['status'] == 'complete':
+            try:
+                storage = get_storage()
+                storage.delete(row['final_path'])
+            except Exception as e:
+                # Log l'erreur mais ne pas bloquer la suppression BDD
+                pass
+
+        # Supprimer l'enregistrement
+        conn.execute("DELETE FROM file_uploads WHERE upload_id = ?", (upload_id,))
+        conn.commit()
+
+        return jsonify({'status': 'ok', 'deleted': row['filename']})
+    finally:
+        conn.close()
+
+
 @app.route('/api/files/<upload_id>', methods=['DELETE'])
 def delete_file(upload_id):
     """Supprime un fichier du stockage."""

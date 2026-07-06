@@ -144,6 +144,20 @@
             "  text-overflow: ellipsis;",
             "  white-space: nowrap;",
             "}",
+            ".mb-path { font-size: 10px; color: #666; display: block; margin-top: 1px; }",
+            ".mb-checkbox { margin-right: 6px; flex-shrink: 0; accent-color: #6366f1; }",
+            ".mb-panel-footer { padding: 6px 0; flex-shrink: 0; display: flex; justify-content: flex-end; }",
+            ".mb-batch-btn { padding: 6px 12px; border-radius: 6px; border: none; font-size: 11px; cursor: pointer; font-weight: 600; transition: all 0.15s; }",
+            ".mb-batch-btn:disabled { opacity: 0.4; cursor: default; }",
+            ".mb-batch-upload { background: #6366f1; color: #fff; }",
+            ".mb-batch-download { background: #22c55e; color: #fff; }",
+            ".mb-dest-container { display: none; align-items: center; gap: 4px; flex-shrink: 0; }",
+            ".mb-item.selected .mb-dest-container { display: flex; }",
+            ".mb-dest-input { width: 70px; padding: 2px 4px; border-radius: 3px; border: 1px solid #555; background: #1e1e22; color: #ccc; font-size: 10px; outline: none; }",
+            ".mb-dest-input:focus { border-color: #6366f1; }",
+            ".mb-dest-input::placeholder { color: #555; }",
+            ".mb-del-btn { background: none; border: none; cursor: pointer; font-size: 14px; padding: 0 4px; opacity: 0.5; transition: opacity 0.15s; flex-shrink: 0; }",
+            ".mb-del-btn:hover { opacity: 1; }",
             ".mb-item .mb-size {",
             "  font-size: 10px;",
             "  color: #666;",
@@ -267,11 +281,15 @@
         { key: 'lora', label: 'LoRAs', color: '#f472b6' },
         { key: 'vae', label: 'VAE', color: '#fbbf24' },
         { key: 'clip', label: 'CLIP', color: '#f87171' },
+        { key: 'clip_vision', label: 'CLIP Vision', color: '#f87171' },
         { key: 'controlnet', label: 'ControlNet', color: '#38bdf8' },
         { key: 'upscale', label: 'Upscale', color: '#fb923c' },
         { key: 'text_encoder', label: 'Text Enc.', color: '#e879f9' },
         { key: 'style_model', label: 'Style', color: '#2dd4bf' },
         { key: 'diffusion_model', label: 'Diffusion', color: '#f0abfc' },
+        { key: 'gligen', label: 'GLIGEN', color: '#a78bfa' },
+        { key: 'hypernetwork', label: 'HyperNet', color: '#f472b6' },
+        { key: 'embedding', label: 'Embeddings', color: '#94a3b8' },
         { key: 'other', label: 'Autres', color: '#888' },
     ];
 
@@ -314,6 +332,196 @@
         return val || null;
     }
 
+    // ─── Helpers multi-sélection ───────────────────────────────────────────────
+    function getSelected(items) {
+        return items.filter(function (i) { return i._selected; });
+    }
+
+    function updateBatchButtons(m) {
+        var localSel = getSelected(m._localItems || []).length;
+        var remoteSel = getSelected(m._remoteItems || []).length;
+        var localBtn = m.modal ? m.modal.querySelector('.mb-batch-upload') : null;
+        var remoteBtn = m.modal ? m.modal.querySelector('.mb-batch-download') : null;
+        if (localBtn) {
+            localBtn.disabled = localSel === 0;
+            localBtn.textContent = '↗ Upload selected (' + localSel + ')';
+        }
+        if (remoteBtn) {
+            remoteBtn.disabled = remoteSel === 0;
+            remoteBtn.textContent = '↙ Download selected (' + remoteSel + ')';
+        }
+    }
+
+    // ─── uploadFile (promise-based, pour batch) ────────────────────────────────
+    function uploadFile(m, item) {
+        return new Promise(function (resolve, reject) {
+            var filepath = item.path || item.filepath;
+            var fileType = getEffectiveType(item);
+            var filename = item.name || item.filename || '?';
+
+            if (!filepath) {
+                reject(new Error('Chemin du fichier manquant'));
+                return;
+            }
+
+            var progressEl = showProgress(m, filename);
+
+            fetch('/api/fria/models/upload', {
+                method: 'POST',
+                body: JSON.stringify({
+                    path: filepath,
+                    type: fileType,
+                }),
+            })
+                .then(function (r) {
+                    if (!r.ok) return r.json().then(function (d) {
+                        throw new Error(d.error || d.message || 'HTTP ' + r.status);
+                    });
+                    return r.json();
+                })
+                .then(function (data) {
+                    if (data.status === 'ok' || data.success) {
+                        updateProgress(progressEl, 100, '✅ Upload terminé');
+                        resolve();
+                    } else {
+                        updateProgress(progressEl, 0, '❌ Erreur: ' + (data.error || data.message || 'inconnue'));
+                        reject(new Error(data.error || 'Échec'));
+                    }
+                })
+                .catch(function (err) {
+                    updateProgress(progressEl, 0, '❌ Erreur: ' + err.message);
+                    reject(err);
+                });
+        });
+    }
+
+    // ─── downloadFile (promise-based, pour batch) ──────────────────────────────
+    function downloadFile(m, item) {
+        return new Promise(function (resolve, reject) {
+            var uploadId = item.id || item.upload_id || item._id;
+            var displayName = item.name || item.filename || '?';
+            var fileType = getEffectiveType(item);
+            var destSubdir = item.type || item.model_type || '';
+
+            if (!uploadId) {
+                reject(new Error('ID du modèle distant manquant'));
+                return;
+            }
+
+            var progressEl = showProgress(m, displayName);
+
+            fetch('/api/fria/models/download', {
+                method: 'POST',
+                body: JSON.stringify({
+                    upload_id: uploadId,
+                    filename: displayName,
+                    type: fileType,
+                    dest_path: destSubdir,
+                }),
+            })
+                .then(function (r) {
+                    if (!r.ok) return r.json().then(function (d) {
+                        throw new Error(d.error || d.message || 'HTTP ' + r.status);
+                    });
+                    return r.json();
+                })
+                .then(function (data) {
+                    if (data.status === 'ok' || data.success) {
+                        if (data.conflict) {
+                            updateProgress(progressEl, 50, '⚠️ Conflit, ignore...');
+                            resolve();
+                            return;
+                        }
+                        updateProgress(progressEl, 100, '✅ Download terminé');
+                        resolve();
+                    } else {
+                        updateProgress(progressEl, 0, '❌ Erreur: ' + (data.error || data.message || 'inconnue'));
+                        reject(new Error(data.error || 'Échec'));
+                    }
+                })
+                .catch(function (err) {
+                    updateProgress(progressEl, 0, '❌ Erreur: ' + err.message);
+                    reject(err);
+                });
+        });
+    }
+
+    // ─── batchUpload ────────────────────────────────────────────────────────────
+    function batchUpload(m) {
+        var selected = getSelected(m._localItems || []);
+        if (selected.length === 0) return;
+        var btn = m.modal.querySelector('.mb-batch-upload');
+        if (!btn) return;
+        btn.disabled = true;
+        btn.textContent = '⏳ Upload...';
+
+        var done = 0;
+        function next() {
+            if (done >= selected.length) {
+                btn.textContent = '✅ Terminé';
+                setTimeout(function () {
+                    btn.textContent = '↗ Upload selected (0)';
+                    btn.disabled = true;
+                }, 2000);
+                // Désélectionner tout
+                selected.forEach(function (i) { i._selected = false; });
+                m._remotePage = 1;
+                m._remoteHasMore = true;
+                loadRemoteModels(m);
+                loadLocalModels(m);
+                return;
+            }
+            var item = selected[done];
+            btn.textContent = '↗ ' + (done + 1) + '/' + selected.length + ' ' + (item.name || item.filename || '?');
+            uploadFile(m, item).then(function () {
+                done++;
+                next();
+            }).catch(function () {
+                done++;
+                next();
+            });
+        }
+        next();
+    }
+
+    // ─── batchDownload ──────────────────────────────────────────────────────────
+    function batchDownload(m) {
+        var selected = getSelected(m._remoteItems || []);
+        if (selected.length === 0) return;
+        var btn = m.modal.querySelector('.mb-batch-download');
+        if (!btn) return;
+        btn.disabled = true;
+        btn.textContent = '⏳ Download...';
+
+        var done = 0;
+        function next() {
+            if (done >= selected.length) {
+                btn.textContent = '✅ Terminé';
+                setTimeout(function () {
+                    btn.textContent = '↙ Download selected (0)';
+                    btn.disabled = true;
+                }, 2000);
+                // Désélectionner tout
+                selected.forEach(function (i) { i._selected = false; });
+                m._remotePage = 1;
+                m._remoteHasMore = true;
+                loadRemoteModels(m);
+                loadLocalModels(m);
+                return;
+            }
+            var item = selected[done];
+            btn.textContent = '↙ ' + (done + 1) + '/' + selected.length + ' ' + (item.name || item.filename || '?');
+            downloadFile(m, item).then(function () {
+                done++;
+                next();
+            }).catch(function () {
+                done++;
+                next();
+            });
+        }
+        next();
+    }
+
     // ─── openModelBrowser ────────────────────────────────────────────────────────
     window.openModelBrowser = function () {
         _mbInjectCSS();
@@ -352,11 +560,17 @@
             '  <div class="mb-panel mb-panel-local">' +
             '    <div class="mb-panel-header">📁 Local (ComfyUI)</div>' +
             '    <div class="mb-panel-list" id="mb-local-list"></div>' +
+            '    <div class="mb-panel-footer">' +
+            '      <button class="mb-batch-btn mb-batch-upload" disabled>↗ Upload selected (0)</button>' +
+            '    </div>' +
             '  </div>' +
             '  <div class="mb-divider"></div>' +
             '  <div class="mb-panel mb-panel-remote">' +
             '    <div class="mb-panel-header">🌐 Remote (FR.IA)</div>' +
             '    <div class="mb-panel-list" id="mb-remote-list"></div>' +
+            '    <div class="mb-panel-footer">' +
+            '      <button class="mb-batch-btn mb-batch-download" disabled>↙ Download selected (0)</button>' +
+            '    </div>' +
             '  </div>' +
             '</div>' +
             '<div class="mb-progress" id="mb-progress" style="display:none;"></div>';
@@ -370,6 +584,24 @@
         m._localPage = 1;
         m._remotePage = 1;
         m._remoteHasMore = true;
+        m._currentUser = null;
+
+        // Récupérer le rôle de l'utilisateur (pour les actions admin)
+        fetch('/api/auth/me')
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                if (data && data.role) {
+                    m._currentUser = { role: data.role };
+                    // Re-rendre le panneau distant si déjà chargé
+                    if (m._remoteItems && m._remoteItems.length) {
+                        renderRemotePanel(m, { items: m._remoteItems });
+                    }
+                }
+            })
+            .catch(function () {
+                // Pas grave, on reste en mode non-admin
+                m._currentUser = { role: 'user' };
+            });
 
         // Filtres
         renderFilters(m);
@@ -387,6 +619,22 @@
                 loadRemoteModels(m);
             }
         });
+
+        // Bouton batch upload
+        var batchUploadBtn = m.modal.querySelector('.mb-batch-upload');
+        if (batchUploadBtn) {
+            batchUploadBtn.addEventListener('click', function () {
+                batchUpload(m);
+            });
+        }
+
+        // Bouton batch download
+        var batchDownloadBtn = m.modal.querySelector('.mb-batch-download');
+        if (batchDownloadBtn) {
+            batchDownloadBtn.addEventListener('click', function () {
+                batchDownload(m);
+            });
+        }
 
         // Rafraîchissement périodique toutes les 30s
         m._refreshTimer = setInterval(function () {
@@ -435,6 +683,39 @@
 
             container.appendChild(label);
         });
+
+        // Select All / Deselect All
+        var selectAllSpan = document.createElement('span');
+        selectAllSpan.className = 'mb-select-all';
+        selectAllSpan.style.cssText = 'font-size:10px;color:#888;cursor:pointer;user-select:none;';
+        selectAllSpan.innerHTML = '[<a href="#" class="mb-select-all-link" data-action="all">Tout</a>] [<a href="#" class="mb-select-all-link" data-action="none">Aucun</a>]';
+        selectAllSpan.addEventListener('click', function (e) {
+            if (e.target.tagName === 'A') {
+                e.preventDefault();
+                var action = e.target.dataset.action;
+                var checkboxes = container.querySelectorAll('.mb-filter-checkbox');
+                checkboxes.forEach(function (label) {
+                    var cb = label.querySelector('input[type="checkbox"]');
+                    if (action === 'all') {
+                        if (!label.classList.contains('active')) {
+                            label.classList.add('active');
+                            cb.checked = true;
+                        }
+                    } else {
+                        if (label.classList.contains('active')) {
+                            label.classList.remove('active');
+                            cb.checked = false;
+                        }
+                    }
+                });
+                // Re-filtrer les deux listes
+                m._remotePage = 1;
+                m._remoteHasMore = true;
+                loadLocalModels(m);
+                loadRemoteModels(m);
+            }
+        });
+        container.appendChild(selectAllSpan);
 
         // Champs de recherche
         var searchGroup = document.createElement('div');
@@ -495,9 +776,28 @@
                 // On l'aplatit en tableau en déduisant le type depuis la catégorie
                 var itemsObj = data.items || {};
                 var flatItems = [];
+                var CATEGORY_TO_TYPE = {
+                    'checkpoints':     'checkpoint',
+                    'loras':           'lora',
+                    'vae':             'vae',
+                    'clip':            'clip',
+                    'clip_vision':     'clip_vision',
+                    'controlnet':      'controlnet',
+                    'unet':            'unet',
+                    'unet_gguf':       'unet_gguf',
+                    'upscale_models':  'upscale',
+                    'gligen':          'gligen',
+                    'hypernetworks':   'hypernetwork',
+                    'text_encoders':   'text_encoder',
+                    'style_models':    'style_model',
+                    'diffusion_models':'diffusion_model',
+                    'configs':         'other',
+                    'embeddings':      'embedding',
+                    'bbxe/models':     'other',
+                };
                 Object.keys(itemsObj).forEach(function (category) {
                     (itemsObj[category] || []).forEach(function (item) {
-                        item.type = item.type || category;
+                        item.type = CATEGORY_TO_TYPE[category] || category;
                         flatItems.push(item);
                     });
                 });
@@ -571,14 +871,56 @@
         items.forEach(function (item) {
             var div = document.createElement('div');
             div.className = 'mb-item';
+            item._selected = false;
+
+            // Checkbox multi-sélection
+            var cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.className = 'mb-checkbox';
+            cb.addEventListener('click', function (e) { e.stopPropagation(); });
+            cb.addEventListener('change', function () {
+                item._selected = cb.checked;
+                if (cb.checked) div.classList.add('selected');
+                else div.classList.remove('selected');
+                updateBatchButtons(m);
+            });
+            div.appendChild(cb);
 
             // Badge type
-            var typeInfo = getTypeInfo(item.type || item.model_type || 'other');
+            var typeInfo = getTypeInfo(getEffectiveType(item));
             var badge = document.createElement('span');
             badge.className = 'mb-badge';
             badge.textContent = typeInfo.label;
             badge.style.background = typeInfo.color;
             div.appendChild(badge);
+
+            // Clic sur le badge → éditer le type
+            badge.addEventListener('click', function (e) {
+                e.stopPropagation();
+                var sel = document.createElement('select');
+                sel.className = 'mb-type-edit';
+                MODEL_TYPES.forEach(function (t) {
+                    var opt = document.createElement('option');
+                    opt.value = t.key;
+                    opt.textContent = t.label;
+                    sel.appendChild(opt);
+                });
+                sel.value = getEffectiveType(item);
+                badge.replaceWith(sel);
+                sel.focus();
+                sel.addEventListener('change', function () {
+                    item._overrideType = sel.value;
+                    badge.textContent = getTypeInfo(sel.value).label;
+                    badge.style.background = getTypeInfo(sel.value).color;
+                    sel.replaceWith(badge);
+                });
+                sel.addEventListener('blur', function () {
+                    if (sel.parentNode) { sel.replaceWith(badge); }
+                });
+                sel.addEventListener('keydown', function (ev) {
+                    if (ev.key === 'Escape') { sel.replaceWith(badge); }
+                });
+            });
 
             // Nom
             var nameSpan = document.createElement('span');
@@ -586,6 +928,13 @@
             nameSpan.textContent = item.name || item.filename || '?';
             nameSpan.title = item.name || item.filename || '';
             div.appendChild(nameSpan);
+
+            // Chemin relatif
+            var relPath = (item.path || '').replace(/^.*?models[/\\]/, '');
+            var pathEl = document.createElement('span');
+            pathEl.className = 'mb-path';
+            pathEl.textContent = relPath;
+            div.appendChild(pathEl);
 
             // Taille
             var sizeSpan = document.createElement('span');
@@ -608,21 +957,22 @@
             uploadBtn.textContent = '↗ Upload';
             uploadBtn.addEventListener('click', function (e) {
                 e.stopPropagation();
-                uploadLocalModel(m, item.path || item.filepath, item.type || item.model_type, item.name || item.filename);
+                uploadLocalModel(m, item.path || item.filepath, getEffectiveType(item), item.name || item.filename);
             });
             div.appendChild(uploadBtn);
 
-            // Clic simple → sélection
+            // Clic simple → toggle sélection (multi-select)
             div.addEventListener('click', function () {
-                // Deselect all others
-                var allItems = list.querySelectorAll('.mb-item');
-                allItems.forEach(function (el) { el.classList.remove('selected'); });
-                div.classList.add('selected');
+                cb.checked = !cb.checked;
+                item._selected = cb.checked;
+                if (cb.checked) div.classList.add('selected');
+                else div.classList.remove('selected');
+                updateBatchButtons(m);
             });
 
             // Double-clic → upload direct
             div.addEventListener('dblclick', function () {
-                uploadLocalModel(m, item.path || item.filepath, item.type || item.model_type, item.name || item.filename);
+                uploadLocalModel(m, item.path || item.filepath, getEffectiveType(item), item.name || item.filename);
             });
 
             list.appendChild(div);
@@ -667,14 +1017,56 @@
         items.forEach(function (item) {
             var div = document.createElement('div');
             div.className = 'mb-item';
+            item._selected = false;
+
+            // Checkbox multi-sélection
+            var cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.className = 'mb-checkbox';
+            cb.addEventListener('click', function (e) { e.stopPropagation(); });
+            cb.addEventListener('change', function () {
+                item._selected = cb.checked;
+                if (cb.checked) div.classList.add('selected');
+                else div.classList.remove('selected');
+                updateBatchButtons(m);
+            });
+            div.appendChild(cb);
 
             // Badge type
-            var typeInfo = getTypeInfo(item.type || item.model_type || 'other');
+            var typeInfo = getTypeInfo(getEffectiveType(item));
             var badge = document.createElement('span');
             badge.className = 'mb-badge';
             badge.textContent = typeInfo.label;
             badge.style.background = typeInfo.color;
             div.appendChild(badge);
+
+            // Clic sur le badge → éditer le type
+            badge.addEventListener('click', function (e) {
+                e.stopPropagation();
+                var sel = document.createElement('select');
+                sel.className = 'mb-type-edit';
+                MODEL_TYPES.forEach(function (t) {
+                    var opt = document.createElement('option');
+                    opt.value = t.key;
+                    opt.textContent = t.label;
+                    sel.appendChild(opt);
+                });
+                sel.value = getEffectiveType(item);
+                badge.replaceWith(sel);
+                sel.focus();
+                sel.addEventListener('change', function () {
+                    item._overrideType = sel.value;
+                    badge.textContent = getTypeInfo(sel.value).label;
+                    badge.style.background = getTypeInfo(sel.value).color;
+                    sel.replaceWith(badge);
+                });
+                sel.addEventListener('blur', function () {
+                    if (sel.parentNode) { sel.replaceWith(badge); }
+                });
+                sel.addEventListener('keydown', function (ev) {
+                    if (ev.key === 'Escape') { sel.replaceWith(badge); }
+                });
+            });
 
             // Nom
             var nameSpan = document.createElement('span');
@@ -683,6 +1075,13 @@
             nameSpan.textContent = displayName;
             nameSpan.title = displayName;
             div.appendChild(nameSpan);
+
+            // Chemin distant
+            var relPath = (item.type || '') + '/' + (item.filename || '');
+            var pathEl = document.createElement('span');
+            pathEl.className = 'mb-path';
+            pathEl.textContent = relPath;
+            div.appendChild(pathEl);
 
             // Extra info (uploader + date)
             var extraSpan = document.createElement('span');
@@ -713,30 +1112,74 @@
                 div.appendChild(check);
             }
 
-            // Bouton download
-            var dlBtn = document.createElement('button');
-            dlBtn.className = 'mb-action-btn mb-download-btn';
-            dlBtn.textContent = '↙ Download';
-            dlBtn.addEventListener('click', function (e) {
+            // Container download avec chemin éditable
+            var destContainer = document.createElement('div');
+            destContainer.className = 'mb-dest-container';
+
+            var destInput = document.createElement('input');
+            destInput.type = 'text';
+            destInput.className = 'mb-dest-input';
+            destInput.value = item.type || '';
+            destInput.placeholder = 'unet/';
+
+            var destBtn = document.createElement('button');
+            destBtn.className = 'mb-action-btn mb-download-btn';
+            destBtn.textContent = '↙ Download';
+            destBtn.addEventListener('click', function (e) {
                 e.stopPropagation();
                 var uploadId = item.id || item.upload_id || item._id;
-                var destSubdir = item.type || item.model_type || '';
-                downloadRemoteModel(m, uploadId, displayName, item.type || item.model_type, destSubdir);
+                var destSubdir = destInput.value.trim() || item.type || item.model_type || '';
+                downloadRemoteModel(m, uploadId, displayName, getEffectiveType(item), destSubdir);
             });
-            div.appendChild(dlBtn);
 
-            // Clic simple → sélection
+            destContainer.appendChild(destInput);
+            destContainer.appendChild(destBtn);
+            div.appendChild(destContainer);
+
+            // Bouton supprimer (admin seulement)
+            if (m._currentUser && m._currentUser.role === 'admin') {
+                var delBtn = document.createElement('button');
+                delBtn.textContent = '🗑';
+                delBtn.className = 'mb-del-btn';
+                delBtn.title = 'Supprimer ce modèle';
+                delBtn.addEventListener('click', function (e) {
+                    e.stopPropagation();
+                    if (typeof friaShowConfirm === 'function') {
+                        friaShowConfirm('Supprimer', 'Supprimer "' + _esc(item.filename || displayName) + '" ?').then(function (ok) {
+                            if (!ok) return;
+                            fetch('/api/fria/models/remote/' + (item.upload_id || item.id || item._id), { method: 'DELETE' })
+                                .then(function (r) { return r.json(); })
+                                .then(function (d) {
+                                    if (d.status === 'ok') {
+                                        m._remotePage = 1;
+                                        m._remoteHasMore = true;
+                                        loadRemoteModels(m);
+                                    } else {
+                                        if (typeof friaShowAlert === 'function') {
+                                            friaShowAlert('Erreur', d.error || 'Échec', 'error');
+                                        }
+                                    }
+                                });
+                        });
+                    }
+                });
+                div.appendChild(delBtn);
+            }
+
+            // Clic simple → toggle sélection (multi-select)
             div.addEventListener('click', function () {
-                var allItems = list.querySelectorAll('.mb-item');
-                allItems.forEach(function (el) { el.classList.remove('selected'); });
-                div.classList.add('selected');
+                cb.checked = !cb.checked;
+                item._selected = cb.checked;
+                if (cb.checked) div.classList.add('selected');
+                else div.classList.remove('selected');
+                updateBatchButtons(m);
             });
 
             // Double-clic → download direct
             div.addEventListener('dblclick', function () {
                 var uploadId = item.id || item.upload_id || item._id;
-                var destSubdir = item.type || item.model_type || '';
-                downloadRemoteModel(m, uploadId, displayName, item.type || item.model_type, destSubdir);
+                var destSubdir = destInput.value.trim() || item.type || item.model_type || '';
+                downloadRemoteModel(m, uploadId, displayName, getEffectiveType(item), destSubdir);
             });
 
             list.appendChild(div);
@@ -751,6 +1194,11 @@
             loadMore.innerHTML = '<span class="mb-loading-spinner"></span> Scrollez pour charger plus...';
             list.appendChild(loadMore);
         }
+    }
+
+    // ─── getEffectiveType ───────────────────────────────────────────────────────
+    function getEffectiveType(item) {
+        return item._overrideType || item.type || 'other';
     }
 
     // ─── getTypeInfo ────────────────────────────────────────────────────────────
