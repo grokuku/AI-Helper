@@ -1248,7 +1248,9 @@
                                 .then(function (d) {
                                     if (d.status === 'ok') {
                                         m._remotePage = 1;
+                                        m._remoteLoading = false;
                                         m._remoteHasMore = true;
+                                        m._remoteList.innerHTML = '<div class="mb-loading"><span class="mb-loading-spinner"></span> Chargement...</div>';
                                         loadRemoteModels(m);
                                     } else {
                                         if (typeof friaShowAlert === 'function') {
