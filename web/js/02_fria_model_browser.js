@@ -297,6 +297,20 @@
         });
     }
 
+    // ─── Fetch vers l'API FR.IA (backend kw.holaf.fr) ───────────────────────────
+    function _fetchFriaApi(path, opts) {
+        opts = opts || {};
+        // Lire la config depuis localStorage (même clé que fria_menu.js)
+        var cfg = {};
+        try { cfg = JSON.parse(localStorage.getItem('FRIA_config') || '{}'); } catch(e) {}
+        var baseUrl = (cfg.serverUrl || 'https://kw.holaf.fr').replace(/\/+$/, '');
+        var headers = { 'Content-Type': 'application/json' };
+        if (cfg.apiKey) headers['Authorization'] = 'Bearer ' + cfg.apiKey;
+        var cleanPath = path.replace(/^\/+/, '');
+        var finalPath = cleanPath.startsWith('api/') ? cleanPath : 'api/' + cleanPath;
+        return fetch(baseUrl + '/' + finalPath, Object.assign({}, opts, { headers: Object.assign({}, opts.headers || {}, headers) }));
+    }
+
     function getActiveTypeFilters() {
         var checked = document.querySelectorAll('.mb-filter-checkbox.active');
         var types = [];
@@ -617,7 +631,7 @@
         m._currentUser = null;
 
         // Récupérer le rôle de l'utilisateur (pour les actions admin)
-        fetch('/api/auth/me')
+        _fetchFriaApi('auth/me')
             .then(function (r) { return r.json(); })
             .then(function (data) {
                 if (data && data.role) {
