@@ -182,6 +182,7 @@
             "  flex-shrink: 0;",
             "  margin-left: 4px;",
             "}",
+            ".mb-sep { color: #555; font-size: 12px; margin: 0 2px; flex-shrink: 0; }",
             /* Divider vertical */
             ".mb-divider {",
             "  width: 1px;",
@@ -275,6 +276,9 @@
         { key: 'other', label: 'Autres', color: '#888' },
     ];
 
+    // ─── Cache local (évite les re-fetch inutiles) ──────────────────────────────
+    var _localModelsCache = null;
+
     // ─── Helpers ─────────────────────────────────────────────────────────────────
     function formatSize(bytes) {
         if (!bytes && bytes !== 0) return "";
@@ -312,6 +316,25 @@
         var input = document.getElementById('mb-search-remote');
         var val = input ? input.value.trim() : "";
         return val || null;
+    }
+
+    // ─── Filtre les items locaux depuis le cache (type + search) ───────────────
+    function filterLocalItems(items, types, search) {
+        if (!items) return [];
+        var result = items.slice();
+        if (types && types.length) {
+            result = result.filter(function (i) {
+                return types.indexOf(getEffectiveType(i)) >= 0;
+            });
+        }
+        if (search) {
+            var q = search.toLowerCase();
+            result = result.filter(function (i) {
+                var name = (i.name || i.filename || '').toLowerCase();
+                return name.indexOf(q) >= 0;
+            });
+        }
+        return result;
     }
 
     // ─── Helpers multi-sélection ───────────────────────────────────────────────
@@ -462,7 +485,7 @@
                 m._remotePage = 1;
                 m._remoteHasMore = true;
                 loadRemoteModels(m);
-                loadLocalModels(m);
+                loadLocalModels(m, true);
                 return;
             }
             var item = selected[done];
@@ -500,7 +523,7 @@
                 m._remotePage = 1;
                 m._remoteHasMore = true;
                 loadRemoteModels(m);
-                loadLocalModels(m);
+                loadLocalModels(m, true);
                 return;
             }
             var item = selected[done];
@@ -553,13 +576,6 @@
         });
         renderModelBrowser(m);
 
-        // Nettoyer le timer à la fermeture
-        m.modal.addEventListener('fria-modal-close', function () {
-            if (m._refreshTimer) {
-                clearInterval(m._refreshTimer);
-                m._refreshTimer = null;
-            }
-        });
     };
 
     // ─── renderModelBrowser ──────────────────────────────────────────────────────
@@ -650,13 +666,6 @@
             });
         }
 
-        // Rafraîchissement périodique toutes les 30s
-        m._refreshTimer = setInterval(function () {
-            m._remotePage = 1;
-            m._remoteHasMore = true;
-            loadLocalModels(m);
-            loadRemoteModels(m);
-        }, 30000);
     }
 
     // ─── renderFilters ──────────────────────────────────────────────────────────
@@ -764,19 +773,20 @@
     }
 
     // ─── loadLocalModels ───────────────────────────────────────────────────────
-    function loadLocalModels(m) {
+    function loadLocalModels(m, forceRefresh) {
         var types = getActiveTypeFilters();
         var search = getSearchQuery();
 
-        var url = '/api/fria/models/local';
-        var params = [];
-        // N'envoyer le filtre type que si certains types sont DESACTIVES.
-        // Quand tous sont actifs, pas de filtre = tout afficher.
-        if (types && types.length && types.length < MODEL_TYPES.length) {
-            params.push('type=' + encodeURIComponent(types.join(',')));
+        // Cache : si déjà chargé et pas de force refresh, filtrer depuis le cache
+        if (_localModelsCache && !forceRefresh) {
+            var filtered = filterLocalItems(_localModelsCache, types, search);
+            m._localItems = _localModelsCache; // pour isLocalByFingerprint (liste complète)
+            renderLocalPanel(m, filtered);
+            return;
         }
-        if (search) params.push('search=' + encodeURIComponent(search));
-        if (params.length) url += '?' + params.join('&');
+
+        // Premier chargement ou refresh forcé : on fetch TOUT (pas de filtre serveur)
+        var url = '/api/fria/models/local';
 
         m._localList.innerHTML = '<div class="mb-loading"><span class="mb-loading-spinner"></span> Chargement...</div>';
 
@@ -815,8 +825,12 @@
                         flatItems.push(item);
                     });
                 });
-                m._localItems = flatItems;  // pour isLocalByFingerprint
-                renderLocalPanel(m, flatItems);
+                _localModelsCache = flatItems;  // mise en cache
+                m._localItems = flatItems;       // pour isLocalByFingerprint
+
+                // Filtrer selon les filtres actifs
+                var filtered = filterLocalItems(flatItems, types, search);
+                renderLocalPanel(m, filtered);
             })
             .catch(function (err) {
                 m._localLoading = false;
@@ -963,15 +977,27 @@
                 });
             });
 
+            // ── Séparateur ──
+            var sep1 = document.createElement('span');
+            sep1.className = 'mb-sep';
+            sep1.textContent = '/';
+            div.appendChild(sep1);
+
             // ── Destination input (toujours visible) ──
             var destInput = document.createElement('input');
             destInput.type = 'text';
             destInput.className = 'mb-dest-input';
-            destInput.placeholder = 'dossier...';
-            destInput.value = getDefaultDestDir(item);
-            destInput.title = 'Dossier de destination (optionnel)';
+            destInput.placeholder = 'sous-dossier (opt.)';
+            destInput.value = '';
+            destInput.title = 'Sous-dossier de destination (optionnel)';
             destInput.addEventListener('click', function (e) { e.stopPropagation(); });
             div.appendChild(destInput);
+
+            // ── Séparateur ──
+            var sep2 = document.createElement('span');
+            sep2.className = 'mb-sep';
+            sep2.textContent = '/';
+            div.appendChild(sep2);
 
             // ── Nom ──
             var nameSpan = document.createElement('span');
@@ -994,22 +1020,6 @@
                 check.title = 'Déjà présent sur le serveur';
                 div.appendChild(check);
             }
-
-            // ── Clic simple → toggle sélection ──
-            div.addEventListener('click', function () {
-                cb.checked = !cb.checked;
-                // Décocher tous les autres
-                var allCbs = list.querySelectorAll('.mb-checkbox');
-                allCbs.forEach(function (c) {
-                    if (c !== cb) {
-                        c.checked = false;
-                        toggleItemSelect(c, false, items);
-                    }
-                });
-                toggleItemSelect(cb, cb.checked, items);
-                m._lastCheckedIndex = idx;
-                updateBatchButtons(m);
-            });
 
             // ── Double-clic → upload direct ──
             div.addEventListener('dblclick', function () {
@@ -1149,15 +1159,27 @@
                 });
             });
 
+            // ── Séparateur ──
+            var sep1 = document.createElement('span');
+            sep1.className = 'mb-sep';
+            sep1.textContent = '/';
+            div.appendChild(sep1);
+
             // ── Destination input (toujours visible) ──
             var destInput = document.createElement('input');
             destInput.type = 'text';
             destInput.className = 'mb-dest-input';
-            destInput.placeholder = 'dossier...';
-            destInput.value = getDefaultDestDir(item);
-            destInput.title = 'Dossier de destination (optionnel)';
+            destInput.placeholder = 'sous-dossier (opt.)';
+            destInput.value = '';
+            destInput.title = 'Sous-dossier de destination (optionnel)';
             destInput.addEventListener('click', function (e) { e.stopPropagation(); });
             div.appendChild(destInput);
+
+            // ── Séparateur ──
+            var sep2 = document.createElement('span');
+            sep2.className = 'mb-sep';
+            sep2.textContent = '/';
+            div.appendChild(sep2);
 
             // ── Nom ──
             var nameSpan = document.createElement('span');
@@ -1226,23 +1248,6 @@
                 div.appendChild(delBtn);
             }
 
-            // ── Clic simple → toggle sélection ──
-            div.addEventListener('click', function () {
-                cb.checked = !cb.checked;
-                var remoteAll = m._remoteItems || [];
-                // Décocher tous les autres
-                var allCbs = list.querySelectorAll('.mb-checkbox');
-                allCbs.forEach(function (c) {
-                    if (c !== cb) {
-                        c.checked = false;
-                        toggleItemSelect(c, false, remoteAll);
-                    }
-                });
-                toggleItemSelect(cb, cb.checked, remoteAll);
-                m._lastCheckedIndex = globalIdx;
-                updateBatchButtons(m);
-            });
-
             // ── Double-clic → download direct ──
             div.addEventListener('dblclick', function () {
                 var uploadId = item.id || item.upload_id || item._id;
@@ -1281,31 +1286,7 @@
 
     // ─── getDefaultDestDir ─────────────────────────────────────────────────────
     function getDefaultDestDir(item) {
-        // Pour les modèles locaux : extraire le sous-dossier du path
-        if (item.path) {
-            var match = item.path.match(/models[/\\]([^/\\]+)[/\\]/);
-            if (match) return match[1];
-        }
-        // Pour les modèles distants : utiliser un mapping type → dossier ComfyUI
-        var typeToDir = {
-            'checkpoint': 'checkpoints',
-            'lora': 'loras',
-            'vae': 'vae',
-            'clip': 'clip',
-            'clip_vision': 'clip_vision',
-            'controlnet': 'controlnet',
-            'unet': 'unet',
-            'unet_gguf': 'unet',
-            'upscale': 'upscale_models',
-            'gligen': 'gligen',
-            'hypernetwork': 'hypernetworks',
-            'text_encoder': 'text_encoders',
-            'style_model': 'style_models',
-            'diffusion_model': 'diffusion_models',
-            'embedding': 'embeddings',
-        };
-        var effectiveType = getEffectiveType(item);
-        return typeToDir[effectiveType] || effectiveType || '';
+        return ''; // Optionnel : l'utilisateur remplit s'il veut un sous-dossier
     }
 
     // ─── isLocalByFingerprint ──────────────────────────────────────────────────
@@ -1348,7 +1329,7 @@
                     m._remotePage = 1;
                     m._remoteHasMore = true;
                     loadRemoteModels(m);
-                    loadLocalModels(m);
+                    loadLocalModels(m, true);
                 } else {
                     updateProgress(progressEl, 0, '❌ Erreur: ' + (data.error || data.message || 'inconnue'));
                 }
@@ -1392,7 +1373,7 @@
                     updateProgress(progressEl, 100, '✅ Download terminé');
                     m._remotePage = 1;
                     m._remoteHasMore = true;
-                    loadLocalModels(m);
+                    loadLocalModels(m, true);
                     loadRemoteModels(m);
                 } else {
                     updateProgress(progressEl, 0, '❌ Erreur: ' + (data.error || data.message || 'inconnue'));
@@ -1457,7 +1438,7 @@
                     updateProgress(progressEl, 100, '✅ Download terminé');
                     m._remotePage = 1;
                     m._remoteHasMore = true;
-                    loadLocalModels(m);
+                    loadLocalModels(m, true);
                     loadRemoteModels(m);
                 } else {
                     updateProgress(progressEl, 0, '❌ Erreur: ' + (data.error || data.message || 'inconnue'));
