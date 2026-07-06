@@ -92,9 +92,11 @@ def decrypt_api_key(encrypted):
 
 def get_db():
     # _init_db() est appele une fois au demarrage dans extensions.py
-    conn = sqlite3.connect(str(DB_PATH), timeout=10)
+    conn = sqlite3.connect(str(DB_PATH), timeout=30)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 30000")
     return conn
 
 
@@ -102,7 +104,9 @@ def _init_db():
     """Crée la base et les tables si elles n'existent pas."""
     new = not DB_PATH.exists()
     conn = sqlite3.connect(str(DB_PATH))
+    conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 30000")
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS keywords (
@@ -833,26 +837,39 @@ def _sync_session_user(user_id: str):
     user = session.get("user")
     if not user:
         return
+    conn = None
     try:
         conn = get_db()
         cur = conn.cursor()
-        # Use a transaction to mitigate TOCTOU race on first-user admin assignment
-        cur.execute("BEGIN IMMEDIATE")
+        # Fast path: check if user exists (read-only, no write lock needed in WAL mode)
         cur.execute("SELECT id FROM users WHERE id = ?", (user_id,))
-        if not cur.fetchone():
-            cur.execute("SELECT COUNT(*) FROM users WHERE role = 'admin'")
-            admin_count = cur.fetchone()[0]
-            role = "admin" if admin_count == 0 else "user"
-            cur.execute(
-                "INSERT INTO users (id, username, display_name, avatar, role) VALUES (?, ?, ?, ?, ?)",
-                (user_id, user.get("username", ""), user.get("display_name", ""), user.get("avatar", ""), role)
-            )
-            conn.commit()
-        else:
-            conn.commit()  # release the IMMEDIATE lock
-        conn.close()
+        if cur.fetchone():
+            conn.close()
+            conn = None
+            return
+        # User doesn't exist — use INSERT OR IGNORE to avoid race condition
+        # If admin_count == 0, the first user becomes admin
+        cur.execute("SELECT COUNT(*) FROM users WHERE role = 'admin'")
+        admin_count = cur.fetchone()[0]
+        role = "admin" if admin_count == 0 else "user"
+        cur.execute(
+            "INSERT OR IGNORE INTO users (id, username, display_name, avatar, role) VALUES (?, ?, ?, ?, ?)",
+            (user_id, user.get("username", ""), user.get("display_name", ""), user.get("avatar", ""), role)
+        )
+        conn.commit()
     except Exception:
         logging.exception("_sync_session_user failed")
+        if conn:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def _admin_required():
@@ -936,25 +953,43 @@ def _privacy_filter(user_id: str) -> (str, list):
 
 def _regenerate_keyword_embedding(keyword_id: int):
     """Régénère l'embedding pour un mot-clé spécifique."""
+    conn = None
     try:
         from embeddings import generate_embedding
+        # Phase 1: read the keyword text, then CLOSE the connection
         conn = get_db()
         cur = conn.cursor()
         cur.execute("SELECT keyword, description FROM keywords WHERE id = ?", (keyword_id,))
         row = cur.fetchone()
+        conn.close()
+        conn = None
         if not row:
-            conn.close()
             return
         text = f"{row['keyword']}: {row['description']}"
+        # Phase 2: slow HTTP call to Ollama/Gemini — NO DB connection held
         vec = generate_embedding(text)
-        cur.execute(
+        if not vec:
+            return
+        # Phase 3: open a NEW connection just for the write
+        conn = get_db()
+        conn.execute(
             "INSERT OR REPLACE INTO keyword_embeddings (keyword_id, embedding) VALUES (?, ?)",
             (keyword_id, json.dumps(vec))
         )
         conn.commit()
-        conn.close()
     except Exception as e:
         print(f"[_regenerate_keyword_embedding] Erreur: {e}")
+        if conn:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def _get_ollama_config() -> dict:

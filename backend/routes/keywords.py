@@ -435,6 +435,7 @@ def bulk_import_keywords():
     imported = 0
     skipped = 0
     errors = []
+    new_ids = []  # Collect new keyword IDs for batch embedding
 
     for i, line in enumerate(lines):
         try:
@@ -473,15 +474,17 @@ def bulk_import_keywords():
             new_id = cur.lastrowid
             existing_set.add(kw_lower)
             imported += 1
-
-            # Régénérer l'embedding (optionnel : en lot à la fin)
-            _regenerate_keyword_embedding(new_id)
+            new_ids.append(new_id)
         except Exception as e:
             errors.append(f"Ligne {i+1}: {str(e)}")
             skipped += 1
 
     conn.commit()
     conn.close()
+
+    # Régénérer les embeddings APRÈS avoir fermé la connexion principale
+    for nid in new_ids:
+        _regenerate_keyword_embedding(nid)
 
     return jsonify({
         'imported': imported,
@@ -573,13 +576,12 @@ def check_keyword_duplicates():
 
     keyword = data['keyword'].strip()
     threshold = float(data.get('threshold', 0.85))
+    user_id = _get_current_user_id()
+    privacy_where, privacy_params = _privacy_filter(user_id)
 
+    # Phase 1: read all needed data from DB, then CLOSE the connection
     conn = get_db()
     cur = conn.cursor()
-    user_id = _get_current_user_id()
-
-    # 1. Vérification exacte (insensible à la casse) — parmi les visible
-    privacy_where, privacy_params = _privacy_filter(user_id)
     cur.execute(f"""
         SELECT k.id, k.keyword, k.description, k.privacy_status, k.user_id
         FROM keywords k
@@ -587,19 +589,22 @@ def check_keyword_duplicates():
     """, [keyword] + privacy_params)
     exact_matches = [dict(r) for r in cur.fetchall()]
 
-    # 2. Vérification sémantique (embeddings)
+    cur.execute(f"""
+        SELECT k.id, k.keyword, k.description, k.privacy_status, k.user_id, ke.embedding
+        FROM keywords k
+        JOIN keyword_embeddings ke ON ke.keyword_id = k.id
+        WHERE {privacy_where}
+    """, privacy_params)
+    all_rows = [dict(r) for r in cur.fetchall()]
+    conn.close()
+
+    # Phase 2: slow operations — NO DB connection held
     semantic_matches = []
     try:
         from embeddings import generate_embedding, cosine_similarity
         vec = generate_embedding(keyword)
         if vec:
-            cur.execute(f"""
-                SELECT k.id, k.keyword, k.description, k.privacy_status, k.user_id, ke.embedding
-                FROM keywords k
-                JOIN keyword_embeddings ke ON ke.keyword_id = k.id
-                WHERE {privacy_where}
-            """, privacy_params)
-            for r in cur.fetchall():
+            for r in all_rows:
                 try:
                     ref_vec = json.loads(r['embedding'])
                     sim = cosine_similarity(vec, ref_vec)
@@ -620,7 +625,6 @@ def check_keyword_duplicates():
     except Exception as e:
         print(f"[check_keyword_duplicates] Erreur sémantique: {e}")
 
-    conn.close()
     return jsonify({
         'exact_matches': exact_matches,
         'semantic_matches': semantic_matches,
@@ -665,16 +669,19 @@ def scan_keyword_duplicates():
 
     # 2. Semantic duplicates : pour chaque keyword, trouver les similaires
     # On charge les embeddings et on compare par paires
+    cur.execute(f"""
+        SELECT k.id, k.keyword, k.description, k.privacy_status, ke.embedding
+        FROM keywords k
+        JOIN keyword_embeddings ke ON ke.keyword_id = k.id
+        WHERE {privacy_where}
+    """, privacy_params)
+    rows = [dict(r) for r in cur.fetchall()]
+    conn.close()
+
+    # Phase 2: O(n²) computation — NO DB connection held
     semantic_groups = []
     try:
         from embeddings import generate_embedding, cosine_similarity
-        cur.execute(f"""
-            SELECT k.id, k.keyword, k.description, k.privacy_status, ke.embedding
-            FROM keywords k
-            JOIN keyword_embeddings ke ON ke.keyword_id = k.id
-            WHERE {privacy_where}
-        """, privacy_params)
-        rows = cur.fetchall()
         # Construire des groupes par similarite
         visited = set()
         threshold = 0.85
@@ -719,7 +726,6 @@ def scan_keyword_duplicates():
     except Exception as e:
         print(f"[scan_keyword_duplicates] Erreur semantique: {e}")
 
-    conn.close()
     return jsonify({
         'exact_duplicates': exact_duplicates,
         'semantic_groups': semantic_groups,
