@@ -146,14 +146,22 @@
             "}",
             ".mb-path { font-size: 10px; color: #666; display: block; margin-top: 1px; }",
             ".mb-checkbox { margin-right: 6px; flex-shrink: 0; accent-color: #6366f1; }",
-            ".mb-panel-footer { padding: 6px 0; flex-shrink: 0; display: flex; justify-content: flex-end; }",
+            /* Footers */
+            ".mb-panel-footer {",
+            "  display: flex;",
+            "  align-items: center;",
+            "  gap: 6px;",
+            "  padding: 6px 0 0;",
+            "  flex-shrink: 0;",
+            "}",
+            ".mb-panel-footer-remote { justify-content: flex-start; }",
+            ".mb-panel-footer-local { justify-content: flex-end; }",
             ".mb-batch-btn { padding: 6px 12px; border-radius: 6px; border: none; font-size: 11px; cursor: pointer; font-weight: 600; transition: all 0.15s; }",
             ".mb-batch-btn:disabled { opacity: 0.4; cursor: default; }",
             ".mb-batch-upload { background: #6366f1; color: #fff; }",
             ".mb-batch-download { background: #22c55e; color: #fff; }",
-            ".mb-dest-container { display: none; align-items: center; gap: 4px; flex-shrink: 0; }",
-            ".mb-item.selected .mb-dest-container { display: flex; }",
-            ".mb-dest-input { width: 70px; padding: 2px 4px; border-radius: 3px; border: 1px solid #555; background: #1e1e22; color: #ccc; font-size: 10px; outline: none; }",
+            /* Destination input — toujours visible, 80px */
+            ".mb-dest-input { width: 80px; padding: 2px 4px; border-radius: 3px; border: 1px solid #555; background: #1e1e22; color: #ccc; font-size: 10px; outline: none; flex-shrink: 0; }",
             ".mb-dest-input:focus { border-color: #6366f1; }",
             ".mb-dest-input::placeholder { color: #555; }",
             ".mb-del-btn { background: none; border: none; cursor: pointer; font-size: 14px; padding: 0 4px; opacity: 0.5; transition: opacity 0.15s; flex-shrink: 0; }",
@@ -162,37 +170,11 @@
             "  font-size: 10px;",
             "  color: #666;",
             "  flex-shrink: 0;",
+            "  margin-left: 4px;",
             "}",
             ".mb-item .mb-check {",
             "  font-size: 12px;",
             "  flex-shrink: 0;",
-            "}",
-            ".mb-item .mb-action-btn {",
-            "  display: none;",
-            "  padding: 2px 8px;",
-            "  border-radius: 4px;",
-            "  border: none;",
-            "  cursor: pointer;",
-            "  font-size: 10px;",
-            "  font-weight: 600;",
-            "  flex-shrink: 0;",
-            "}",
-            ".mb-item.selected .mb-action-btn {",
-            "  display: inline-block;",
-            "}",
-            ".mb-item .mb-action-btn.mb-upload-btn {",
-            "  background: #6366f1;",
-            "  color: #fff;",
-            "}",
-            ".mb-item .mb-action-btn.mb-upload-btn:hover {",
-            "  background: #4f46e5;",
-            "}",
-            ".mb-item .mb-action-btn.mb-download-btn {",
-            "  background: #22c55e;",
-            "  color: #fff;",
-            "}",
-            ".mb-item .mb-action-btn.mb-download-btn:hover {",
-            "  background: #16a34a;",
             "}",
             ".mb-item .mb-extra {",
             "  font-size: 10px;",
@@ -352,6 +334,18 @@
         }
     }
 
+    function toggleItemSelect(checkbox, selected, items) {
+        if (!checkbox) return;
+        var itemEl = checkbox.closest ? checkbox.closest('.mb-item') : null;
+        if (!itemEl) itemEl = checkbox;
+        if (!itemEl) return;
+        var idx = parseInt(itemEl.dataset.index);
+        if (!isNaN(idx) && items && items[idx]) {
+            items[idx]._selected = selected;
+        }
+        itemEl.classList.toggle('selected', selected);
+    }
+
     // ─── uploadFile (promise-based, pour batch) ────────────────────────────────
     function uploadFile(m, item) {
         return new Promise(function (resolve, reject) {
@@ -396,12 +390,12 @@
     }
 
     // ─── downloadFile (promise-based, pour batch) ──────────────────────────────
-    function downloadFile(m, item) {
+    function downloadFile(m, item, overrideDestSubdir) {
         return new Promise(function (resolve, reject) {
             var uploadId = item.id || item.upload_id || item._id;
             var displayName = item.name || item.filename || '?';
             var fileType = getEffectiveType(item);
-            var destSubdir = item.type || item.model_type || '';
+            var destSubdir = overrideDestSubdir || getDefaultDestDir(item);
 
             if (!uploadId) {
                 reject(new Error('ID du modèle distant manquant'));
@@ -511,7 +505,27 @@
             }
             var item = selected[done];
             btn.textContent = '↙ ' + (done + 1) + '/' + selected.length + ' ' + (item.name || item.filename || '?');
-            downloadFile(m, item).then(function () {
+
+            // Lire la valeur du champ destination depuis le DOM (si modifié par l'utilisateur)
+            var destSubdir = getDefaultDestDir(item);
+            // Chercher l'élément correspondant dans la liste
+            var list = m._remoteList;
+            if (list) {
+                var allItems = list.querySelectorAll('.mb-item');
+                for (var i = 0; i < allItems.length; i++) {
+                    var el = allItems[i];
+                    var nameEl = el.querySelector('.mb-name');
+                    if (nameEl && (nameEl.textContent === item.name || nameEl.textContent === item.filename)) {
+                        var di = el.querySelector('.mb-dest-input');
+                        if (di && di.value.trim()) {
+                            destSubdir = di.value.trim();
+                        }
+                        break;
+                    }
+                }
+            }
+
+            downloadFile(m, item, destSubdir).then(function () {
                 done++;
                 next();
             }).catch(function () {
@@ -560,7 +574,7 @@
             '  <div class="mb-panel mb-panel-local">' +
             '    <div class="mb-panel-header">📁 Local (ComfyUI)</div>' +
             '    <div class="mb-panel-list" id="mb-local-list"></div>' +
-            '    <div class="mb-panel-footer">' +
+            '    <div class="mb-panel-footer mb-panel-footer-local">' +
             '      <button class="mb-batch-btn mb-batch-upload" disabled>↗ Upload selected (0)</button>' +
             '    </div>' +
             '  </div>' +
@@ -568,7 +582,7 @@
             '  <div class="mb-panel mb-panel-remote">' +
             '    <div class="mb-panel-header">🌐 Remote (FR.IA)</div>' +
             '    <div class="mb-panel-list" id="mb-remote-list"></div>' +
-            '    <div class="mb-panel-footer">' +
+            '    <div class="mb-panel-footer mb-panel-footer-remote">' +
             '      <button class="mb-batch-btn mb-batch-download" disabled>↙ Download selected (0)</button>' +
             '    </div>' +
             '  </div>' +
@@ -868,25 +882,52 @@
             }
         }
 
-        items.forEach(function (item) {
+        // Variable pour le Shift+Click
+        if (typeof m._lastCheckedIndex === 'undefined') m._lastCheckedIndex = -1;
+
+        items.forEach(function (item, idx) {
             var div = document.createElement('div');
             div.className = 'mb-item';
+            div.dataset.index = idx;
             item._selected = false;
 
-            // Checkbox multi-sélection
+            // ── Checkbox + multi-sélection (shift, ctrl) ──
             var cb = document.createElement('input');
             cb.type = 'checkbox';
             cb.className = 'mb-checkbox';
-            cb.addEventListener('click', function (e) { e.stopPropagation(); });
-            cb.addEventListener('change', function () {
-                item._selected = cb.checked;
-                if (cb.checked) div.classList.add('selected');
-                else div.classList.remove('selected');
+            cb.addEventListener('change', function (e) {
+                var isShift = e.shiftKey;
+                var isCtrl = e.ctrlKey || e.metaKey;
+                var allCbs = list.querySelectorAll('.mb-checkbox');
+                var currentIdx = Array.prototype.indexOf.call(allCbs, this);
+
+                if (isShift && m._lastCheckedIndex >= 0) {
+                    // Shift+Click : sélection par plage
+                    var start = Math.min(m._lastCheckedIndex, currentIdx);
+                    var end = Math.max(m._lastCheckedIndex, currentIdx);
+                    for (var si = start; si <= end; si++) {
+                        allCbs[si].checked = this.checked;
+                        toggleItemSelect(allCbs[si], this.checked, items);
+                    }
+                } else if (!isCtrl) {
+                    // Click normal sans modifieur : sélection unique
+                    allCbs.forEach(function (c, i) {
+                        var checked = (i === currentIdx) ? this.checked : false;
+                        c.checked = checked;
+                        toggleItemSelect(c, checked, items);
+                    }, this);
+                } else {
+                    // Ctrl+Click : toggle uniquement celui-ci
+                    toggleItemSelect(this, this.checked, items);
+                }
+
+                m._lastCheckedIndex = currentIdx;
                 updateBatchButtons(m);
+                e.stopPropagation();
             });
             div.appendChild(cb);
 
-            // Badge type
+            // ── Badge type ──
             var typeInfo = getTypeInfo(getEffectiveType(item));
             var badge = document.createElement('span');
             badge.className = 'mb-badge';
@@ -922,27 +963,30 @@
                 });
             });
 
-            // Nom
+            // ── Destination input (toujours visible) ──
+            var destInput = document.createElement('input');
+            destInput.type = 'text';
+            destInput.className = 'mb-dest-input';
+            destInput.placeholder = 'dossier...';
+            destInput.value = getDefaultDestDir(item);
+            destInput.title = 'Dossier de destination (optionnel)';
+            destInput.addEventListener('click', function (e) { e.stopPropagation(); });
+            div.appendChild(destInput);
+
+            // ── Nom ──
             var nameSpan = document.createElement('span');
             nameSpan.className = 'mb-name';
             nameSpan.textContent = item.name || item.filename || '?';
             nameSpan.title = item.name || item.filename || '';
             div.appendChild(nameSpan);
 
-            // Chemin relatif
-            var relPath = (item.path || '').replace(/^.*?models[/\\]/, '');
-            var pathEl = document.createElement('span');
-            pathEl.className = 'mb-path';
-            pathEl.textContent = relPath;
-            div.appendChild(pathEl);
-
-            // Taille
+            // ── Taille ──
             var sizeSpan = document.createElement('span');
             sizeSpan.className = 'mb-size';
             sizeSpan.textContent = formatSize(item.size || item.file_size);
             div.appendChild(sizeSpan);
 
-            // Icône ✅ si déjà sur le serveur
+            // ── Icône ✅ si déjà sur le serveur ──
             if (item.fingerprint && remoteIndex[item.fingerprint]) {
                 var check = document.createElement('span');
                 check.className = 'mb-check';
@@ -951,26 +995,23 @@
                 div.appendChild(check);
             }
 
-            // Bouton upload
-            var uploadBtn = document.createElement('button');
-            uploadBtn.className = 'mb-action-btn mb-upload-btn';
-            uploadBtn.textContent = '↗ Upload';
-            uploadBtn.addEventListener('click', function (e) {
-                e.stopPropagation();
-                uploadLocalModel(m, item.path || item.filepath, getEffectiveType(item), item.name || item.filename);
-            });
-            div.appendChild(uploadBtn);
-
-            // Clic simple → toggle sélection (multi-select)
+            // ── Clic simple → toggle sélection ──
             div.addEventListener('click', function () {
                 cb.checked = !cb.checked;
-                item._selected = cb.checked;
-                if (cb.checked) div.classList.add('selected');
-                else div.classList.remove('selected');
+                // Décocher tous les autres
+                var allCbs = list.querySelectorAll('.mb-checkbox');
+                allCbs.forEach(function (c) {
+                    if (c !== cb) {
+                        c.checked = false;
+                        toggleItemSelect(c, false, items);
+                    }
+                });
+                toggleItemSelect(cb, cb.checked, items);
+                m._lastCheckedIndex = idx;
                 updateBatchButtons(m);
             });
 
-            // Double-clic → upload direct
+            // ── Double-clic → upload direct ──
             div.addEventListener('dblclick', function () {
                 uploadLocalModel(m, item.path || item.filepath, getEffectiveType(item), item.name || item.filename);
             });
@@ -1003,10 +1044,13 @@
         }
 
         // Stocker les items distants pour le matching local
+        var flatItems;
         if (page === 1) {
-            m._remoteItems = items;
+            m._remoteItems = items.slice();
+            flatItems = items;
         } else {
             m._remoteItems = (m._remoteItems || []).concat(items);
+            flatItems = items;
         }
 
         if (items.length === 0 && page === 1) {
@@ -1014,25 +1058,62 @@
             return;
         }
 
-        items.forEach(function (item) {
+        // Variable pour le Shift+Click
+        if (typeof m._lastCheckedIndex === 'undefined') m._lastCheckedIndex = -1;
+
+        // Offset d'index pour la pagination (index global dans m._remoteItems)
+        var globalOffset = (page - 1) * 50;
+
+        items.forEach(function (item, idx) {
+            var globalIdx = globalOffset + idx;
             var div = document.createElement('div');
             div.className = 'mb-item';
+            div.dataset.index = globalIdx;
             item._selected = false;
 
-            // Checkbox multi-sélection
+            // ── Checkbox + multi-sélection (shift, ctrl) ──
             var cb = document.createElement('input');
             cb.type = 'checkbox';
             cb.className = 'mb-checkbox';
-            cb.addEventListener('click', function (e) { e.stopPropagation(); });
-            cb.addEventListener('change', function () {
-                item._selected = cb.checked;
-                if (cb.checked) div.classList.add('selected');
-                else div.classList.remove('selected');
+            cb.addEventListener('change', function (e) {
+                var isShift = e.shiftKey;
+                var isCtrl = e.ctrlKey || e.metaKey;
+                var allCbs = list.querySelectorAll('.mb-checkbox');
+                var currentIdx = Array.prototype.indexOf.call(allCbs, this);
+                var currentGlobalIdx = globalOffset + currentIdx;
+                var remoteAll = m._remoteItems || [];
+
+                if (isShift && m._lastCheckedIndex >= 0) {
+                    // Shift+Click : sélection par plage
+                    var start = Math.min(m._lastCheckedIndex, currentGlobalIdx);
+                    var end = Math.max(m._lastCheckedIndex, currentGlobalIdx);
+                    for (var si = start; si <= end; si++) {
+                        var sEl = list.querySelector('.mb-item[data-index="' + si + '"]');
+                        if (sEl) {
+                            var sCb = sEl.querySelector('.mb-checkbox');
+                            if (sCb) sCb.checked = this.checked;
+                            toggleItemSelect(sCb || sEl, this.checked, remoteAll);
+                        }
+                    }
+                } else if (!isCtrl) {
+                    // Click normal sans modifieur : sélection unique
+                    allCbs.forEach(function (c, i) {
+                        var checked = (i === currentIdx) ? this.checked : false;
+                        c.checked = checked;
+                        toggleItemSelect(c, checked, remoteAll);
+                    }, this);
+                } else {
+                    // Ctrl+Click : toggle uniquement celui-ci
+                    toggleItemSelect(this, this.checked, remoteAll);
+                }
+
+                m._lastCheckedIndex = currentGlobalIdx;
                 updateBatchButtons(m);
+                e.stopPropagation();
             });
             div.appendChild(cb);
 
-            // Badge type
+            // ── Badge type ──
             var typeInfo = getTypeInfo(getEffectiveType(item));
             var badge = document.createElement('span');
             badge.className = 'mb-badge';
@@ -1068,7 +1149,17 @@
                 });
             });
 
-            // Nom
+            // ── Destination input (toujours visible) ──
+            var destInput = document.createElement('input');
+            destInput.type = 'text';
+            destInput.className = 'mb-dest-input';
+            destInput.placeholder = 'dossier...';
+            destInput.value = getDefaultDestDir(item);
+            destInput.title = 'Dossier de destination (optionnel)';
+            destInput.addEventListener('click', function (e) { e.stopPropagation(); });
+            div.appendChild(destInput);
+
+            // ── Nom ──
             var nameSpan = document.createElement('span');
             nameSpan.className = 'mb-name';
             var displayName = item.name || item.filename || item.original_name || '?';
@@ -1076,26 +1167,8 @@
             nameSpan.title = displayName;
             div.appendChild(nameSpan);
 
-            // Chemin distant
-            var relPath = (item.type || '') + '/' + (item.filename || '');
-            var pathEl = document.createElement('span');
-            pathEl.className = 'mb-path';
-            pathEl.textContent = relPath;
-            div.appendChild(pathEl);
-
-            // Extra info (uploader + date)
-            var extraSpan = document.createElement('span');
-            extraSpan.className = 'mb-extra';
-            var uploader = item.uploader || item.uploader_name || item.owner_name || '';
-            var dateStr = formatDate(item.created_at || item.uploaded_at || item.date);
+            // ── Taille + downloads ──
             var downloadCount = item.downloads || item.download_count || 0;
-            var extraParts = [];
-            if (uploader) extraParts.push(uploader);
-            if (dateStr) extraParts.push(dateStr);
-            extraSpan.textContent = extraParts.join(' · ');
-            div.appendChild(extraSpan);
-
-            // Taille + downloads
             var sizeSpan = document.createElement('span');
             sizeSpan.className = 'mb-size';
             var sizeTxt = formatSize(item.size || item.file_size || item.original_size);
@@ -1103,7 +1176,7 @@
             sizeSpan.textContent = sizeTxt + dlTxt;
             div.appendChild(sizeSpan);
 
-            // Icône ✅ si déjà en local
+            // ── Icône ✅ si déjà en local ──
             if (item.fingerprint && isLocalByFingerprint(m, item.fingerprint)) {
                 var check = document.createElement('span');
                 check.className = 'mb-check';
@@ -1112,31 +1185,18 @@
                 div.appendChild(check);
             }
 
-            // Container download avec chemin éditable
-            var destContainer = document.createElement('div');
-            destContainer.className = 'mb-dest-container';
+            // ── Extra info (uploader + date) ──
+            var extraSpan = document.createElement('span');
+            extraSpan.className = 'mb-extra';
+            var uploader = item.uploader || item.uploader_name || item.owner_name || '';
+            var dateStr = formatDate(item.created_at || item.uploaded_at || item.date);
+            var extraParts = [];
+            if (uploader) extraParts.push(uploader);
+            if (dateStr) extraParts.push(dateStr);
+            extraSpan.textContent = extraParts.join(' · ');
+            div.appendChild(extraSpan);
 
-            var destInput = document.createElement('input');
-            destInput.type = 'text';
-            destInput.className = 'mb-dest-input';
-            destInput.value = item.type || '';
-            destInput.placeholder = 'unet/';
-
-            var destBtn = document.createElement('button');
-            destBtn.className = 'mb-action-btn mb-download-btn';
-            destBtn.textContent = '↙ Download';
-            destBtn.addEventListener('click', function (e) {
-                e.stopPropagation();
-                var uploadId = item.id || item.upload_id || item._id;
-                var destSubdir = destInput.value.trim() || item.type || item.model_type || '';
-                downloadRemoteModel(m, uploadId, displayName, getEffectiveType(item), destSubdir);
-            });
-
-            destContainer.appendChild(destInput);
-            destContainer.appendChild(destBtn);
-            div.appendChild(destContainer);
-
-            // Bouton supprimer (admin seulement)
+            // ── Bouton supprimer (admin seulement) ──
             if (m._currentUser && m._currentUser.role === 'admin') {
                 var delBtn = document.createElement('button');
                 delBtn.textContent = '🗑';
@@ -1166,19 +1226,27 @@
                 div.appendChild(delBtn);
             }
 
-            // Clic simple → toggle sélection (multi-select)
+            // ── Clic simple → toggle sélection ──
             div.addEventListener('click', function () {
                 cb.checked = !cb.checked;
-                item._selected = cb.checked;
-                if (cb.checked) div.classList.add('selected');
-                else div.classList.remove('selected');
+                var remoteAll = m._remoteItems || [];
+                // Décocher tous les autres
+                var allCbs = list.querySelectorAll('.mb-checkbox');
+                allCbs.forEach(function (c) {
+                    if (c !== cb) {
+                        c.checked = false;
+                        toggleItemSelect(c, false, remoteAll);
+                    }
+                });
+                toggleItemSelect(cb, cb.checked, remoteAll);
+                m._lastCheckedIndex = globalIdx;
                 updateBatchButtons(m);
             });
 
-            // Double-clic → download direct
+            // ── Double-clic → download direct ──
             div.addEventListener('dblclick', function () {
                 var uploadId = item.id || item.upload_id || item._id;
-                var destSubdir = destInput.value.trim() || item.type || item.model_type || '';
+                var destSubdir = destInput.value.trim() || getDefaultDestDir(item) || '';
                 downloadRemoteModel(m, uploadId, displayName, getEffectiveType(item), destSubdir);
             });
 
@@ -1209,6 +1277,35 @@
             if (MODEL_TYPES[i].key === key) return MODEL_TYPES[i];
         }
         return { key: 'other', label: 'Autres', color: '#888' };
+    }
+
+    // ─── getDefaultDestDir ─────────────────────────────────────────────────────
+    function getDefaultDestDir(item) {
+        // Pour les modèles locaux : extraire le sous-dossier du path
+        if (item.path) {
+            var match = item.path.match(/models[/\\]([^/\\]+)[/\\]/);
+            if (match) return match[1];
+        }
+        // Pour les modèles distants : utiliser un mapping type → dossier ComfyUI
+        var typeToDir = {
+            'checkpoint': 'checkpoints',
+            'lora': 'loras',
+            'vae': 'vae',
+            'clip': 'clip',
+            'clip_vision': 'clip_vision',
+            'controlnet': 'controlnet',
+            'unet': 'unet',
+            'unet_gguf': 'unet',
+            'upscale': 'upscale_models',
+            'gligen': 'gligen',
+            'hypernetwork': 'hypernetworks',
+            'text_encoder': 'text_encoders',
+            'style_model': 'style_models',
+            'diffusion_model': 'diffusion_models',
+            'embedding': 'embeddings',
+        };
+        var effectiveType = getEffectiveType(item);
+        return typeToDir[effectiveType] || effectiveType || '';
     }
 
     // ─── isLocalByFingerprint ──────────────────────────────────────────────────
@@ -1276,7 +1373,7 @@
                 upload_id: uploadId,
                 filename: filename,
                 type: fileType || 'other',
-                dest_path: destSubdir || fileType || '',
+                dest_path: destSubdir || '',
             }),
         })
             .then(function (r) {
@@ -1341,7 +1438,7 @@
             upload_id: uploadId,
             filename: filename,
             type: fileType || 'other',
-            dest_path: destSubdir || fileType || '',
+            dest_path: destSubdir || '',
             conflict_resolution: resolution,
         };
 
