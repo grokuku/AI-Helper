@@ -475,7 +475,11 @@
 
         var url = '/api/fria/models/local';
         var params = [];
-        if (types && types.length) params.push('type=' + encodeURIComponent(types.join(',')));
+        // N'envoyer le filtre type que si certains types sont DESACTIVES.
+        // Quand tous sont actifs, pas de filtre = tout afficher.
+        if (types && types.length && types.length < MODEL_TYPES.length) {
+            params.push('type=' + encodeURIComponent(types.join(',')));
+        }
         if (search) params.push('search=' + encodeURIComponent(search));
         if (params.length) url += '?' + params.join('&');
 
@@ -516,7 +520,11 @@
         var page = m._remotePage || 1;
 
         var url = '/api/fria/models/remote?page=' + page + '&limit=50';
-        if (types && types.length) url += '&type=' + encodeURIComponent(types.join(','));
+        // N'envoyer le filtre type que si certains types sont DESACTIVES.
+        // Quand tous sont actifs, pas de filtre = tout afficher.
+        if (types && types.length && types.length < MODEL_TYPES.length) {
+            url += '&type=' + encodeURIComponent(types.join(','));
+        }
         if (search) url += '&search=' + encodeURIComponent(search);
 
         if (page === 1) {

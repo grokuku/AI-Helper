@@ -125,9 +125,7 @@ def list_remote_models(page=1, limit=50, type_filter=None, search=None, sort='cr
     Retourne directement la réponse JSON du backend.
     """
     import requests as _req
-    cfg = _get_config()
-    base_url = (cfg.get('serverUrl') or 'https://kw.holaf.fr').rstrip('/')
-    api_key = cfg.get('apiKey') or ''
+    api_url, api_key = _get_fria_credentials()
 
     params = {'page': page, 'limit': min(limit, 200), 'sort': sort, 'order': order}
     if type_filter:
@@ -141,7 +139,7 @@ def list_remote_models(page=1, limit=50, type_filter=None, search=None, sort='cr
 
     try:
         resp = _req.get(
-            f'{base_url}/api/fria/models/remote',
+            f'{api_url}/fria/models/remote',
             params=params, headers=headers, timeout=30
         )
         if resp.ok:
@@ -164,8 +162,11 @@ def list_local_models(type_filter=None, search=None):
     dirs = _get_model_dirs()
     result = {}
     for cat, cat_dirs in dirs.items():
-        if type_filter and cat != type_filter:
-            continue
+        if type_filter:
+            # Support de la liste de types séparés par des virgules (ex: 'checkpoints,loras')
+            type_list = [t.strip() for t in type_filter.split(',')]
+            if cat not in type_list:
+                continue
         models = _list_models_in_dirs(cat_dirs)
         # Filtrer par recherche textuelle
         if search:
