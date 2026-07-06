@@ -254,8 +254,8 @@ def upload_model_to_server(filepath, file_type="model", on_progress=None):
         except Exception as e:
             logging.warning(f"[FR.IA] Fingerprint check failed: {e}")
 
-    # 2. Init upload — mapper le type vers 'model' pour compatibilite backend
-    backend_type = 'model' if file_type in ('checkpoint','lora','vae','clip','clip_vision','controlnet','unet','unet_gguf','upscale','gligen','hypernetwork','text_encoder','style_model') else file_type
+    # 2. Init upload — on preserve le type original (UNET, LoRA, etc.) pour le Model Browser
+    backend_type = file_type
     try:
         resp = requests.post(f"{api_url}/files/init", json={
             'filename': filename, 'size': size, 'type': backend_type
