@@ -465,7 +465,7 @@
         var types = getActiveTypeFilters();
         var search = getSearchQuery();
 
-        var url = getApiUrl() + '/fria/models/local';
+        var url = '/api/fria/models/local';
         var params = [];
         if (types && types.length) params.push('type=' + encodeURIComponent(types.join(',')));
         if (search) params.push('search=' + encodeURIComponent(search));
@@ -479,7 +479,17 @@
                 return r.json();
             })
             .then(function (data) {
-                renderLocalPanel(m, data.items || []);
+                // data.items est un dictionnaire { catégorie: [modèles] }
+                // On l'aplatit en tableau en déduisant le type depuis la catégorie
+                var itemsObj = data.items || {};
+                var flatItems = [];
+                Object.keys(itemsObj).forEach(function (category) {
+                    (itemsObj[category] || []).forEach(function (item) {
+                        item.type = item.type || category;
+                        flatItems.push(item);
+                    });
+                });
+                renderLocalPanel(m, flatItems);
             })
             .catch(function (err) {
                 m._localList.innerHTML = '<div class="mb-empty">❌ Erreur: ' + esc(err.message) + '</div>';
@@ -495,7 +505,7 @@
         var search = getRemoteSearchQuery();
         var page = m._remotePage || 1;
 
-        var url = getApiUrl() + '/fria/models/remote?page=' + page + '&limit=50';
+        var url = '/api/fria/models/remote?page=' + page + '&limit=50';
         if (types && types.length) url += '&type=' + encodeURIComponent(types.join(','));
         if (search) url += '&search=' + encodeURIComponent(search);
 
