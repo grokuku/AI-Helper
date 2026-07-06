@@ -109,12 +109,75 @@ def _list_models_in_dirs(dirs, extensions=None):
     return results
 
 
-def list_local_models():
-    """Liste tous les models locaux dans toutes les categories ComfyUI."""
+def _get_config():
+    """Lit la configuration FR.IA (URL du serveur + API key).
+    Retourne un dict avec 'serverUrl' et 'apiKey'."""
+    api_url, api_key = _get_fria_credentials()
+    base_url = api_url.rstrip('/api').rstrip('/')
+    if not base_url:
+        base_url = 'https://kw.holaf.fr'
+    return {'serverUrl': base_url, 'apiKey': api_key}
+
+
+def list_remote_models(page=1, limit=50, type_filter=None, search=None, sort='created_at', order='desc'):
+    """
+    Interroge le backend FR.IA pour lister les modèles distants.
+    Retourne directement la réponse JSON du backend.
+    """
+    import requests as _req
+    cfg = _get_config()
+    base_url = (cfg.get('serverUrl') or 'https://kw.holaf.fr').rstrip('/')
+    api_key = cfg.get('apiKey') or ''
+
+    params = {'page': page, 'limit': min(limit, 200), 'sort': sort, 'order': order}
+    if type_filter:
+        params['type'] = type_filter
+    if search:
+        params['search'] = search
+
+    headers = {}
+    if api_key:
+        headers['Authorization'] = f'Bearer {api_key}'
+
+    try:
+        resp = _req.get(
+            f'{base_url}/api/fria/models/remote',
+            params=params, headers=headers, timeout=30
+        )
+        if resp.ok:
+            return resp.json()
+        return {'items': [], 'total': 0, 'page': page, 'limit': limit, 'error': f'HTTP {resp.status_code}'}
+    except Exception as e:
+        return {'items': [], 'total': 0, 'page': page, 'limit': limit, 'error': str(e)}
+
+
+def list_local_models(type_filter=None, search=None):
+    """Liste tous les models locaux dans toutes les categories ComfyUI.
+
+    Args:
+        type_filter: Filtre par categorie (ex: 'checkpoints', 'loras').
+        search: Filtre par nom (recherche insensible a la casse).
+
+    Chaque entree est enrichie avec sha256_head et sha256_tail (fingerprint
+    partiel O(1) — seuls les 2 premiers et derniers Mo sont lus).
+    """
     dirs = _get_model_dirs()
     result = {}
     for cat, cat_dirs in dirs.items():
-        result[cat] = _list_models_in_dirs(cat_dirs)
+        if type_filter and cat != type_filter:
+            continue
+        models = _list_models_in_dirs(cat_dirs)
+        # Filtrer par recherche textuelle
+        if search:
+            search_lower = search.lower()
+            models = [m for m in models if search_lower in m['name'].lower()]
+        # Ajouter le fingerprint (sha256_head + sha256_tail) a chaque modele
+        for m in models:
+            fp = _compute_fingerprint(m['path'])
+            if fp:
+                m['sha256_head'] = fp['head']
+                m['sha256_tail'] = fp['tail']
+        result[cat] = models
     return result
 
 

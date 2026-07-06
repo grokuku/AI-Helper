@@ -393,6 +393,50 @@ if _routes is not None:
                 _log.exception(f"[FR.IA] models-list error: {e}")
                 return _aio_web.json_response({"error": str(e)}, status=500)
 
+        @_routes.get("/api/fria/models/remote")
+        async def _fria_list_remote_models(request):
+            """Proxy : liste les modèles distants depuis le backend FR.IA."""
+            try:
+                page = int(request.query.get('page', 1))
+                limit = int(request.query.get('limit', 50))
+                type_filter = request.query.get('type', '') or None
+                search = request.query.get('search', '') or None
+                sort = request.query.get('sort', 'created_at')
+                order = request.query.get('order', 'desc')
+            except (ValueError, TypeError):
+                return _aio_web.json_response({'error': 'Paramètres invalides'}, status=400)
+
+            import asyncio as _aio
+            import functools as _ft
+            loop = _aio.get_event_loop()
+            data = await loop.run_in_executor(
+                None, _ft.partial(
+                    _model_mgr_mod.list_remote_models,
+                    page, limit, type_filter, search, sort, order
+                )
+            )
+            return _aio_web.json_response(data)
+
+        @_routes.get("/api/fria/models/local")
+        async def _fria_list_local_models(request):
+            """Liste les modèles locaux (scan du dossier models/ de ComfyUI)."""
+            try:
+                type_filter = request.query.get('type', '') or None
+                search = request.query.get('search', '') or None
+            except (ValueError, TypeError):
+                return _aio_web.json_response({'error': 'Paramètres invalides'}, status=400)
+
+            import asyncio as _aio
+            import functools as _ft
+            loop = _aio.get_event_loop()
+            models = await loop.run_in_executor(
+                None, _ft.partial(
+                    _model_mgr_mod.list_local_models,
+                    type_filter=type_filter, search=search
+                )
+            )
+            return _aio_web.json_response({'items': models, 'total': len(models)})
+
         @_routes.post("/api/fria/models/upload")
         async def _fria_upload_model(request):
             try:
@@ -486,7 +530,7 @@ if _routes is not None:
                 _log.exception(f"[FR.IA] download-model error: {e}")
                 return _aio_web.json_response({"error": str(e)}, status=500)
 
-        print("[FR.IA] Model manager routes registered: GET /api/fria/models/list")
+        print("[FR.IA] Model manager routes registered: GET /api/fria/models/list, /api/fria/models/remote, /api/fria/models/local")
 
     # ── Route WebSocket Terminal (PAS DE MOT DE PASSE) ──────────────
     # Le widget FR.IA Terminal (fria_terminal_widget.js) ouvre un

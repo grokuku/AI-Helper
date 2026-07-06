@@ -435,6 +435,149 @@ def download_file(upload_id):
     )
 
 
+@app.route('/api/fria/models/remote', methods=['GET'])
+def list_remote_models():
+    """
+    Liste les modèles distants disponibles (uploadés par les utilisateurs).
+    Filtre : status='complete', type dans MODEL_TYPES (tous types sauf screenshots/workflows).
+    Paramètres optionnels (query string) :
+      page (int, defaut 1), limit (int, defaut 50, max 200)
+      type (string, optionnel) — filtre par type exact
+      search (string, optionnel) — recherche textuelle dans filename
+      sort (string, defaut 'created_at') — created_at | filename | size | downloads
+      order (string, defaut 'desc') — asc | desc
+
+    Retour JSON :
+    {
+      "items": [{ upload_id, filename, display_name, type, size,
+                  sha256_head, sha256_tail, uploaded_by, uploaded_by_id,
+                  created_at, downloads }, ...],
+      "total": int,
+      "page": int,
+      "limit": int
+    }
+    """
+    page = request.args.get('page', 1, type=int)
+    limit = min(request.args.get('limit', 50, type=int), 200)
+    type_filter = request.args.get('type', '').strip()
+    search = request.args.get('search', '').strip()
+    sort = request.args.get('sort', 'created_at')
+    order = request.args.get('order', 'desc')
+
+    # Types valides pour les modèles (exclure screenshots, workflows, etc.)
+    model_types = ['model', 'checkpoint', 'lora', 'vae', 'clip', 'clip_vision',
+                   'controlnet', 'unet', 'unet_gguf', 'upscale', 'gligen',
+                   'hypernetwork', 'text_encoder', 'style_model', 'diffusion_model',
+                   'embedding']
+
+    conn = get_db()
+
+    try:
+        # Construire la requête
+        where = "WHERE u.status = 'complete' AND u.type IN ({})".format(
+            ','.join('?' for _ in model_types))
+        params = list(model_types)
+
+        if type_filter and type_filter in model_types:
+            where += " AND u.type = ?"
+            params.append(type_filter)
+
+        if search:
+            where += " AND (u.filename LIKE ? OR u.display_name LIKE ?)"
+            params.extend([f'%{search}%', f'%{search}%'])
+
+        # Compter le total
+        total = conn.execute(
+            "SELECT COUNT(*) FROM file_uploads u " + where, params
+        ).fetchone()[0]
+
+        # Trier
+        allowed_sorts = {'created_at', 'filename', 'size', 'downloads'}
+        if sort not in allowed_sorts:
+            sort = 'created_at'
+        order_sql = "DESC" if order == 'desc' else "ASC"
+
+        offset = (page - 1) * limit
+        rows = conn.execute(
+            f"SELECT u.upload_id, u.filename, u.display_name, u.type, u.size, "
+            f"u.fingerprint_head as sha256_head, u.fingerprint_tail as sha256_tail, "
+            f"COALESCE(us.display_name, 'utilisateur inconnu') as uploaded_by, "
+            f"u.user_id as uploaded_by_id, u.created_at, u.downloads "
+            f"FROM file_uploads u "
+            f"LEFT JOIN users us ON u.user_id = us.id "
+            f"{where} ORDER BY u.{sort} {order_sql} LIMIT ? OFFSET ?",
+            params + [limit, offset]
+        ).fetchall()
+
+        items = []
+        for r in rows:
+            items.append({
+                'upload_id': r['upload_id'],
+                'filename': r['filename'],
+                'display_name': r['display_name'] or '',
+                'type': r['type'],
+                'size': r['size'],
+                'sha256_head': r['sha256_head'] or '',
+                'sha256_tail': r['sha256_tail'] or '',
+                'uploaded_by': r['uploaded_by'],
+                'uploaded_by_id': r['uploaded_by_id'],
+                'created_at': r['created_at'] or '',
+                'downloads': r['downloads'] or 0,
+            })
+
+        return jsonify({'items': items, 'total': total, 'page': page, 'limit': limit})
+    finally:
+        conn.close()
+
+
+@app.route('/api/fria/models/remote/<upload_id>', methods=['GET'])
+def get_remote_model_detail(upload_id):
+    """Détail d'un modèle distant spécifique."""
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT u.*, COALESCE(us.display_name, 'utilisateur inconnu') as uploaded_by "
+            "FROM file_uploads u LEFT JOIN users us ON u.user_id = us.id "
+            "WHERE u.upload_id = ? AND u.status = 'complete'",
+            [upload_id]
+        ).fetchone()
+
+        if not row:
+            return jsonify({'error': 'Modèle introuvable'}), 404
+
+        return jsonify({
+            'upload_id': row['upload_id'],
+            'filename': row['filename'],
+            'display_name': row['display_name'] or '',
+            'type': row['type'],
+            'size': row['size'],
+            'sha256_head': row['fingerprint_head'] or '',
+            'sha256_tail': row['fingerprint_tail'] or '',
+            'uploaded_by': row['uploaded_by'],
+            'uploaded_by_id': row['user_id'],
+            'created_at': row['created_at'] or '',
+            'downloads': row['downloads'] or 0,
+            'status': row['status'],
+        })
+    finally:
+        conn.close()
+
+
+@app.route('/api/fria/models/remote/<upload_id>/download', methods=['POST'])
+def increment_model_download(upload_id):
+    """Incrémente le compteur de téléchargements d'un modèle."""
+    conn = get_db()
+    try:
+        conn.execute(
+            "UPDATE file_uploads SET downloads = COALESCE(downloads, 0) + 1 "
+            "WHERE upload_id = ?", [upload_id]
+        )
+        conn.commit()
+        return jsonify({'status': 'ok'})
+    finally:
+        conn.close()
+
+
 @app.route('/api/files/<upload_id>', methods=['DELETE'])
 def delete_file(upload_id):
     """Supprime un fichier du stockage."""

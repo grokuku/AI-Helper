@@ -490,6 +490,13 @@ def _init_db():
         conn.execute("ALTER TABLE file_uploads ADD COLUMN fingerprint_tail TEXT DEFAULT ''")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_file_uploads_fp ON file_uploads(size, fingerprint_head, fingerprint_tail)")
 
+    # Migration : colonnes pour Model Browser
+    cols_fu = [r[1] for r in conn.execute("PRAGMA table_info(file_uploads)").fetchall()]
+    if "downloads" not in cols_fu:
+        conn.execute("ALTER TABLE file_uploads ADD COLUMN downloads INTEGER DEFAULT 0")
+    if "display_name" not in cols_fu:
+        conn.execute("ALTER TABLE file_uploads ADD COLUMN display_name TEXT DEFAULT ''")
+
     # Créer les templates par défaut si aucun n'existe
     existing = conn.execute("SELECT COUNT(*) FROM prompt_templates").fetchone()[0]
     if existing == 0:

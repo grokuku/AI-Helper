@@ -86,6 +86,10 @@ function initMenu(appInstance) {
         if (window.openWorkflowManager) window.openWorkflowManager();
         else friaShowAlert("Info", "Workflow Sharing pas encore chargé. Réessaie.", "info");
     }));
+    dd.appendChild(mkItem("📦 Models", "📦", () => {
+        if (window.openModelBrowser) window.openModelBrowser();
+        else friaShowAlert("Info", "Model Browser pas encore chargé.", "info");
+    }));
     dd.appendChild(mkItem("Terminal", "💻", () => {
         if (window.friaTerminal) {
             window.friaTerminal.toggle();
