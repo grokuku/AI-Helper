@@ -253,6 +253,12 @@
         document.head.appendChild(style);
     }
 
+    // ─── Helper d'échappement HTML local ────────────────────────────────────────
+    function _esc(str) {
+        if (typeof str !== 'string') return String(str || '');
+        return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
     // ─── Types de modèles ────────────────────────────────────────────────────────
     var MODEL_TYPES = [
         { key: 'unet', label: 'UNET', color: '#60a5fa' },
@@ -359,8 +365,10 @@
         m._localList = m.modal.querySelector('#mb-local-list');
         m._remoteList = m.modal.querySelector('#mb-remote-list');
         m._progressContainer = m.modal.querySelector('#mb-progress');
-        m._remotePage = 1;
+        m._localLoading = false;
         m._remoteLoading = false;
+        m._localPage = 1;
+        m._remotePage = 1;
         m._remoteHasMore = true;
 
         // Filtres
@@ -489,10 +497,12 @@
                         flatItems.push(item);
                     });
                 });
+                m._localItems = flatItems;  // pour isLocalByFingerprint
                 renderLocalPanel(m, flatItems);
             })
             .catch(function (err) {
-                m._localList.innerHTML = '<div class="mb-empty">❌ Erreur: ' + esc(err.message) + '</div>';
+                m._localLoading = false;
+                m._localList.innerHTML = '<div class="mb-empty">❌ Erreur: ' + _esc(err.message || 'Requête échouée') + '</div>';
             });
     }
 
@@ -523,10 +533,10 @@
                 m._remoteLoading = false;
             })
             .catch(function (err) {
+                m._remoteLoading = false;  // TOUJOURS réinitialiser
                 if (page === 1) {
-                    m._remoteList.innerHTML = '<div class="mb-empty">❌ Erreur: ' + esc(err.message) + '</div>';
+                    m._remoteList.innerHTML = '<div class="mb-empty">❌ Erreur: ' + _esc(err.message || 'Requête échouée') + '</div>';
                 }
-                m._remoteLoading = false;
             });
     }
 
@@ -614,7 +624,8 @@
     // ─── renderRemotePanel ─────────────────────────────────────────────────────
     function renderRemotePanel(m, data) {
         var list = m._remoteList;
-        var items = data.items || data.uploads || data || [];
+        var raw = data.items || data.uploads || [];
+        var items = Array.isArray(raw) ? raw : [];
         var page = m._remotePage || 1;
 
         // Si data a une structure paginée
@@ -859,7 +870,7 @@
             // Fallback : friaShowConfirm simple
             friaShowConfirm(
                 "⚠️ Conflit",
-                "Le fichier \"" + esc(filename) + "\" existe déjà localement avec un contenu différent.\n\nVoulez-vous écraser le fichier local ?"
+                "Le fichier \"" + _esc(filename) + "\" existe déjà localement avec un contenu différent.\n\nVoulez-vous écraser le fichier local ?"
             ).then(function (ok) {
                 if (ok) {
                     retryDownload(m, uploadId, filename, fileType, destSubdir, 'overwrite', progressEl);
