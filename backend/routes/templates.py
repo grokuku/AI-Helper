@@ -61,6 +61,14 @@ def prompt_templates():
 
 @app.route('/api/prompts/templates/<int:template_id>', methods=['PUT', 'DELETE'])
 def single_template(template_id):
+    """Met à jour (PUT) ou supprime (DELETE) un template de prompt.
+
+    Args:
+        template_id: Identifiant du template à modifier ou supprimer.
+
+    Returns:
+        flask.Response: JSON confirmant l'opération ou une erreur 403/404.
+    """
     guard = _login_required()
     if guard: return guard
     user_id = _get_current_user_id()
@@ -99,6 +107,11 @@ def single_template(template_id):
 
 @app.route('/api/prompts/templates/defaults', methods=['GET'])
 def get_default_templates():
+    """Liste tous les templates de prompt par défaut.
+
+    Returns:
+        flask.Response: JSON listant les templates par défaut (non éditables).
+    """
     guard = _login_required()
     if guard: return guard
     conn = get_db()

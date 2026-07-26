@@ -7,6 +7,11 @@ from context import *
 
 @app.route('/api/presets', methods=['GET', 'POST'])
 def presets():
+    """Liste les presets IA visibles (GET) ou crée un nouveau preset (POST).
+
+    Returns:
+        flask.Response: JSON listant les presets (GET) ou l'ID du preset créé (POST).
+    """
     guard = _login_required()
     if guard: return guard
     user_id = _get_current_user_id()
@@ -74,6 +79,14 @@ def presets():
 
 @app.route('/api/presets/<int:preset_id>', methods=['PUT', 'DELETE'])
 def single_preset(preset_id):
+    """Met à jour (PUT) ou supprime (DELETE) un preset IA.
+
+    Args:
+        preset_id: Identifiant du preset à modifier ou supprimer.
+
+    Returns:
+        flask.Response: JSON confirmant l'opération ou une erreur 403/404.
+    """
     guard = _login_required()
     if guard: return guard
     user_id = _get_current_user_id()
@@ -144,6 +157,14 @@ def single_preset(preset_id):
 
 @app.route('/api/presets/<int:preset_id>/duplicate', methods=['POST'])
 def duplicate_preset(preset_id):
+    """Duplique un preset IA existant vers un preset personnel.
+
+    Args:
+        preset_id: Identifiant du preset à dupliquer.
+
+    Returns:
+        flask.Response: JSON avec l'ID du nouveau preset créé.
+    """
     guard = _login_required()
     if guard: return guard
     user_id = _get_current_user_id()
@@ -171,6 +192,14 @@ def duplicate_preset(preset_id):
 
 @app.route('/api/presets/<int:preset_id>/models', methods=['GET'])
 def list_preset_models(preset_id):
+    """Liste les modèles disponibles via l'API d'un preset IA.
+
+    Args:
+        preset_id: Identifiant du preset dont on veut lister les modèles.
+
+    Returns:
+        flask.Response: JSON listant les modèles ou une erreur 502 si l'API est injoignable.
+    """
     guard = _login_required()
     if guard: return guard
     conn = get_db()

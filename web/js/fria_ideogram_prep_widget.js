@@ -13,20 +13,17 @@
  * width, height, style_id, template_id) sont restaurés automatiquement par ComfyUI
  * au rechargement. Le DOM widget pilote style_id et template_id.
  */
-(function waitForApp() {
-    const app = window.app || window.comfyAPI?.app?.app;
-    if (!app) { setTimeout(waitForApp, 100); return; }
+(function() {
+    FRIA.waitForApp(function(app) {
+        app.registerExtension({
+            name: "FR.IA.IdeogramPrep",
+            async beforeRegisterNodeDef(nodeType, nodeData) {
+                if (nodeData.name !== "FRIAIdeogramPrepNode") return;
 
-    app.registerExtension({
-        name: "FR.IA.IdeogramPrep",
-        async beforeRegisterNodeDef(nodeType, nodeData) {
-            if (nodeData.name !== "FRIAIdeogramPrepNode") return;
-
-            const onNodeCreated = nodeType.prototype.onNodeCreated;
-            nodeType.prototype.onNodeCreated = function () {
-                const r = onNodeCreated?.apply(this, arguments);
-                const node = this;
-                let _friaRestored = false;
+                FRIA.registerWidget(nodeType, {
+                    onCreated: function() {
+                        const node = this;
+                        let _friaRestored = false;
 
                 const styleWidget = node.widgets?.find(x => x.name === "style_id");
                 const templateIdWidget = node.widgets?.find(x => x.name === "template_id");
@@ -59,10 +56,7 @@
                         return "https://kw.holaf.fr/api";
                     }
                 };
-                const getApiKey = () => {
-                    try { return JSON.parse(localStorage.getItem("FRIA_config") || "{}").apiKey || ""; }
-                    catch { return ""; }
-                };
+                const getApiKey = () => window.FRIA.getApiKey();
                 const apiHeaders = () => {
                     const h = { "Content-Type": "application/json" };
                     const key = getApiKey();
@@ -273,14 +267,15 @@
                     };
                     retry();
                 };
-                return r;
-            };
-        },
+                    }
+                });
+            },
 
-        async loadedGraphNode(node) {
-            if (node._friaRestore) {
-                setTimeout(() => node._friaRestore(), 0);
-            }
-        },
+            async loadedGraphNode(node) {
+                if (node._friaRestore) {
+                    setTimeout(() => node._friaRestore(), 0);
+                }
+            },
+        });
     });
 })();

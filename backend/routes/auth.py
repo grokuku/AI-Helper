@@ -5,7 +5,7 @@ from context import *
 
 # ── Routes d'authentification ────────────────────────────────────────
 
-@app.route('/api/auth/discord/login')
+@app.route('/api/auth/discord/login', methods=['GET'])
 def discord_login():
     """Redirige l'utilisateur vers Discord OAuth2."""
     redirect_uri = os.environ.get(
@@ -15,7 +15,7 @@ def discord_login():
     return oauth.discord.authorize_redirect(redirect_uri)
 
 
-@app.route('/api/auth/discord/callback')
+@app.route('/api/auth/discord/callback', methods=['GET'])
 def discord_callback():
     """Callback OAuth2 — vérifie le serveur, crée la session."""
     try:
@@ -114,7 +114,7 @@ def discord_callback():
     )
 
 
-@app.route('/api/auth/me')
+@app.route('/api/auth/me', methods=['GET'])
 def auth_me():
     """Retourne l'utilisateur connecté ou 401. Fonctionne avec session ET Bearer token."""
     # Essayer d'abord la session
@@ -144,7 +144,7 @@ def auth_me():
     return jsonify({"error": "Non connecté"}), 401
 
 
-@app.route('/api/auth/logout')
+@app.route('/api/auth/logout', methods=['GET'])
 def discord_logout():
     """Déconnecte l'utilisateur."""
     session.clear()

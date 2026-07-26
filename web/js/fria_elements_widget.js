@@ -27,9 +27,7 @@ function getApiUrl() {
     }
 }
 
-function getApiKey() {
-    return getConfig().apiKey || "";
-}
+function getApiKey() { return window.FRIA.getApiKey(); }
 
 function apiHeaders() {
     const h = { "Content-Type": "application/json" };
@@ -64,14 +62,13 @@ function hideWidget(node, name) {
 }
 
 // Attendre que l'app ComfyUI soit disponible
-(function waitForApp() {
-    const app = window.app || window.comfyAPI?.app?.app;
-    if (!app) { setTimeout(waitForApp, 100); return; }
+FRIA.waitForApp(function(app) {
 
     app.registerExtension({
         name: "FR.IA.Elements",
+        // TODO: Refactor to use FRIA.registerWidget (see fria_widget_base.js)
         async beforeRegisterNodeDef(nodeType, nodeData) {
-            if (nodeData.name !== "FRIAElementsNode") return;
+            if (nodeData.name !== "FRIAElementsNode") return; // TODO: this guard could be part of FRIA.registerWidget config
 
             const onNodeCreated = nodeType.prototype.onNodeCreated;
             nodeType.prototype.onNodeCreated = function () {
@@ -922,7 +919,7 @@ function hideWidget(node, name) {
             });
         }
     });
-})();
+});
 
 // ========================
 // Utilitaires : modales et toots

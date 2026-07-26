@@ -26,7 +26,14 @@ DISCORD_API = "https://discord.com/api"
 
 
 def init_oauth(app):
-    """Configure OAuth sur l'app Flask et retourne l'instance."""
+    """Configure OAuth Discord sur l'app Flask.
+
+    Args:
+        app (Flask): L'instance Flask sur laquelle enregistrer OAuth.
+
+    Returns:
+        OAuth: L'instance OAuth configurée avec le provider Discord.
+    """
     oauth = OAuth(app)
     oauth.register(
         name="discord",
@@ -40,23 +47,48 @@ def init_oauth(app):
 
 
 def make_discord_session(token: dict) -> requests.Session:
-    """Crée une session requests avec le token Discord."""
+    """Crée une session requests authentifiée avec un token Discord.
+
+    Args:
+        token (dict): Dictionnaire contenant au moins ``access_token``.
+
+    Returns:
+        requests.Session: Une session avec l'en-tête Authorization Bearer.
+    """
     ses = requests.Session()
     ses.headers.update({"Authorization": f"Bearer {token['access_token']}"})
     return ses
 
 
 def get_user_guilds(ses: requests.Session) -> list[dict]:
-    """Récupère la liste des serveurs de l'utilisateur."""
+    """Récupère la liste des serveurs (guilds) de l'utilisateur.
+
+    Args:
+        ses (requests.Session): La session Discord authentifiée.
+
+    Returns:
+        list[dict]: La liste des guilds (chaque guild est un dict avec ``id``,
+            ``name``, etc.).
+
+    Raises:
+        requests.HTTPError: Si l'API Discord renvoie une erreur.
+    """
     resp = ses.get(f"{DISCORD_API}/users/@me/guilds")
     resp.raise_for_status()
     return resp.json()
 
 
 def check_guild_access(ses: requests.Session) -> tuple[bool, str | None]:
-    """
-    Vérifie si l'utilisateur est membre du serveur requis.
-    Retourne (ok, error_message).
+    """Vérifie si l'utilisateur est membre du serveur Discord requis.
+
+    Si ``DISCORD_GUILD_ID`` n'est pas défini, aucune restriction n'est appliquée.
+
+    Args:
+        ses (requests.Session): La session Discord authentifiée.
+
+    Returns:
+        tuple: ``(ok, error_message)`` où ``ok`` est un booléen et
+            ``error_message`` est ``None`` si l'accès est autorisé.
     """
     guild_id = os.environ.get("DISCORD_GUILD_ID")
     if not guild_id:
@@ -75,7 +107,15 @@ def check_guild_access(ses: requests.Session) -> tuple[bool, str | None]:
 
 
 def get_guild_member(ses: requests.Session, guild_id: str) -> dict | None:
-    """Récupère les infos du membre dans un serveur (nickname, rôles…)."""
+    """Récupère les infos du membre dans un serveur (nickname, rôles…).
+
+    Args:
+        ses (requests.Session): La session Discord authentifiée.
+        guild_id (str): L'ID du serveur Discord.
+
+    Returns:
+        dict | None: Les infos du membre si trouvé, sinon ``None``.
+    """
     resp = ses.get(f"{DISCORD_API}/users/@me/guilds/{guild_id}/member")
     if resp.ok:
         return resp.json()
@@ -83,14 +123,32 @@ def get_guild_member(ses: requests.Session, guild_id: str) -> dict | None:
 
 
 def get_user_info(ses: requests.Session) -> dict:
-    """Récupère les infos Discord de l'utilisateur."""
+    """Récupère les infos Discord de l'utilisateur connecté.
+
+    Args:
+        ses (requests.Session): La session Discord authentifiée.
+
+    Returns:
+        dict: Les infos utilisateur (``id``, ``username``, ``avatar``, etc.).
+
+    Raises:
+        requests.HTTPError: Si l'API Discord renvoie une erreur.
+    """
     resp = ses.get(f"{DISCORD_API}/users/@me")
     resp.raise_for_status()
     return resp.json()
 
 
 def avatar_url(user: dict) -> str:
-    """Construit l'URL de l'avatar Discord."""
+    """Construit l'URL de l'avatar Discord.
+
+    Args:
+        user (dict): Les infos utilisateur Discord (doit contenir ``id`` et
+            optionnellement ``avatar``).
+
+    Returns:
+        str: L'URL de l'avatar (avatar par défaut si pas d'avatar custom).
+    """
     uid = user["id"]
     hash_ = user.get("avatar")
     if not hash_:
@@ -102,7 +160,12 @@ def avatar_url(user: dict) -> str:
 
 
 def get_logged_user() -> dict | None:
-    """Retourne l'utilisateur connecté depuis la session, ou None."""
+    """Retourne l'utilisateur connecté depuis la session, ou None.
+
+    Returns:
+        dict | None: Les infos utilisateur avec ``avatar_url`` à jour,
+            ou ``None`` si non connecté.
+    """
     user = session.get("user")
     if not user:
         return None
@@ -118,7 +181,11 @@ def get_logged_user() -> dict | None:
 _JWT_SECRET_CACHE = None
 
 def _get_jwt_secret() -> str:
-    """Retourne la clé secrète JWT, lue une seule fois au démarrage."""
+    """Retourne la clé secrète JWT, lue une seule fois au démarrage.
+
+    Returns:
+        str: La clé secrète (depuis ``JWT_SECRET_KEY`` ou ``SECRET_KEY``).
+    """
     global _JWT_SECRET_CACHE
     if _JWT_SECRET_CACHE is not None:
         return _JWT_SECRET_CACHE
@@ -129,13 +196,25 @@ def _get_jwt_secret() -> str:
 
 
 def _get_jwt_algorithm() -> str:
+    """Retourne l'algorithme de signature JWT utilisé.
+
+    Returns:
+        str: L'algorithme (actuellement ``"HS256"``).
+    """
     return "HS256"
 
-
 def create_jwt(user_id: str, role: str = "user", extra_claims: dict | None = None) -> str:
-    """
-    Crée un JWT token d'accès.
-    Durée de validité : JWT_ACCESS_EXPIRY (défaut 24h).
+    """Crée un JWT token d'accès.
+
+    Durée de validité : ``JWT_ACCESS_EXPIRY`` (défaut 24 h).
+
+    Args:
+        user_id (str): L'ID de l'utilisateur.
+        role (str, optional): Le rôle de l'utilisateur. Défaut: ``"user"``.
+        extra_claims (dict | None, optional): Claims supplémentaires à inclure.
+
+    Returns:
+        str: Le token JWT encodé.
     """
     expiry = int(os.environ.get("JWT_ACCESS_EXPIRY", "86400"))
     now = int(time.time())
@@ -152,9 +231,15 @@ def create_jwt(user_id: str, role: str = "user", extra_claims: dict | None = Non
 
 
 def create_refresh_token(user_id: str) -> str:
-    """
-    Crée un JWT refresh token (longue durée).
-    Durée de validité : JWT_REFRESH_EXPIRY (défaut 30 jours).
+    """Crée un JWT refresh token (longue durée).
+
+    Durée de validité : ``JWT_REFRESH_EXPIRY`` (défaut 30 jours).
+
+    Args:
+        user_id (str): L'ID de l'utilisateur.
+
+    Returns:
+        str: Le refresh token JWT encodé.
     """
     expiry = int(os.environ.get("JWT_REFRESH_EXPIRY", "2592000"))
     now = int(time.time())
@@ -168,9 +253,13 @@ def create_refresh_token(user_id: str) -> str:
 
 
 def verify_jwt(token: str) -> dict | None:
-    """
-    Vérifie et décode un JWT.
-    Retourne le payload (dict) si valide, None sinon.
+    """Vérifie et décode un JWT.
+
+    Args:
+        token (str): Le token JWT à vérifier.
+
+    Returns:
+        dict | None: Le payload (dict) si le token est valide, sinon ``None``.
     """
     try:
         payload = pyjwt.decode(
@@ -185,7 +274,11 @@ def verify_jwt(token: str) -> dict | None:
 
 
 def _make_jwt_decorator():
-    """Fabrique le décorateur JWT (logique commune aux deux syntaxes)."""
+    """Fabrique le décorateur JWT (logique commune aux deux syntaxes).
+
+    Returns:
+        callable: Un décorateur qui vérifie le Bearer token JWT sur la route.
+    """
     from flask import g, request, jsonify
 
     def decorator(f):

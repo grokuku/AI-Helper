@@ -16,6 +16,11 @@ from context import *
 
 @app.route('/api/keywords', methods=['GET', 'POST'])
 def list_or_create_keywords():
+    """Liste les mots-clés visibles (GET) ou crée un nouveau mot-clé (POST).
+
+    Returns:
+        flask.Response: JSON listant les mots-clés filtrés (GET) ou l'ID du mot-clé créé (POST).
+    """
     guard = _login_required()
     if guard:
         return guard
@@ -205,6 +210,14 @@ def _create_keyword(user_id):
 
 @app.route('/api/keywords/<int:keyword_id>', methods=['PUT', 'DELETE'])
 def edit_or_delete_keyword(keyword_id):
+    """Modifie (PUT) ou supprime (DELETE) un mot-clé existant.
+
+    Args:
+        keyword_id: Identifiant du mot-clé à modifier ou supprimer.
+
+    Returns:
+        flask.Response: JSON confirmant l'opération ou une erreur 403/404.
+    """
     guard = _login_required()
     if guard:
         return guard
@@ -739,6 +752,11 @@ def scan_keyword_duplicates():
 
 @app.route('/api/subsections', methods=['GET'])
 def list_subsections():
+    """Liste les sous-sections visibles avec le nombre de mots-clés dans chacune.
+
+    Returns:
+        flask.Response: JSON listant les sous-sections et leurs décomptes.
+    """
     guard = _login_required()
     if guard:
         return guard
@@ -771,6 +789,11 @@ def list_subsections():
 
 @app.route('/api/sections', methods=['GET'])
 def list_sections():
+    """Liste les sections visibles avec le nombre de mots-clés et le décompte NSFW.
+
+    Returns:
+        flask.Response: JSON listant les sections et leurs statistiques.
+    """
     guard = _login_required()
     if guard:
         return guard
@@ -796,6 +819,11 @@ def list_sections():
 
 @app.route('/api/stats', methods=['GET'])
 def stats():
+    """Retourne des statistiques globales sur les mots-clés et prompts générés.
+
+    Returns:
+        flask.Response: JSON avec total, nsfw_total, section_count, subsection_count, generated_total.
+    """
     guard = _login_required()
     if guard:
         return guard

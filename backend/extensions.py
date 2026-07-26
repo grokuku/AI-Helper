@@ -12,7 +12,8 @@ from flask_cors import CORS
 from auth import init_oauth
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-DB_PATH = BASE_DIR / 'keywords.db'
+# Allow overriding the DB path (used by the test suite via FRIA_DB_PATH).
+DB_PATH = Path(os.environ.get("FRIA_DB_PATH", str(BASE_DIR / 'keywords.db')))
 MD_PATH = BASE_DIR / 'Keywords-Complete.md'
 
 app = Flask(__name__)

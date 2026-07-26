@@ -6,6 +6,11 @@ from context import *
 
 @app.route('/api/import', methods=['POST'])
 def import_md():
+    """Importe un fichier Markdown de mots-clés dans la base de données.
+
+    Returns:
+        flask.Response: JSON avec le nombre de mots-clés importés, mis à jour et doublons ignorés.
+    """
     try:
         guard = _login_required()
         if guard:
@@ -102,6 +107,11 @@ def import_md():
 
 @app.route('/api/embeddings/build', methods=['POST'])
 def build_embeddings():
+    """Régénère les embeddings pour tous les mots-clés de la base.
+
+    Returns:
+        flask.Response: JSON confirmant la génération ou une erreur si le provider est inaccessible.
+    """
     guard = _login_required()
     if guard:
         return guard

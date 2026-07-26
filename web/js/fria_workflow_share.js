@@ -23,10 +23,7 @@
     } catch { return "https://kw.holaf.fr/api"; }
   }
 
-  function getApiKey() {
-    try { return JSON.parse(localStorage.getItem("FRIA_config") || "{}").apiKey || ""; }
-    catch { return ""; }
-  }
+  const getApiKey = () => window.FRIA.getApiKey();
 
   function apiHeaders() {
     var h = { "Content-Type": "application/json" };

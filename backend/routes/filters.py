@@ -5,6 +5,11 @@ from context import *
 
 @app.route('/api/filters', methods=['GET', 'POST'])
 def filters():
+    """Liste ou crée un filtre sauvegardé pour l'utilisateur courant.
+
+    Returns:
+        flask.Response: JSON listant les filtres (GET) ou l'ID du filtre créé (POST).
+    """
     guard = _login_required()
     if guard:
         return guard
@@ -82,6 +87,14 @@ def filters():
 
 @app.route('/api/filters/<int:filter_id>', methods=['PUT', 'DELETE'])
 def single_filter(filter_id):
+    """Met à jour ou supprime un filtre sauvegardé appartenant à l'utilisateur.
+
+    Args:
+        filter_id: L'identifiant du filtre à modifier ou supprimer.
+
+    Returns:
+        flask.Response: JSON confirmant l'opération ou une erreur 404.
+    """
     guard = _login_required()
     if guard: return guard
     user_id = _get_current_user_id()
@@ -132,6 +145,14 @@ def single_filter(filter_id):
 
 @app.route('/api/filters/<int:filter_id>/refresh', methods=['POST'])
 def refresh_filter_cache(filter_id):
+    """Reconstruit le cache des mots-clés d'un filtre à partir de sa config.
+
+    Args:
+        filter_id: L'identifiant du filtre dont le cache doit être rafraîchi.
+
+    Returns:
+        flask.Response: JSON avec le statut et le nombre de mots-clés dans le cache.
+    """
     guard = _login_required()
     if guard: return guard
     user_id = _get_current_user_id()
@@ -158,6 +179,14 @@ def refresh_filter_cache(filter_id):
 
 
 def _rebuild_filter_cache(cur, filter_id, config, user_id=None):
+    """Reconstruit le cache d'un filtre en insérant les keyword_ids correspondants.
+
+    Args:
+        cur: Curseur de base de données actif.
+        filter_id: Identifiant du filtre à reconstruire.
+        config: Dictionnaire de configuration du filtre (section, recherche, sémantique, etc.).
+        user_id: Identifiant de l'utilisateur propriétaire (pour le filtrage de confidentialité).
+    """
     # Si c'est un filtre composé (union), merger les caches des membres
     filter_type = config.get('filter_type', 'simple')
     if filter_type == 'union':
@@ -266,6 +295,14 @@ def _rebuild_filter_cache(cur, filter_id, config, user_id=None):
 
 
 def _count_filter_cache(filter_id):
+    """Compte le nombre de mots-clés dans le cache d'un filtre.
+
+    Args:
+        filter_id: Identifiant du filtre.
+
+    Returns:
+        int: Nombre de mots-clés en cache pour ce filtre.
+    """
     conn = get_db()
     cur = conn.cursor()
     cur.execute("SELECT COUNT(*) FROM filter_cache WHERE filter_id = ?", (filter_id,))
@@ -277,6 +314,14 @@ def _count_filter_cache(filter_id):
 
 @app.route('/api/filters/<int:filter_id>/preview', methods=['GET'])
 def preview_filter(filter_id):
+    """Retourne un aperçu des mots-clés d'un filtre (20 premiers + total).
+
+    Args:
+        filter_id: Identifiant du filtre à prévisualiser.
+
+    Returns:
+        flask.Response: JSON contenant le nom, le total, un échantillon de mots-clés et la config.
+    """
     guard = _login_required()
     if guard: return guard
     conn = get_db()

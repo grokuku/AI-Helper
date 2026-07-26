@@ -1,0 +1,23 @@
+[tool.ruff]
+target-version = "py38"
+line-length = 120
+extend-exclude = [
+    "FRIA_ComfyUI",
+    "venv",
+    "__pycache__",
+]
+
+[tool.ruff.lint]
+# Activé: pycodestyle (E), Pyflakes (F), pycodestyle warnings (W),
+# isort (I), pep8-naming (N), pyupgrade (UP), flake8-bugbear (B),
+# flake8-builtins (A), flake8-comprehensions (C4), flake8-simplify (SIM)
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "SIM"]
+ignore = ["E501"]  # line too long — géré par ruff format
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401", "F403"]
+"backend/routes/*_test.py" = ["F811"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"

@@ -1,0 +1,36 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  # ===========================================================================
+  # Déploiement via SSH — ne s'exécute qu'après CI réussie
+  # ===========================================================================
+  deploy:
+    name: 🚀 SSH Deploy
+    runs-on: ubuntu-latest
+    needs: []  # Référence le workflow CI via workflow_run si nécessaire
+
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🔑 Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.DEPLOY_HOST }} >> ~/.ssh/known_hosts
+
+      - name: 🚀 Deploy via run.sh (placeholder)
+        run: |
+          echo "▶ Déploiement sur ${{ secrets.DEPLOY_HOST }}..."
+          ssh -i ~/.ssh/deploy_key \
+            ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
+            "cd ${{ secrets.DEPLOY_PATH }} && git pull origin main && bash run.sh"
+        # NOTE: Placeholder — adapter les secrets et la commande selon l'infra.

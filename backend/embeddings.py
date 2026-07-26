@@ -62,22 +62,47 @@ def set_config(
 
 
 def _get_provider() -> str:
+    """Retourne le nom du provider d'embedding actif (ollama ou gemini).
+
+    Returns:
+        str: Le provider actif, priorisant la surcharge BDD sur la valeur par défaut.
+    """
     return _OVERRIDE_PROVIDER or DEFAULT_PROVIDER
 
 
 def _get_ollama_url() -> str:
+    """Retourne l'URL du serveur Ollama configuré.
+
+    Returns:
+        str: L'URL de base d'Ollama, priorisant la surcharge BDD sur la valeur par défaut.
+    """
     return _OVERRIDE_OLLAMA_URL or DEFAULT_OLLAMA_URL
 
 
 def _get_ollama_model() -> str:
+    """Retourne le nom du modèle Ollama utilisé pour les embeddings.
+
+    Returns:
+        str: Le nom du modèle Ollama, priorisant la surcharge BDD sur la valeur par défaut.
+    """
     return _OVERRIDE_OLLAMA_MODEL or DEFAULT_OLLAMA_MODEL
 
 
 def _get_gemini_api_key() -> str:
+    """Retourne la clé API Gemini configurée.
+
+    Returns:
+        str: La clé API Gemini, priorisant la surcharge BDD sur la variable d'environnement.
+    """
     return _OVERRIDE_GEMINI_API_KEY or DEFAULT_GEMINI_API_KEY
 
 
 def _get_gemini_model() -> str:
+    """Retourne le nom du modèle Gemini utilisé pour les embeddings.
+
+    Returns:
+        str: Le nom du modèle Gemini, priorisant la surcharge BDD sur la valeur par défaut.
+    """
     return _OVERRIDE_GEMINI_MODEL or DEFAULT_GEMINI_MODEL
 
 

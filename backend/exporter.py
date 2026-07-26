@@ -4,6 +4,14 @@ from collections import OrderedDict
 
 
 def export_to_markdown(db_path: str) -> str:
+    """Exporte tous les mots-clés de la base vers une chaîne Markdown formatée.
+
+    Args:
+        db_path: Chemin vers le fichier de base de données SQLite.
+
+    Returns:
+        str: Le contenu Markdown généré, organisé par sections et sous-sections.
+    """
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
@@ -64,6 +72,12 @@ def export_to_markdown(db_path: str) -> str:
 
 
 def export_to_file(db_path: str, output_path: str):
+    """Exporte la base de mots-clés vers un fichier Markdown sur disque.
+
+    Args:
+        db_path: Chemin vers le fichier de base de données SQLite.
+        output_path: Chemin du fichier Markdown de sortie à créer.
+    """
     content = export_to_markdown(db_path)
     Path(output_path).write_text(content, encoding='utf-8')
 

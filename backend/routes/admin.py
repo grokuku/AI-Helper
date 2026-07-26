@@ -7,6 +7,11 @@ from context import *
 
 @app.route('/api/settings', methods=['GET', 'POST'])
 def user_settings():
+    """Lit (GET) ou met à jour (POST) les paramètres de l'utilisateur courant.
+
+    Returns:
+        flask.Response: JSON des paramètres utilisateur (GET) ou confirmation (POST).
+    """
     guard = _login_required()
     if guard:
         return guard
@@ -116,6 +121,14 @@ def member_detail(user_id):
 
 @app.route('/api/admin/users/<user_id>/role', methods=['POST'])
 def admin_set_role(user_id):
+    """Modifie le rôle d'un utilisateur (admin seulement).
+
+    Args:
+        user_id: Identifiant de l'utilisateur dont le rôle doit être modifié.
+
+    Returns:
+        flask.Response: JSON confirmant la modification ou une erreur 400.
+    """
     guard = _admin_required()
     if guard:
         return guard
@@ -132,6 +145,14 @@ def admin_set_role(user_id):
 
 @app.route('/api/admin/users/<user_id>', methods=['DELETE'])
 def admin_delete_user(user_id):
+    """Supprime un utilisateur et toutes ses données associées (admin seulement).
+
+    Args:
+        user_id: Identifiant de l'utilisateur à supprimer.
+
+    Returns:
+        flask.Response: JSON confirmant la suppression ou une erreur 400.
+    """
     guard = _admin_required()
     if guard:
         return guard
@@ -292,6 +313,11 @@ def admin_backup_now():
 
 @app.route('/api/admin/db/clear', methods=['POST'])
 def admin_db_clear():
+    """Supprime tous les mots-clés et embeddings de la base (admin seulement).
+
+    Returns:
+        flask.Response: JSON confirmant la suppression.
+    """
     guard = _admin_required()
     if guard:
         return guard

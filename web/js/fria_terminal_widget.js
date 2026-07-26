@@ -13,9 +13,7 @@
  *   - PAS DE MOT DE PASSE : usage local uniquement. Bandeau d'avertissement
  *     toujours visible.
  */
-(function waitForApp() {
-    const app = window.app || window.comfyAPI?.app?.app;
-    if (!app) { setTimeout(waitForApp, 100); return; }
+FRIA.waitForApp(function(app) {
 
     // ════════════════════════════════════════════════════════════════════
     //  Helpers
@@ -543,4 +541,4 @@
             console.log("[FR.IA Terminal] Panel ready. Access via FR.IA menu → 💻 Terminal.");
         },
     });
-})();
+});

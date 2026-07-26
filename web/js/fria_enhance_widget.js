@@ -12,14 +12,13 @@
  *   - Bouton "Test enhance"
  *   - Textarea resultat
  */
-(function waitForApp() {
-    const app = window.app || window.comfyAPI?.app?.app;
-    if (!app) { setTimeout(waitForApp, 100); return; }
-
-    app.registerExtension({
+(function() {
+    FRIA.waitForApp(function(app) {
+        app.registerExtension({
         name: "FR.IA.Enhance",
+        // TODO: Refactor to use FRIA.registerWidget (see fria_widget_base.js)
         async beforeRegisterNodeDef(nodeType, nodeData) {
-            if (nodeData.name !== "FRIAEnhanceNode") return;
+            if (nodeData.name !== "FRIAEnhanceNode") return; // TODO: this guard could be part of FRIA.registerWidget config
 
             const onNodeCreated = nodeType.prototype.onNodeCreated;
             nodeType.prototype.onNodeCreated = function () {
@@ -60,10 +59,7 @@
                         return "https://kw.holaf.fr/api";
                     }
                 };
-                const getApiKey = () => {
-                    try { return JSON.parse(localStorage.getItem("FRIA_config") || "{}").apiKey || ""; }
-                    catch { return ""; }
-                };
+                const getApiKey = () => window.FRIA.getApiKey();
                 const apiHeaders = () => {
                     const h = { "Content-Type": "application/json" };
                     const key = getApiKey();
@@ -395,5 +391,6 @@
                 setTimeout(() => node._friaRestore(), 0);
             }
         },
+    });
     });
 })();

@@ -7,6 +7,11 @@ from context import *
 
 @app.route('/api/styles', methods=['GET', 'POST'])
 def styles():
+    """Liste les styles visibles (GET) ou crée un nouveau style (POST).
+
+    Returns:
+        flask.Response: JSON listant les styles (GET) ou l'ID du style créé (POST).
+    """
     guard = _login_required()
     if guard: return guard
     user_id = _get_current_user_id()
@@ -70,6 +75,14 @@ def styles():
 
 @app.route('/api/styles/<int:style_id>', methods=['PUT', 'DELETE'])
 def single_style(style_id):
+    """Met à jour (PUT) ou supprime (DELETE) un style existant.
+
+    Args:
+        style_id: Identifiant du style à modifier ou supprimer.
+
+    Returns:
+        flask.Response: JSON confirmant l'opération ou une erreur 403/404.
+    """
     guard = _login_required()
     if guard: return guard
     user_id = _get_current_user_id()
