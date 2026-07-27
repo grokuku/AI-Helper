@@ -298,7 +298,7 @@
     }
 
     // ─── Fetch vers l'API AIH (backend kw.holaf.fr) ───────────────────────────
-    function _fetchFriaApi(path, opts) {
+    function _fetchAihApi(path, opts) {
         opts = opts || {};
         // Lire la config depuis localStorage (même clé que aih_menu.js)
         var cfg = {};
@@ -631,7 +631,7 @@
         m._currentUser = null;
 
         // Récupérer le rôle de l'utilisateur (pour les actions admin)
-        _fetchFriaApi('auth/me')
+        _fetchAihApi('auth/me')
             .then(function (r) { return r.json(); })
             .then(function (data) {
                 if (data && data.role) {
@@ -1243,7 +1243,7 @@
                     if (typeof aihShowConfirm === 'function') {
                         aihShowConfirm('Supprimer', 'Supprimer "' + _esc(item.filename || displayName) + '" ?').then(function (ok) {
                             if (!ok) return;
-                            _fetchFriaApi('aih/models/remote/' + (item.upload_id || item.id || item._id), { method: 'DELETE' })
+                            _fetchAihApi('aih/models/remote/' + (item.upload_id || item.id || item._id), { method: 'DELETE' })
                                 .then(function (r) { return r.json(); })
                                 .then(function (d) {
                                     if (d.status === 'ok') {
