@@ -170,7 +170,7 @@ function debounce(fn, delay) {
                     exclude: "",
                     semantic: "",
                     nsfw: "",
-                    min_confidence: 0.0,
+                    min_confidence: 0.5,
                     output_format: "text",
                 };
 
@@ -384,7 +384,7 @@ function debounce(fn, delay) {
                 confSlider.type = "range";
                 confSlider.min = "0";
                 confSlider.max = "100";
-                confSlider.value = "0";
+                confSlider.value = "50";
                 confSlider.step = "1";
                 Object.assign(confSlider.style, {
                     flex: "1", minWidth: "60px", height: "16px",
@@ -393,7 +393,7 @@ function debounce(fn, delay) {
 
                 // Confidence value display
                 const confVal = document.createElement("span");
-                confVal.textContent = "0%";
+                confVal.textContent = "50%";
                 confVal.style.cssText = "font-size:11px;color:#ccc;min-width:32px;text-align:right;";
 
                 confSlider.oninput = function () {
@@ -619,10 +619,10 @@ function debounce(fn, delay) {
                     nsfwSel.value = "";
 
                     // Reset Confidence
-                    const pct = 0;
-                    config.min_confidence = 0.0;
-                    confSlider.value = "0";
-                    confVal.textContent = "0%";
+                    const pct = 50;
+                    config.min_confidence = 0.5;
+                    confSlider.value = "50";
+                    confVal.textContent = "50%";
 
                     // Reset Include
                     config.include = "";
