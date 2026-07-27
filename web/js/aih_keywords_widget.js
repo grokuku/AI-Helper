@@ -110,8 +110,9 @@ AIH.waitForApp(function(app) {
                 const r = onNodeCreated?.apply(this, arguments);
                 const node = this;
 
-                // ---- Masquer le widget sérialisé _keywords_config ----
+                // ---- Masquer les widgets sérialisés _keywords_config et seed ----
                 hideWidget(node, "_keywords_config");
+                hideWidget(node, "seed");
 
                 // ---- Supprimer la socket d'entrée de _keywords_config ----
                 {
@@ -254,8 +255,8 @@ AIH.waitForApp(function(app) {
                         const sections = Array.isArray(data) ? data : (data.sections || data.data || []);
                         sectionSel.innerHTML = '<option value="">Section...</option>';
                         sections.forEach(function (s) {
-                            const name = typeof s === "string" ? s : (s.name || s.id || s);
-                            const val = typeof s === "string" ? s : (s.id || s.name || s);
+                            const name = typeof s === "string" ? s : (s.section_title || s.title || s.name || String(s.section_id ?? s.id ?? ""));
+                            const val = typeof s === "string" ? s : (s.section_id ?? s.id ?? s.name ?? s.section_title ?? s.title ?? "");
                             const opt = document.createElement("option");
                             opt.value = val;
                             opt.textContent = name;
@@ -272,8 +273,8 @@ AIH.waitForApp(function(app) {
                         const subs = Array.isArray(data) ? data : (data.subsections || data.data || []);
                         subsectionSel.innerHTML = '<option value="">Sous-section...</option>';
                         subs.forEach(function (s) {
-                            const name = typeof s === "string" ? s : (s.name || s.id || s);
-                            const val = typeof s === "string" ? s : (s.id || s.name || s);
+                            const name = typeof s === "string" ? s : (s.subsection_title || s.title || s.name || String(s.subsection_id ?? s.id ?? ""));
+                            const val = typeof s === "string" ? s : (s.subsection_id ?? s.id ?? s.name ?? s.subsection_title ?? s.title ?? "");
                             const opt = document.createElement("option");
                             opt.value = val;
                             opt.textContent = name;
@@ -459,9 +460,11 @@ AIH.waitForApp(function(app) {
                 };
 
                 const loadBtn = mkBtn("📂 Load");
+                const resetBtn = mkBtn("🔁 Reset");
                 const saveBtn = mkBtn("💾 Save", true);
 
                 row6.appendChild(loadBtn);
+                row6.appendChild(resetBtn);
                 row6.appendChild(saveBtn);
 
                 // ---- Load button : liste des filtres ----
@@ -537,6 +540,46 @@ AIH.waitForApp(function(app) {
                     });
                 };
 
+                // ---- Reset button ----
+                resetBtn.onclick = function () {
+                    // Reset Section
+                    config.section = "";
+                    sectionSel.value = "";
+
+                    // Reset Subsection
+                    config.subsection = "";
+                    subsectionSel.innerHTML = '<option value="">Sous-section...</option>';
+
+                    // Reset NSFW
+                    config.nsfw = "";
+                    nsfwSel.value = "";
+
+                    // Reset Confidence
+                    const pct = 0;
+                    config.min_confidence = 0.0;
+                    confSlider.value = "0";
+                    confVal.textContent = "0%";
+
+                    // Reset Include
+                    config.include = "";
+                    includeInput.value = "";
+
+                    // Reset Exclude
+                    config.exclude = "";
+                    excludeInput.value = "";
+
+                    // Reset Semantic
+                    config.semantic = "";
+                    semanticInput.value = "";
+
+                    // Vider la liste des mots-clés
+                    node._aihKeywords = [];
+                    node._aihTotal = 0;
+
+                    // Relancer le fetch (retournera une liste vide ou par defaults)
+                    fetchKeywords();
+                };
+
                 // ========================================
                 // Keywords list (scrollable, flex grow)
                 // ========================================
@@ -608,35 +651,6 @@ AIH.waitForApp(function(app) {
                     });
                 }
 
-                // ========================================
-                // Infos textarea (résultat texte simple)
-                // ========================================
-                const resultText = document.createElement("textarea");
-                Object.assign(resultText.style, {
-                    width: "100%",
-                    height: "40px",
-                    minHeight: "40px",
-                    maxHeight: "40px",
-                    borderRadius: "4px",
-                    border: "1px solid #555",
-                    padding: "4px",
-                    background: "#1a1a1e",
-                    color: "#fff",
-                    fontSize: "11px",
-                    resize: "none",
-                    boxSizing: "border-box",
-                    flex: "0 0 auto",
-                });
-                resultText.placeholder = "Mots-clés (format texte)...";
-                resultText.readOnly = true;
-
-                // Mettre à jour le textarea à chaque render
-                const origRender = renderKeywords;
-                renderKeywords = function () {
-                    origRender();
-                    const items = node._aihKeywords || [];
-                    resultText.value = items.map(k => k.keyword || (typeof k === "string" ? k : "")).join(", ");
-                };
                 // Initial render
                 renderKeywords();
 
@@ -650,7 +664,6 @@ AIH.waitForApp(function(app) {
                 container.appendChild(row5);
                 container.appendChild(row6);
                 container.appendChild(keywordsList);
-                container.appendChild(resultText);
 
                 // ---- Intégration DOM widget ----
                 const domWidget = node.addDOMWidget("keywords_ui", "custom", container, {
@@ -744,7 +757,6 @@ AIH.waitForApp(function(app) {
 
                 // ---- Stockage refs ----
                 node._keywordsList = keywordsList;
-                node._resultText = resultText;
                 node._domWidget = domWidget;
 
                 // Sync initial
