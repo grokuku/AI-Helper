@@ -44,6 +44,9 @@ def list_or_create_keywords():
     # Nouveaux filtres checkbox (combinables)
     privacy_filter = request.args.get('privacy', '').strip()  # comma-separated: 'public,private,pending'
     mine_only = request.args.get('mine', '').strip()  # '1' = mes keywords uniquement
+    # Recherche sémantique
+    semantic_text = request.args.get('semantic', '').strip()
+    min_confidence = float(request.args.get('min_confidence', 0.0))
 
     conditions = ["1=1"]
     params = []
@@ -122,6 +125,71 @@ def list_or_create_keywords():
         conditions.append("k.nsfw = ?")
         params.append(int(nsfw_raw))
 
+    # ── Branche sémantique : recherche par embedding ──
+    if semantic_text:
+        try:
+            from embeddings import generate_embedding, cosine_similarity
+            qe = generate_embedding(semantic_text)
+            if qe:
+                # Pré-filtrer par les mêmes conditions SQL (privacy, section, nsfw, etc.)
+                # mais on ne peut pas appliquer q/q_neg en SQL car on veut les appliquer
+                # sur les résultats sémantiques (post-filter, comme dans _rebuild_filter_cache)
+                sem_conds = [c for c in conditions]
+                sem_params = params[:]
+                # Retirer les conditions q / q_neg (elles seront appliquées post-filter)
+                # Note: q et q_neg sont déjà dans conditions/params, on les garde car
+                # elles ne posent pas de problème (filtrage SQL supplémentaire)
+                sem_sql = f"""
+                    SELECT k.id, k.keyword, k.description, k.section_id, k.section_title,
+                           k.subsection_id, k.subsection_title, k.nsfw, k.privacy_status,
+                           k.user_id, ke.embedding
+                    FROM keywords k
+                    JOIN keyword_embeddings ke ON ke.keyword_id = k.id
+                    WHERE {' AND '.join(sem_conds)}
+                """
+                cur.execute(sem_sql, sem_params)
+                sem_rows = cur.fetchall()
+                conn.close()
+
+                scored = []
+                q_lower = q.lower() if q else ''
+                neg_lower = q_neg.lower() if q_neg else ''
+                for r in sem_rows:
+                    try:
+                        emb = json.loads(r['embedding'])
+                    except Exception:
+                        logging.exception("keywords: embedding parse failed in semantic search")
+                        continue
+                    sim = cosine_similarity(qe, emb)
+                    if sim < min_confidence:
+                        continue
+                    # Appliquer filtres texte q (+) et q_neg (-) sur 4 champs
+                    if q_lower or neg_lower:
+                        fields = [
+                            (r['keyword'] or '').lower(),
+                            (r['description'] or '').lower(),
+                            (r['section_title'] or '').lower(),
+                            (r['subsection_title'] or '').lower(),
+                        ]
+                        if q_lower and not any(q_lower in f for f in fields):
+                            continue
+                        if neg_lower and any(neg_lower in f for f in fields):
+                            continue
+                    d = dict(r)
+                    d.pop('embedding', None)  # ne pas renvoyer l'embedding au client
+                    d['similarity'] = round(sim, 4)
+                    scored.append(d)
+                scored.sort(key=lambda x: x.get('similarity', 0), reverse=True)
+                return jsonify(scored)
+            else:
+                # Embedding a échoué → fallback sur recherche SQL classique
+                print("[keywords] generate_embedding returned None for semantic query, falling back to SQL")
+        except Exception as e:
+            print(f"[keywords] Erreur recherche sémantique: {e}, fallback SQL")
+            conn = get_db()
+            cur = conn.cursor()
+
+    # ── Branche classique : recherche SQL LIKE ──
     sql = f"""
         SELECT k.id, k.keyword, k.description, k.section_id, k.section_title,
                k.subsection_id, k.subsection_title, k.nsfw, k.privacy_status, k.user_id

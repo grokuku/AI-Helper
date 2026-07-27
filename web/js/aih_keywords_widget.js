@@ -143,6 +143,13 @@ function debounce(fn, delay) {
                     if (w) w.serializable = true;
                 }
 
+                // ---- Masquer le widget seed (forçage de réexécution) ----
+                // Le seed existe dans la node pour que ComfyUI le sérialise
+                // et réexécute la node à chaque run, mais il n'est pas visible.
+                {
+                    hideWidget(node, "seed");
+                }
+
                 // ---- Supprimer la socket d'entrée de _keywords_config ----
                 {
                     const slot = node.findInputSlot?.("_keywords_config");
@@ -351,7 +358,7 @@ function debounce(fn, delay) {
                 // ========================================
                 const row2 = document.createElement("div");
                 Object.assign(row2.style, {
-                    display: "flex", gap: "6px", marginBottom: "6px",
+                    display: "flex", gap: "8px", marginBottom: "6px",
                     alignItems: "center", flex: "0 0 auto",
                 });
 
@@ -402,7 +409,7 @@ function debounce(fn, delay) {
                 const confGroup = document.createElement("div");
                 Object.assign(confGroup.style, {
                     display: "flex", alignItems: "center", gap: "4px",
-                    flex: "1", maxWidth: "60%",
+                    flex: "1", minWidth: "0",
                 });
                 confGroup.appendChild(confLabel);
                 confGroup.appendChild(confSlider);
