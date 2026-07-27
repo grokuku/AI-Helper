@@ -5,7 +5,7 @@ IN (caché, géré par le widget JS) :
   _keywords_config : STRING (JSON) contenant la config du filtre + les keywords
 
 OUT :
-  random_keyword : STRING — un mot-clé aléatoire (déterministe selon seed)
+  random_keyword : STRING — un mot-clé aléatoire (premier de la liste)
   keywords_list  : STRING — liste des mots-clés séparés par des virgules
 
 Le widget JS (aih_keywords_widget.js) s'occupe de :
@@ -15,7 +15,6 @@ Le widget JS (aih_keywords_widget.js) s'occupe de :
 """
 
 import json
-import random
 
 
 class AIHKeywordsNode:
@@ -26,9 +25,7 @@ class AIHKeywordsNode:
     @classmethod
     def INPUT_TYPES(cls):
         return {
-            "required": {
-                "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
-            },
+            "required": {},
             "optional": {
                 # JSON mis à jour par le widget JS via les appels API
                 # Masqué dans l'UI ComfyUI
@@ -39,7 +36,7 @@ class AIHKeywordsNode:
     RETURN_TYPES = ("STRING", "STRING")
     RETURN_NAMES = ("random_keyword", "keywords_list")
 
-    def process(self, seed, _keywords_config="{}"):
+    def process(self, _keywords_config="{}"):
         """
         _keywords_config est un JSON string mis à jour par le widget JS.
         Format attendu :
@@ -49,6 +46,8 @@ class AIHKeywordsNode:
           "total": 3,
           "config": {...}
         }
+
+        La node est déterministe : pas de seed, on prend le premier mot-clé.
         """
         try:
             data = json.loads(_keywords_config) if isinstance(_keywords_config, str) else _keywords_config
@@ -58,10 +57,9 @@ class AIHKeywordsNode:
         keywords_list = data.get("keywords_text", "")
         keywords = data.get("keywords", [])
 
-        # Sélection aléatoire déterministe selon le seed
+        # On prend le premier mot-clé (pas de seed, node déterministe)
         if keywords:
-            rng = random.Random(seed)
-            chosen = rng.choice(keywords)
+            chosen = keywords[0]
             random_keyword = chosen.get("keyword", "") if isinstance(chosen, dict) else str(chosen)
         else:
             random_keyword = ""

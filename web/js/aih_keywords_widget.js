@@ -8,6 +8,11 @@
  *   - Liste scrollable des mots-clés résultants
  *
  * Widget caché _keywords_config : sérialisé dans le workflow pour persistance.
+ *
+ * NOTE : ce fichier utilise un polling auto-contenu pour attendre window.app
+ * (et non AIH.waitForApp), afin d'éviter les problèmes de dépendance avec
+ * aih_widget_base.js qui peut charger après ce fichier selon l'ordre
+ * alphabétique du serveur de fichiers.
  */
 
 // ========================
@@ -15,11 +20,25 @@
 // ========================
 
 function getApiUrl() {
-    const base = (window.AIH.getServerUrl() || "https://kw.holaf.fr").replace(/\/+$/, "");
-    return base + "/api";
+    try {
+        const base = (window.AIH && window.AIH.getServerUrl
+            ? window.AIH.getServerUrl()
+            : "https://kw.holaf.fr").replace(/\/+$/, "");
+        return base + "/api";
+    } catch {
+        return "https://kw.holaf.fr/api";
+    }
 }
 
-function getApiKey() { return window.AIH.getApiKey(); }
+function getApiKey() {
+    try {
+        return (window.AIH && window.AIH.getApiKey
+            ? window.AIH.getApiKey()
+            : "");
+    } catch {
+        return "";
+    }
+}
 
 function apiHeaders() {
     const h = { "Content-Type": "application/json" };
@@ -98,7 +117,15 @@ function debounce(fn, delay) {
 // ========================
 // Enregistrement du widget
 // ========================
-AIH.waitForApp(function(app) {
+
+// Polling auto-contenu pour attendre window.app (évite la dépendance
+// à AIH.waitForApp qui peut charger après ce fichier)
+(function waitForApp() {
+    const app = window.app || window.comfyAPI?.app?.app;
+    if (!app || !app.graph) {
+        setTimeout(waitForApp, 100);
+        return;
+    }
 
     app.registerExtension({
         name: "AIH.Keywords",
@@ -110,9 +137,8 @@ AIH.waitForApp(function(app) {
                 const r = onNodeCreated?.apply(this, arguments);
                 const node = this;
 
-                // ---- Masquer les widgets sérialisés _keywords_config et seed ----
+                // ---- Masquer le widget sérialisé _keywords_config ----
                 hideWidget(node, "_keywords_config");
-                hideWidget(node, "seed");
 
                 // ---- Supprimer la socket d'entrée de _keywords_config ----
                 {
@@ -526,7 +552,10 @@ AIH.waitForApp(function(app) {
 
                 // ---- Save button ----
                 saveBtn.onclick = () => {
-                    aihShowPrompt("Sauvegarder le filtre", "Nom du filtre :", "").then(function (name) {
+                    const promptFn = window.aihShowPrompt || function (title, message, placeholder) {
+                        return Promise.resolve(prompt(message + " (" + placeholder + ")"));
+                    };
+                    promptFn("Sauvegarder le filtre", "Nom du filtre :", "").then(function (name) {
                         if (!name) return;
                         const payload = {
                             name: name,
@@ -773,7 +802,7 @@ AIH.waitForApp(function(app) {
             }
         },
     });
-});
+})();
 
 // ========================
 // Filter picker modal
@@ -793,7 +822,32 @@ function showFilterPicker(filters, onSelect) {
     }
     html += '</div>';
 
-    var m = aihOpenModalV2({
+    var modalFn = window.aihOpenModalV2 || function (opts) {
+        // Fallback basique si la modal V2 n'est pas chargée
+        var bg = document.createElement("div");
+        Object.assign(bg.style, {
+            position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
+            background: "rgba(0,0,0,0.5)", zIndex: 99998,
+            display: "flex", alignItems: "center", justifyContent: "center",
+        });
+        var box = document.createElement("div");
+        Object.assign(box.style, {
+            background: "#2a2a2e", borderRadius: "8px", padding: "16px",
+            maxWidth: opts.width || "380px", width: "100%",
+            maxHeight: opts.maxHeight || "70vh", overflow: "auto",
+            border: "1px solid #555",
+        });
+        box.innerHTML = '<h3 style="margin:0 0 8px;font-size:14px;color:#fff;">' + (opts.title || "") + '</h3>' +
+            (opts.content || "");
+        bg.appendChild(box);
+        document.body.appendChild(bg);
+        return {
+            modal: box,
+            close: function () { bg.remove(); },
+        };
+    };
+
+    var m = modalFn({
         title: "Charger un filtre",
         content: html,
         width: "380px",
