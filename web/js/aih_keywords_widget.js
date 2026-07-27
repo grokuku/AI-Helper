@@ -180,7 +180,12 @@ function debounce(fn, delay) {
                 }
 
                 // ---- Appel API keywords avec debounce ----
+                // Génération anti-course : seule la réponse du dernier fetch
+                // est appliquée (évite qu'une réponse lente écrase un état plus récent)
+                let _fetchGen = 0;
+
                 async function fetchKeywords() {
+                    const gen = ++_fetchGen;
                     console.log("[AIH.Keywords] fetchKeywords called, config:", JSON.stringify(config));
                     const params = new URLSearchParams();
                     if (config.section) params.set("section", config.section);
@@ -188,7 +193,7 @@ function debounce(fn, delay) {
                     if (config.include) params.set("q", config.include);
                     if (config.exclude) params.set("q_neg", config.exclude);
                     if (config.semantic) params.set("semantic", config.semantic);
-                    if (config.nsfw) params.set("nsfw", config.nsfw);
+                    if (config.nsfw !== "" && config.nsfw !== null && config.nsfw !== undefined) params.set("nsfw", config.nsfw);
                     if (config.min_confidence > 0) params.set("min_confidence", String(config.min_confidence));
 
                     const queryStr = params.toString();
@@ -196,6 +201,7 @@ function debounce(fn, delay) {
 
                     try {
                         const data = await apiCall("GET", url);
+                        if (gen !== _fetchGen) return; // réponse périmée
                         const list = data.keywords || data.results || data.data || (Array.isArray(data) ? data : []);
                         node._aihKeywords = list.map(k => {
                             if (typeof k === "string") return { id: null, keyword: k, description: "" };
@@ -206,9 +212,12 @@ function debounce(fn, delay) {
                         syncKeywordsConfig();
                     } catch (err) {
                         console.warn("[AIH.Keywords] fetch error:", err.message);
+                        if (gen !== _fetchGen) return;
+                        // N'efface PAS la liste : affiche l'erreur pour que ce
+                        // ne soit pas un échec silencieux (401, CORS, serveur down...)
                         node._aihKeywords = [];
                         node._aihTotal = 0;
-                        renderKeywords();
+                        renderKeywords("⚠️ Erreur API : " + err.message);
                         syncKeywordsConfig();
                     }
                 }
@@ -321,14 +330,18 @@ function debounce(fn, delay) {
                     }
                 }
 
-                // Flag pour savoir si les sections sont chargées
+                // Flag pour savoir si le chargement initial des sections est terminé
+                // (succès OU échec — sinon doSetSectionSub bouclera à l'infini)
                 let _sectionsLoaded = false;
 
-                // Surcouche loadSections qui met à jour le flag
+                // Surcouche loadSections qui met à jour le flag même en cas d'échec
                 const origLoadSections = loadSections;
                 loadSections = async function () {
-                    await origLoadSections();
-                    _sectionsLoaded = true;
+                    try {
+                        await origLoadSections();
+                    } finally {
+                        _sectionsLoaded = true;
+                    }
                 };
 
                 loadSections();
@@ -553,43 +566,12 @@ function debounce(fn, delay) {
                         const data = await apiCall("GET", `filters/${filterId}/preview`);
                         // data contient la config du filtre
                         const cfg = data.config || data.filter?.config || data;
-                        if (cfg) {
-                            // Section / Subsection via la même mécanique que restoreFromWidgets
-                            if (cfg.section !== undefined) {
-                                config.section = cfg.section || "";
-                                doSetSectionSub(cfg.section, cfg.subsection);
-                            } else if (cfg.subsection !== undefined) {
-                                config.subsection = cfg.subsection || "";
-                                subsectionSel.value = config.subsection;
-                            }
-                            if (cfg.include !== undefined) {
-                                config.include = cfg.include || "";
-                                includeInput.value = config.include;
-                            }
-                            if (cfg.exclude !== undefined) {
-                                config.exclude = cfg.exclude || "";
-                                excludeInput.value = config.exclude;
-                            }
-                            if (cfg.semantic !== undefined) {
-                                config.semantic = cfg.semantic || "";
-                                semanticInput.value = config.semantic;
-                            }
-                            if (cfg.nsfw !== undefined) {
-                                config.nsfw = String(cfg.nsfw) || "";
-                                nsfwSel.value = config.nsfw;
-                            }
-                            if (cfg.min_confidence !== undefined) {
-                                const pct = Math.round((cfg.min_confidence || 0) * 100);
-                                config.min_confidence = pct / 100;
-                                confSlider.value = String(pct);
-                                confVal.textContent = pct + "%";
-                            }
-                            if (cfg.output_format !== undefined) {
-                                config.output_format = cfg.output_format || "text";
-                                if (formatSel) formatSel.value = config.output_format;
-                            }
-                            // Forcer un fetch immédiat (pas de debounce)
-                            fetchKeywords();
+                        if (cfg && typeof cfg === "object") {
+                            // applyConfigToUI met à jour config + UI, puis
+                            // déclenche fetchKeywords() (géré par doSetSectionSub)
+                            applyConfigToUI(cfg);
+                        } else {
+                            showToast("Erreur", "Réponse de filtre invalide.");
                         }
                     } catch (err) {
                         showToast("Erreur", "Impossible de charger le filtre : " + err.message);
@@ -675,11 +657,14 @@ function debounce(fn, delay) {
                     marginBottom: "4px",
                 });
 
-                function renderKeywords() {
+                function renderKeywords(statusMsg) {
                     const items = node._aihKeywords || [];
                     if (items.length === 0) {
-                        keywordsList.innerHTML = "Aucun mot-clé. Modifiez les filtres ci-dessus.";
-                        keywordsList.style.color = "#666";
+                        keywordsList.innerHTML = "";
+                        const msgEl = document.createElement("span");
+                        msgEl.textContent = statusMsg || "Aucun mot-clé. Modifiez les filtres ci-dessus.";
+                        keywordsList.style.color = statusMsg && statusMsg.startsWith("⚠️") ? "#f87171" : "#666";
+                        keywordsList.appendChild(msgEl);
                         return;
                     }
                     keywordsList.style.color = "#ccc";
@@ -768,33 +753,85 @@ function debounce(fn, delay) {
                 // ---- Persistance workflow (restauration) ----
 
                 /**
-                 * Attend que les sections soient chargées, puis positionne
-                 * sectionSel + charge les sous-sections et positionne subsectionSel.
+                 * Attend que les sections soient chargées (max ~10s), puis positionne
+                 * sectionSel + charge les sous-sections, positionne subsectionSel,
+                 * met à jour config.section/subsection, et lance fetchKeywords().
                  */
-                function doSetSectionSub(section, subsection) {
+                function doSetSectionSub(section, subsection, attempt) {
+                    attempt = attempt || 0;
                     if (!_sectionsLoaded) {
-                        setTimeout(function () { doSetSectionSub(section, subsection); }, 100);
+                        if (attempt < 100) {
+                            setTimeout(function () { doSetSectionSub(section, subsection, attempt + 1); }, 100);
+                        } else {
+                            // Timeout : sections jamais chargées (API down / 401).
+                            // On applique quand même la config et on fetch.
+                            console.warn("[AIH.Keywords] doSetSectionSub: sections jamais chargées, on applique quand même.");
+                            config.section = section || "";
+                            config.subsection = subsection || "";
+                            sectionSel.value = config.section;
+                            subsectionSel.value = config.subsection;
+                            fetchKeywords();
+                        }
                         return;
                     }
                     // Sections disponibles → on peut positionner
-                    sectionSel.value = section || "";
+                    config.section = section || "";
+                    config.subsection = subsection || "";
+                    sectionSel.value = config.section;
                     if (section) {
                         // Charger les sous-sections, puis positionner la subsection
                         loadSubsections(section).then(function () {
-                            if (subsection !== undefined) {
-                                subsectionSel.value = subsection || "";
-                            }
+                            subsectionSel.value = config.subsection;
                             // Tout est positionné → lancer le fetch (pas debounce)
+                            fetchKeywords();
+                        }).catch(function () {
                             fetchKeywords();
                         });
                     } else {
                         // Pas de section → vider les sous-sections
                         subsectionSel.innerHTML = '<option value="">Sous-section...</option>';
-                        if (subsection !== undefined) {
-                            subsectionSel.value = subsection || "";
-                        }
                         fetchKeywords();
                     }
+                }
+
+                /**
+                 * Applique une config (objet) sur l'état interne ET sur les champs UI,
+                 * puis déclenche fetchKeywords() via doSetSectionSub.
+                 * Utilisée par loadFilter et restoreFromWidgets.
+                 */
+                function applyConfigToUI(cfg) {
+                    // Champs simples (sans dépendance async)
+                    if (cfg.include !== undefined) {
+                        config.include = cfg.include || "";
+                        includeInput.value = config.include;
+                    }
+                    if (cfg.exclude !== undefined) {
+                        config.exclude = cfg.exclude || "";
+                        excludeInput.value = config.exclude;
+                    }
+                    if (cfg.semantic !== undefined) {
+                        config.semantic = cfg.semantic || "";
+                        semanticInput.value = config.semantic;
+                    }
+                    if (cfg.nsfw !== undefined) {
+                        // String(null) === "null" → bug : filtrer explicitement
+                        config.nsfw = (cfg.nsfw === null || cfg.nsfw === "") ? "" : String(cfg.nsfw);
+                        nsfwSel.value = config.nsfw;
+                    }
+                    if (cfg.min_confidence !== undefined) {
+                        const pct = Math.round((cfg.min_confidence || 0) * 100);
+                        config.min_confidence = pct / 100;
+                        confSlider.value = String(pct);
+                        confVal.textContent = pct + "%";
+                    }
+                    if (cfg.output_format !== undefined) {
+                        config.output_format = cfg.output_format || "text";
+                        if (formatSel) formatSel.value = config.output_format;
+                    }
+
+                    // Section / Subsection (dépendent du chargement async des listes)
+                    // → doSetSectionSub met config.section/subsection à jour ET fetch.
+                    doSetSectionSub(cfg.section || "", cfg.subsection || "");
                 }
 
                 /**
@@ -810,51 +847,18 @@ function debounce(fn, delay) {
 
                         const cfg = data.config;
 
-                        // 1. Champs simples (sans dépendance async)
-                        if (cfg.include !== undefined) {
-                            config.include = cfg.include || "";
-                            includeInput.value = config.include;
-                        }
-                        if (cfg.exclude !== undefined) {
-                            config.exclude = cfg.exclude || "";
-                            excludeInput.value = config.exclude;
-                        }
-                        if (cfg.semantic !== undefined) {
-                            config.semantic = cfg.semantic || "";
-                            semanticInput.value = config.semantic;
-                        }
-                        if (cfg.nsfw !== undefined) {
-                            config.nsfw = String(cfg.nsfw) || "";
-                            nsfwSel.value = config.nsfw;
-                        }
-                        if (cfg.min_confidence !== undefined) {
-                            const pct = Math.round((cfg.min_confidence || 0) * 100);
-                            config.min_confidence = pct / 100;
-                            confSlider.value = String(pct);
-                            confVal.textContent = pct + "%";
-                        }
-                        if (cfg.output_format !== undefined) {
-                            config.output_format = cfg.output_format || "text";
-                            if (formatSel) formatSel.value = config.output_format;
-                        }
+                        // 1. Config + champs UI (inclut section/subsection + fetch)
+                        applyConfigToUI(cfg);
 
-                        // 2. Mots-clés
+                        // 2. Mots-clés (état restauré immédiatement, le fetch
+                        //    déclenché par applyConfigToUI rafraîchira ensuite)
                         if (data.keywords && Array.isArray(data.keywords)) {
                             node._aihKeywords = data.keywords;
                             node._aihTotal = data.total || data.keywords.length;
                             renderKeywords();
                         }
 
-                        // 3. Section / Subsection (dépendent du chargement async)
-                        if (cfg.section !== undefined) {
-                            config.section = cfg.section || "";
-                            doSetSectionSub(cfg.section, cfg.subsection);
-                        } else if (cfg.subsection !== undefined) {
-                            config.subsection = cfg.subsection || "";
-                            subsectionSel.value = config.subsection;
-                        }
-
-                        // 4. Synchroniser le widget caché avec l'état restauré
+                        // 3. Synchroniser le widget caché avec l'état restauré
                         syncKeywordsConfig();
 
                         return true;
