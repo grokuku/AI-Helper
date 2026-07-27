@@ -22,4 +22,16 @@
             return "";
         }
     };
+
+    /**
+     * Récupère l'URL du serveur AIH depuis localStorage ("AIH_config").
+     * @returns {string} L'URL de base (ex: "https://kw.holaf.fr"), sans slash final.
+     */
+    AIH.getServerUrl = function getServerUrl() {
+        try {
+            return JSON.parse(localStorage.getItem("AIH_config") || "{}").serverUrl || "https://kw.holaf.fr";
+        } catch {
+            return "https://kw.holaf.fr";
+        }
+    };
 })();

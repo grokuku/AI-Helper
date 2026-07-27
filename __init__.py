@@ -114,6 +114,10 @@ _diag_mod = _load_module(
     os.path.join(_nodes_dir, "diagnostic_node.py"),
     "AIHDiagnosticNode"
 )
+_keywords_mod = _load_module(
+    os.path.join(_nodes_dir, "keywords_node.py"),
+    "AIHKeywordsNode"
+)
 
 # Charger le module Terminal (utilise par la route WebSocket ci-dessous)
 # NB : ce module ne declare AUCUNE node ComfyUI — le terminal est un
@@ -183,6 +187,11 @@ if _diag_mod and hasattr(_diag_mod, "AIHDiagnosticNode"):
     cls = _diag_mod.AIHDiagnosticNode
     NODE_CLASS_MAPPINGS["AIHDiagnosticNode"] = cls
     NODE_DISPLAY_NAME_MAPPINGS["AIHDiagnosticNode"] = "AIH Diagnostic"
+
+if _keywords_mod and hasattr(_keywords_mod, "AIHKeywordsNode"):
+    cls = _keywords_mod.AIHKeywordsNode
+    NODE_CLASS_MAPPINGS["AIHKeywordsNode"] = cls
+    NODE_DISPLAY_NAME_MAPPINGS["AIHKeywordsNode"] = "AIH Keywords"
 
 # ── Routes HTTP (update + restart) ──────────────────────────────────
 # Ces routes sont appelees par le menu ComfyUI (aih_menu.js) pour

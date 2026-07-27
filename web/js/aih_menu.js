@@ -48,7 +48,7 @@ function initMenu(appInstance) {
     wrapper.style.margin = "0 4px";
 
     const btn = document.createElement("button");
-    btn.textContent = "AIH ▾";
+    btn.textContent = "AI Helper ▾";
     Object.assign(btn.style, {
         background: "#6366f1", color: "white", border: "none",
         padding: "4px 12px", borderRadius: "6px", cursor: "pointer",
