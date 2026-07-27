@@ -138,7 +138,10 @@ function debounce(fn, delay) {
                 const node = this;
 
                 // ---- Masquer le widget sérialisé _keywords_config ----
-                hideWidget(node, "_keywords_config");
+                {
+                    const w = hideWidget(node, "_keywords_config");
+                    if (w) w.serializable = true;
+                }
 
                 // ---- Supprimer la socket d'entrée de _keywords_config ----
                 {
@@ -161,6 +164,7 @@ function debounce(fn, delay) {
                     semantic: "",
                     nsfw: "",
                     min_confidence: 0.0,
+                    output_format: "text",
                 };
 
                 // ---- Sync _keywords_config ----
@@ -177,6 +181,7 @@ function debounce(fn, delay) {
 
                 // ---- Appel API keywords avec debounce ----
                 async function fetchKeywords() {
+                    console.log("[AIH.Keywords] fetchKeywords called, config:", JSON.stringify(config));
                     const params = new URLSearchParams();
                     if (config.section) params.set("section", config.section);
                     if (config.subsection) params.set("subsection", config.subsection);
@@ -208,10 +213,15 @@ function debounce(fn, delay) {
                     }
                 }
 
-                const debouncedFetch = debounce(fetchKeywords, 500);
+                const _debouncedFetch = debounce(fetchKeywords, 500);
+                function debouncedFetch() {
+                    console.log("[AIH.Keywords] debouncedFetch scheduled, config:", JSON.stringify(config));
+                    _debouncedFetch();
+                }
 
                 // ---- Met à jour la config et déclenche l'auto-update ----
                 function updateConfigAndFetch(partial) {
+                    console.log("[AIH.Keywords] updateConfigAndFetch called with:", JSON.stringify(partial));
                     Object.assign(config, partial);
                     debouncedFetch();
                 }
@@ -311,6 +321,16 @@ function debounce(fn, delay) {
                     }
                 }
 
+                // Flag pour savoir si les sections sont chargées
+                let _sectionsLoaded = false;
+
+                // Surcouche loadSections qui met à jour le flag
+                const origLoadSections = loadSections;
+                loadSections = async function () {
+                    await origLoadSections();
+                    _sectionsLoaded = true;
+                };
+
                 loadSections();
 
                 // ========================================
@@ -365,10 +385,33 @@ function debounce(fn, delay) {
                     updateConfigAndFetch({ min_confidence: pct / 100 });
                 };
 
+                // Confidence group (label + slider + value) — ~60% de la largeur
+                const confGroup = document.createElement("div");
+                Object.assign(confGroup.style, {
+                    display: "flex", alignItems: "center", gap: "4px",
+                    flex: "1", maxWidth: "60%",
+                });
+                confGroup.appendChild(confLabel);
+                confGroup.appendChild(confSlider);
+                confGroup.appendChild(confVal);
+
+                // Format dropdown
+                const formatSel = document.createElement("select");
+                Object.assign(formatSel.style, {
+                    flex: "0 0 auto", width: "78px", padding: "4px 6px", borderRadius: "4px",
+                    border: "1px solid #555", background: "#1a1a1e",
+                    color: "#fff", fontSize: "11px", cursor: "pointer",
+                });
+                formatSel.innerHTML = '<option value="text">Text</option><option value="json">JSON</option><option value="markdown">Markdown</option>';
+                formatSel.value = config.output_format || "text";
+                formatSel.onchange = function () {
+                    config.output_format = this.value;
+                    syncKeywordsConfig();
+                };
+
                 row2.appendChild(nsfwSel);
-                row2.appendChild(confLabel);
-                row2.appendChild(confSlider);
-                row2.appendChild(confVal);
+                row2.appendChild(confGroup);
+                row2.appendChild(formatSel);
 
                 // ========================================
                 // Row 3 : Include input
@@ -490,8 +533,8 @@ function debounce(fn, delay) {
                 const saveBtn = mkBtn("💾 Save", true);
 
                 row6.appendChild(loadBtn);
-                row6.appendChild(resetBtn);
                 row6.appendChild(saveBtn);
+                row6.appendChild(resetBtn);
 
                 // ---- Load button : liste des filtres ----
                 loadBtn.onclick = async () => {
@@ -511,12 +554,11 @@ function debounce(fn, delay) {
                         // data contient la config du filtre
                         const cfg = data.config || data.filter?.config || data;
                         if (cfg) {
+                            // Section / Subsection via la même mécanique que restoreFromWidgets
                             if (cfg.section !== undefined) {
                                 config.section = cfg.section || "";
-                                sectionSel.value = config.section;
-                                if (config.section) loadSubsections(config.section);
-                            }
-                            if (cfg.subsection !== undefined) {
+                                doSetSectionSub(cfg.section, cfg.subsection);
+                            } else if (cfg.subsection !== undefined) {
                                 config.subsection = cfg.subsection || "";
                                 subsectionSel.value = config.subsection;
                             }
@@ -542,8 +584,12 @@ function debounce(fn, delay) {
                                 confSlider.value = String(pct);
                                 confVal.textContent = pct + "%";
                             }
-                            // Forcer un fetch immédiat
-                            debouncedFetch();
+                            if (cfg.output_format !== undefined) {
+                                config.output_format = cfg.output_format || "text";
+                                if (formatSel) formatSel.value = config.output_format;
+                            }
+                            // Forcer un fetch immédiat (pas de debounce)
+                            fetchKeywords();
                         }
                     } catch (err) {
                         showToast("Erreur", "Impossible de charger le filtre : " + err.message);
@@ -600,6 +646,10 @@ function debounce(fn, delay) {
                     // Reset Semantic
                     config.semantic = "";
                     semanticInput.value = "";
+
+                    // Reset Format
+                    config.output_format = "text";
+                    if (formatSel) formatSel.value = "text";
 
                     // Vider la liste des mots-clés
                     node._aihKeywords = [];
@@ -716,54 +766,97 @@ function debounce(fn, delay) {
                 });
 
                 // ---- Persistance workflow (restauration) ----
+
+                /**
+                 * Attend que les sections soient chargées, puis positionne
+                 * sectionSel + charge les sous-sections et positionne subsectionSel.
+                 */
+                function doSetSectionSub(section, subsection) {
+                    if (!_sectionsLoaded) {
+                        setTimeout(function () { doSetSectionSub(section, subsection); }, 100);
+                        return;
+                    }
+                    // Sections disponibles → on peut positionner
+                    sectionSel.value = section || "";
+                    if (section) {
+                        // Charger les sous-sections, puis positionner la subsection
+                        loadSubsections(section).then(function () {
+                            if (subsection !== undefined) {
+                                subsectionSel.value = subsection || "";
+                            }
+                            // Tout est positionné → lancer le fetch (pas debounce)
+                            fetchKeywords();
+                        });
+                    } else {
+                        // Pas de section → vider les sous-sections
+                        subsectionSel.innerHTML = '<option value="">Sous-section...</option>';
+                        if (subsection !== undefined) {
+                            subsectionSel.value = subsection || "";
+                        }
+                        fetchKeywords();
+                    }
+                }
+
+                /**
+                 * Restaure l'état complet du node depuis le widget caché _keywords_config.
+                 * Retourne true si la restauration a réussi, false sinon.
+                 */
                 function restoreFromWidgets(n) {
                     const kwc = n.widgets?.find(w => w.name === "_keywords_config");
                     if (!kwc || !kwc.value || kwc.value === "{}" || kwc.value === "") return false;
                     try {
                         const data = JSON.parse(kwc.value);
-                        if (data.config) {
-                            const cfg = data.config;
-                            if (cfg.section !== undefined) {
-                                config.section = cfg.section || "";
-                                sectionSel.value = config.section;
-                                if (config.section) loadSubsections(config.section);
-                            }
-                            if (cfg.subsection !== undefined) {
-                                config.subsection = cfg.subsection || "";
-                                subsectionSel.value = config.subsection;
-                            }
-                            if (cfg.include !== undefined) {
-                                config.include = cfg.include || "";
-                                includeInput.value = config.include;
-                            }
-                            if (cfg.exclude !== undefined) {
-                                config.exclude = cfg.exclude || "";
-                                excludeInput.value = config.exclude;
-                            }
-                            if (cfg.semantic !== undefined) {
-                                config.semantic = cfg.semantic || "";
-                                semanticInput.value = config.semantic;
-                            }
-                            if (cfg.nsfw !== undefined) {
-                                config.nsfw = String(cfg.nsfw) || "";
-                                nsfwSel.value = config.nsfw;
-                            }
-                            if (cfg.min_confidence !== undefined) {
-                                const pct = Math.round((cfg.min_confidence || 0) * 100);
-                                config.min_confidence = pct / 100;
-                                confSlider.value = String(pct);
-                                confVal.textContent = pct + "%";
-                            }
+                        if (!data.config) return false;
+
+                        const cfg = data.config;
+
+                        // 1. Champs simples (sans dépendance async)
+                        if (cfg.include !== undefined) {
+                            config.include = cfg.include || "";
+                            includeInput.value = config.include;
                         }
+                        if (cfg.exclude !== undefined) {
+                            config.exclude = cfg.exclude || "";
+                            excludeInput.value = config.exclude;
+                        }
+                        if (cfg.semantic !== undefined) {
+                            config.semantic = cfg.semantic || "";
+                            semanticInput.value = config.semantic;
+                        }
+                        if (cfg.nsfw !== undefined) {
+                            config.nsfw = String(cfg.nsfw) || "";
+                            nsfwSel.value = config.nsfw;
+                        }
+                        if (cfg.min_confidence !== undefined) {
+                            const pct = Math.round((cfg.min_confidence || 0) * 100);
+                            config.min_confidence = pct / 100;
+                            confSlider.value = String(pct);
+                            confVal.textContent = pct + "%";
+                        }
+                        if (cfg.output_format !== undefined) {
+                            config.output_format = cfg.output_format || "text";
+                            if (formatSel) formatSel.value = config.output_format;
+                        }
+
+                        // 2. Mots-clés
                         if (data.keywords && Array.isArray(data.keywords)) {
                             node._aihKeywords = data.keywords;
                             node._aihTotal = data.total || data.keywords.length;
                             renderKeywords();
                         }
-                        // Forcer un fetch si les champs sont remplis
-                        if (data.config) {
-                            debouncedFetch();
+
+                        // 3. Section / Subsection (dépendent du chargement async)
+                        if (cfg.section !== undefined) {
+                            config.section = cfg.section || "";
+                            doSetSectionSub(cfg.section, cfg.subsection);
+                        } else if (cfg.subsection !== undefined) {
+                            config.subsection = cfg.subsection || "";
+                            subsectionSel.value = config.subsection;
                         }
+
+                        // 4. Synchroniser le widget caché avec l'état restauré
+                        syncKeywordsConfig();
+
                         return true;
                     } catch (err) {
                         console.warn("[AIH.Keywords] restore error:", err);
