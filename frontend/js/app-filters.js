@@ -210,7 +210,7 @@
           var pub = s.is_public ? ' 🌐' : ' 🔒';
           var canEdit = s.user_id === (currentUser ? currentUser.id : '') || (currentUser && (currentUser.role === 'admin' || currentUser.role === 'kw_editor') && !s.user_id);
           var canClone = canEdit || (s.is_public && currentUser && s.user_id !== currentUser.id);
-          html += '<div class="fria-style-row flex flex-col px-2 py-1.5 rounded-md bg-slate-50 dark:bg-slate-700/50 border border-slate-200 dark:border-slate-700' +
+          html += '<div class="aih-style-row flex flex-col px-2 py-1.5 rounded-md bg-slate-50 dark:bg-slate-700/50 border border-slate-200 dark:border-slate-700' +
             (canEdit || canClone ? ' cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-700' : '') +
             '" onclick="editStyleTab(' + s.id + ')" title="Cliquer pour editer">' +
             '<div class="flex items-center justify-between">' +
@@ -501,7 +501,7 @@
           var isDefault = !!t.is_default;
           var isAdmin = currentUser && currentUser.role === 'admin';
           var canEdit = t.editable || isAdmin;
-          html += '<div class="fria-tmpl-row flex items-center justify-between px-2 py-1.5 rounded-md bg-slate-50 dark:bg-slate-700/50 border border-slate-200 dark:border-slate-700 cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-700' +
+          html += '<div class="aih-tmpl-row flex items-center justify-between px-2 py-1.5 rounded-md bg-slate-50 dark:bg-slate-700/50 border border-slate-200 dark:border-slate-700 cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-700' +
             '" onclick="editTemplateTab(' + t.id + ')" title="Cliquer pour editer">' +
             '<div><span class="text-xs font-medium text-slate-700 dark:text-slate-300">' + name + '</span>' +
             '<span class="text-xs text-slate-400 ml-2">par ' + author + pub + '</span></div>' +

@@ -1,4 +1,4 @@
-"""Flask app instance and shared constants for FR.IA backend."""
+"""Flask app instance and shared constants for AI-Helper backend."""
 
 import os
 from pathlib import Path
@@ -12,8 +12,8 @@ from flask_cors import CORS
 from auth import init_oauth
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-# Allow overriding the DB path (used by the test suite via FRIA_DB_PATH).
-DB_PATH = Path(os.environ.get("FRIA_DB_PATH", str(BASE_DIR / 'keywords.db')))
+# Allow overriding the DB path (used by the test suite via AIH_DB_PATH).
+DB_PATH = Path(os.environ.get("AIH_DB_PATH", str(BASE_DIR / 'keywords.db')))
 MD_PATH = BASE_DIR / 'Keywords-Complete.md'
 
 app = Flask(__name__)

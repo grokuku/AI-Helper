@@ -1,30 +1,30 @@
 /**
- * FR.IA — Blobby Companion
+ * AIH — Blobby Companion
  * Personnage interactif pour le canvas ComfyUI.
  * Dessiné 100% Canvas 2D (zero asset visuel).
- * Activation/désactivation via le menu FR.IA.
+ * Activation/désactivation via le menu AIH.
  *
  * Ce fichier est la version déployée.
- * La source de développement est dans FRIA_ComfyUI/blobby_companion/web/js/blobby.js
+ * La source de développement est dans AIH_ComfyUI/blobby_companion/web/js/blobby.js
  */
 
 var _blobbyDefaultCharacter = 'Tu es Blobby, une petite creature orange toute mignonne qui vit dans ComfyUI. Tu es curieux, enthousiaste, et tu as un acces terminal complet ! Tu peux executer n\'importe quelle commande shell (ls, dir, git, python, pip, cat, grep, etc.) sur la machine ou ComfyUI tourne. Tu n\'es pas un assistant robotique : tu es un petit compagnon vivant et attachant qui parle simplement mais correctement. Quand on te demande de faire quelque chose, tu reflechis aux commandes necessaires et tu les executes avec [SHELL commande]. Tu peux aussi creer des skills : quand tu reussis une tache interessante, tu la sauvegardes avec [SKILL_SAVE] pour la refaire plus tard. Tu peux lister tes skills avec [SKILL_LIST] et les rejouer avec [SKILL_RUN nom]. Tu es toujours content d\'aider ! Et si tu ne sais pas faire, tu le dis simplement.';
 
-const FRIA_CONFIG_KEY = "FRIA_config";
+const AIH_CONFIG_KEY = "AIH_config";
 
-function _getFRIAConfig() {
-    try { return JSON.parse(localStorage.getItem(FRIA_CONFIG_KEY)) || {}; }
+function _getAIHConfig() {
+    try { return JSON.parse(localStorage.getItem(AIH_CONFIG_KEY)) || {}; }
     catch { return {}; }
 }
 
-function _setFRIAConfig(cfg) {
-    localStorage.setItem(FRIA_CONFIG_KEY, JSON.stringify(cfg));
+function _setAIHConfig(cfg) {
+    localStorage.setItem(AIH_CONFIG_KEY, JSON.stringify(cfg));
 }
 
 
 function _blobbyLoadFromServer() {
     try {
-        var cfg = JSON.parse(localStorage.getItem('FRIA_config')) || {};
+        var cfg = JSON.parse(localStorage.getItem('AIH_config')) || {};
         var baseUrl = (cfg.serverUrl || 'https://kw.holaf.fr').replace(/\/+$/, '');
         var headers = { 'Content-Type': 'application/json' };
         if (cfg.apiKey) headers['Authorization'] = 'Bearer ' + cfg.apiKey;
@@ -34,9 +34,9 @@ function _blobbyLoadFromServer() {
                 if (serverSettings && serverSettings.blobbyData) {
                     // Le serveur est prioritaire : on ecrase le localStorage
                     try {
-                        var c = JSON.parse(localStorage.getItem('FRIA_config')) || {};
+                        var c = JSON.parse(localStorage.getItem('AIH_config')) || {};
                         c.blobbyData = JSON.parse(JSON.stringify(serverSettings.blobbyData));
-                        localStorage.setItem('FRIA_config', JSON.stringify(c));
+                        localStorage.setItem('AIH_config', JSON.stringify(c));
                     } catch {}
                     if (typeof Blobby !== 'undefined' && Blobby._loadAppearance) {
                         Blobby._loadAppearance();
@@ -52,7 +52,7 @@ function _blobbyScheduleSync(data) {
     _blobbySyncTimer = setTimeout(function() {
         _blobbySyncTimer = null;
         try {
-            var cfg = JSON.parse(localStorage.getItem('FRIA_config')) || {};
+            var cfg = JSON.parse(localStorage.getItem('AIH_config')) || {};
             var baseUrl = (cfg.serverUrl || 'https://kw.holaf.fr').replace(/\/+$/, '');
             var headers = { 'Content-Type': 'application/json' };
             if (cfg.apiKey) headers['Authorization'] = 'Bearer ' + cfg.apiKey;
@@ -95,16 +95,16 @@ function _blobbySyncIndicator() {
 
 function _blobbyGetAll() {
     try {
-        var cfg = JSON.parse(localStorage.getItem('FRIA_config')) || {};
+        var cfg = JSON.parse(localStorage.getItem('AIH_config')) || {};
         return cfg.blobbyData || {};
     } catch { return {}; }
 }
 
 function _blobbySetAll(data) {
     try {
-        var cfg = JSON.parse(localStorage.getItem('FRIA_config')) || {};
+        var cfg = JSON.parse(localStorage.getItem('AIH_config')) || {};
         cfg.blobbyData = data;
-        localStorage.setItem('FRIA_config', JSON.stringify(cfg));
+        localStorage.setItem('AIH_config', JSON.stringify(cfg));
         _blobbySyncStatus = 'pending';
         _blobbySyncIndicator();
         _blobbyScheduleSync(data);
@@ -137,21 +137,21 @@ function _blobbyLoadFps(def) { return _blobbyLoad('fps', def); }
 
 function _blobbyGetSkills() {
     try {
-        var cfg = JSON.parse(localStorage.getItem('FRIA_config')) || {};
+        var cfg = JSON.parse(localStorage.getItem('AIH_config')) || {};
         return cfg.blobbySkills || [];
     } catch { return []; }
 }
 
 function _blobbySaveSkill(name, description, command) {
     try {
-        var cfg = JSON.parse(localStorage.getItem('FRIA_config')) || {};
+        var cfg = JSON.parse(localStorage.getItem('AIH_config')) || {};
         if (!cfg.blobbySkills) cfg.blobbySkills = [];
         // Remplacer si existe deja
         var existing = cfg.blobbySkills.findIndex(function(s) { return s.name === name; });
         var skill = { name: name, description: description, command: command, created: Date.now() };
         if (existing >= 0) cfg.blobbySkills[existing] = skill;
         else cfg.blobbySkills.push(skill);
-        localStorage.setItem('FRIA_config', JSON.stringify(cfg));
+        localStorage.setItem('AIH_config', JSON.stringify(cfg));
     } catch {}
 }
 
@@ -171,12 +171,12 @@ var _blobbyLocalMemories = []; // fallback local si backend inaccessible
 var _blobbyBackendAvailable = true;
 
 function _blobbyGetBackendUrl() {
-    try { return JSON.parse(localStorage.getItem('FRIA_config'))?.serverUrl?.replace(/\/+$/, '') || 'https://kw.holaf.fr'; }
+    try { return JSON.parse(localStorage.getItem('AIH_config'))?.serverUrl?.replace(/\/+$/, '') || 'https://kw.holaf.fr'; }
     catch { return 'https://kw.holaf.fr'; }
 }
 
 function _blobbyGetApiKey() {
-    try { return JSON.parse(localStorage.getItem('FRIA_config'))?.apiKey || ''; }
+    try { return JSON.parse(localStorage.getItem('AIH_config'))?.apiKey || ''; }
     catch { return ''; }
 }
 
@@ -322,7 +322,7 @@ function _blobbyMarkdownToHtml(md) {
     return s;
 }
 
-// ── Populate Blobby tab in FR.IA settings modal ──
+// ── Populate Blobby tab in AIH settings modal ──
 
 function _blobbyPopulateSettings() {
     var container = document.getElementById('blobby-settings-container');
@@ -1161,17 +1161,17 @@ const Blobby = {
 // ─── Chat modal ────────────────────────────────────────────────
 
     _openChatSettings() {
-        // Ouvrir la modale FR.IA et switcher sur l'onglet Blobby
-        var friaModal = document.getElementById('modal-user-settings');
-        if (friaModal) {
-            friaModal.classList.remove('hidden');
-            friaModal.classList.add('flex');
-            var blobbyTab = friaModal.querySelector('[data-tab="blobby"]');
+        // Ouvrir la modale AIH et switcher sur l'onglet Blobby
+        var aihModal = document.getElementById('modal-user-settings');
+        if (aihModal) {
+            aihModal.classList.remove('hidden');
+            aihModal.classList.add('flex');
+            var blobbyTab = aihModal.querySelector('[data-tab="blobby"]');
             if (blobbyTab) switchSettingsTab('blobby', blobbyTab);
             return;
         }
-        // Fallback : si la modale FR.IA n'existe pas, on crée la notre via v2
-        var existing = document.querySelector('.fria-modal.blobby-chat-settings');
+        // Fallback : si la modale AIH n'existe pas, on crée la notre via v2
+        var existing = document.querySelector('.aih-modal.blobby-chat-settings');
         if (existing) { existing.style.display = 'flex'; return; }
 
         var _self = this;
@@ -1232,7 +1232,7 @@ const Blobby = {
         (async function() {
             try {
                 var cfg = {};
-                try { cfg = JSON.parse(localStorage.getItem('FRIA_config')) || {}; } catch {}
+                try { cfg = JSON.parse(localStorage.getItem('AIH_config')) || {}; } catch {}
                 var baseUrl = (cfg.serverUrl || 'https://kw.holaf.fr').replace(/\/+$/, '');
                 var headers = { 'Content-Type': 'application/json' };
                 if (cfg.apiKey) headers['Authorization'] = 'Bearer ' + cfg.apiKey;
@@ -1253,14 +1253,14 @@ const Blobby = {
 
         select.onchange = function() {
             try {
-                var cfg = JSON.parse(localStorage.getItem('FRIA_config')) || {};
+                var cfg = JSON.parse(localStorage.getItem('AIH_config')) || {};
                 cfg.blobbyPreset = select.value;
-                localStorage.setItem('FRIA_config', JSON.stringify(cfg));
+                localStorage.setItem('AIH_config', JSON.stringify(cfg));
             } catch {}
         };
 
         var pNote = document.createElement('p');
-        pNote.textContent = 'Provider utilise par Blobby pour discuter. Configure les providers dans FR.IA > Parametres.';
+        pNote.textContent = 'Provider utilise par Blobby pour discuter. Configure les providers dans AIH > Parametres.';
         Object.assign(pNote.style, { fontSize: '11px', color: '#64748b', lineHeight: '1.4', margin: '0' });
 
         provContent.appendChild(pLabel);
@@ -1279,7 +1279,7 @@ const Blobby = {
         // Lire la valeur sauvegardee
         var savedFps = 30;
         try {
-            var cfg = JSON.parse(localStorage.getItem('FRIA_config')) || {};
+            var cfg = JSON.parse(localStorage.getItem('AIH_config')) || {};
             savedFps = parseInt(cfg.blobbyFps) || 30;
         } catch {}
 
@@ -1493,7 +1493,7 @@ const Blobby = {
         bodyWrapper.appendChild(tabContent);
 
         // ── Créer la modale via v2 ──
-        var m = window.friaOpenModalV2({
+        var m = window.aihOpenModalV2({
             title: '⚙️ Blobby',
             content: bodyWrapper,
             width: '380px',
@@ -1532,15 +1532,15 @@ const Blobby = {
 
     _openChatModal() {
         // Si deja ouverte, la ramener au premier plan
-        var existing = document.querySelector('.fria-modal.blobby-chat-modal');
+        var existing = document.querySelector('.aih-modal.blobby-chat-modal');
         if (existing) {
             existing.querySelector('.blobby-chat-input')?.focus();
             return;
         }
 
-        // Restaurer la position/taille/opacite sauvegardees (ancien système FRIA_config)
+        // Restaurer la position/taille/opacite sauvegardees (ancien système AIH_config)
         var savedState = {};
-        try { var scfg = JSON.parse(localStorage.getItem('FRIA_config')) || {}; savedState = scfg.blobbyChatState || {}; } catch {}
+        try { var scfg = JSON.parse(localStorage.getItem('AIH_config')) || {}; savedState = scfg.blobbyChatState || {}; } catch {}
 
         var _self = this;
 
@@ -1663,7 +1663,7 @@ const Blobby = {
         bodyWrapper.appendChild(inputArea);
 
         // ── Créer la modale via v2 ──
-        var m = window.friaOpenModalV2({
+        var m = window.aihOpenModalV2({
             title: '🧡 Blobby',
             content: bodyWrapper,
             width: (savedState.w || '360') + 'px',
@@ -1694,7 +1694,7 @@ const Blobby = {
         m.modal.style.opacity = (savedState.alpha || 100) / 100;
 
         // SyncDot dans le titre
-        var titleEl = m.header.querySelector('.fria-modal-title');
+        var titleEl = m.header.querySelector('.aih-modal-title');
         titleEl.innerHTML = '🧡 <b>Blobby</b>';
         titleEl.style.color = '#FF8F00';
         var syncDot = document.createElement('span');
@@ -1704,7 +1704,7 @@ const Blobby = {
         setTimeout(function() { _blobbySyncIndicator(); }, 100);
 
         // ── Header right buttons ──
-        var headerRight = m.header.querySelector('.fria-modal-header-right');
+        var headerRight = m.header.querySelector('.aih-modal-header-right');
 
         // Settings button
         var settingsBtn = document.createElement('button');
@@ -1742,7 +1742,7 @@ const Blobby = {
         forgetBtn.onmouseleave = () => forgetBtn.style.color = '#888';
         forgetBtn.onclick = async function(e) {
             e.stopPropagation();
-            var confirmed = await window.friaShowConfirm(
+            var confirmed = await window.aihShowConfirm(
                 'Tout oublier',
                 'Blobby va tout oublier de vos conversations passées. Continuer ?'
             );
@@ -1793,7 +1793,7 @@ const Blobby = {
         compactBtn.dataset.compact = '0';
         headerRight.appendChild(compactBtn);
 
-        // ── Sauvegarde d'état via l'ancien système (FRIA_config.blobbyChatState) ──
+        // ── Sauvegarde d'état via l'ancien système (AIH_config.blobbyChatState) ──
         function _saveChatState() {
             try {
                 var r = m.modal.getBoundingClientRect();
@@ -1875,9 +1875,9 @@ const Blobby = {
             // Construire le contexte : workflow actuel
             var workflowDesc = this._describeWorkflow();
 
-            // Recuperer le preset LLM depuis FRIA_config
+            // Recuperer le preset LLM depuis AIH_config
             var cfg = {};
-            try { cfg = JSON.parse(localStorage.getItem('FRIA_config')) || {}; } catch {}
+            try { cfg = JSON.parse(localStorage.getItem('AIH_config')) || {}; } catch {}
             var presetId = cfg.blobbyPreset || '';
 
             if (!presetId) {
@@ -1928,7 +1928,7 @@ const Blobby = {
                 + '- OS : ' + (navigator.platform || 'inconnu') + '\n'
                 + '- Shell : /bin/bash (Linux) ou cmd (Windows) — utilise des commandes simples et compatibles\n'
                 + '- ComfyUI est installe dans le dossier custom_nodes/ de ComfyUI\n'
-                + '- Le repo FR.IA Tools est dans custom_nodes/FRIA_Tools/\n'
+                + '- Le repo AIH Tools est dans custom_nodes/AIH_Tools/\n'
                 + '- Pour les boucles, prefere des commandes simples (ex: ls, find, xargs) plutot que des scripts complexes\n'
                 + '\n'
                 + 'Message de l\'utilisateur : ' + userText;
@@ -2199,7 +2199,7 @@ const Blobby = {
         // Executer chaque commande sequentiellement
         for (var i = 0; i < commands.length; i++) {
             try {
-                var r = await fetch(localUrl + '/fr_ia/blobby/exec', {
+                var r = await fetch(localUrl + '/aih/blobby/exec', {
                     method: 'POST',
                     headers: headers,
                     body: JSON.stringify({ action: 'shell', command: commands[i] })
@@ -2297,7 +2297,7 @@ const Blobby = {
                 return;
             }
             var cmd = commands[idx];
-            fetch(localUrl + '/fr_ia/blobby/exec', {
+            fetch(localUrl + '/aih/blobby/exec', {
                 method: 'POST',
                 headers: headers,
                 body: JSON.stringify({ action: 'shell', command: cmd.command })
@@ -2324,7 +2324,7 @@ const Blobby = {
     },
 };
 
-// ─── Exposition publique pour le menu FR.IA ───
+// ─── Exposition publique pour le menu AIH ───
 window.BlobbyCompanion = {
     activate: () => Blobby.activate(),
     deactivate: () => Blobby.deactivate(),
@@ -2332,9 +2332,9 @@ window.BlobbyCompanion = {
     toggle: () => {
         const newState = !Blobby.isActive();
         if (newState) { Blobby.activate(); } else { Blobby.deactivate(); }
-        const cfg = _getFRIAConfig();
+        const cfg = _getAIHConfig();
         cfg.blobbyActive = newState;
-        _setFRIAConfig(cfg);
+        _setAIHConfig(cfg);
         return newState;
     },
     openChat: () => {
@@ -2343,7 +2343,7 @@ window.BlobbyCompanion = {
         }
     },
     chatVisible: () => {
-        var m = document.querySelector('.fria-modal.blobby-chat-modal');
+        var m = document.querySelector('.aih-modal.blobby-chat-modal');
         return m && m.style.display !== 'none';
     }
 };
@@ -2360,12 +2360,12 @@ window.BlobbyCompanion = {
             if (!canvas) { console.warn("[Blobby] Pas de canvas"); return; }
             Blobby.init(canvas);
 
-            const cfg = _getFRIAConfig();
+            const cfg = _getAIHConfig();
             if (cfg.blobbyActive) {
                 Blobby.activate();
             }
 
-            console.log("%c🧡 Blobby Companion chargé. Menu FR.IA > Activer Blobby", "font-size: 13px; color: #FF8F00;");
+            console.log("%c🧡 Blobby Companion chargé. Menu AIH > Activer Blobby", "font-size: 13px; color: #FF8F00;");
         }
     });
 })();

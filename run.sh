@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # --- Pi-Web Runner Script ---
-# Projet : FR.IA-keywords
+# Projet : AI-Helper
 # Description : Initialisation et lancement du serveur Flask
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -11,7 +11,7 @@ ENV_FILE="$SCRIPT_DIR/.env"
 PROJECT_ROOT="$SCRIPT_DIR"
 FLASK_PORT=5000
 
-echo "🚀 Démarrage de FR.IA-keywords..."
+echo "🚀 Démarrage de AI-Helper..."
 
 # 1. Gestion des variables d'environnement
 if [ ! -f "$ENV_FILE" ]; then
@@ -23,7 +23,6 @@ FLASK_PORT=5000
 # Discord OAuth2 (À remplir dans le fichier .env après création de l'app)
 DISCORD_CLIENT_ID=votre_client_id_ici
 DISCORD_CLIENT_SECRET=votre_client_secret_ici
-DISCORD_GUILD_ID=votre_guild_id_optionnelle
 # Hugging Face (Recherche Sémantique)
 HF_TOKEN=votre_hf_token_ici
 EOF

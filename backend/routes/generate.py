@@ -1,4 +1,4 @@
-"""Routes generate for FR.IA backend."""
+"""Routes generate for AI-Helper backend."""
 
 import logging
 from context import *

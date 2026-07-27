@@ -49,6 +49,13 @@ def _create_tables(conn):
         )
     """)
     conn.execute("""
+        CREATE TABLE IF NOT EXISTS discord_whitelist (
+            discord_uid TEXT PRIMARY KEY,
+            added_by TEXT,
+            added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS app_settings (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
@@ -354,6 +361,30 @@ def _migrate_prompt_examples(conn):
         conn.execute("ALTER TABLE _prompt_examples_new RENAME TO prompt_examples")
 
 
+def _migrate_whitelist(conn):
+    """Migration : crée la table discord_whitelist et auto-popule avec les users existants.
+
+    Garantit que TOUS les utilisateurs actuels gardent leur accès lors du
+    passage du système guild-based au système whitelist.
+
+    Args:
+        conn (sqlite3.Connection): La connexion SQLite active.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS discord_whitelist (
+            discord_uid TEXT PRIMARY KEY,
+            added_by TEXT,
+            added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    # Auto-populate : insérer tous les IDs existants de users dans la whitelist
+    conn.execute("""
+        INSERT OR IGNORE INTO discord_whitelist (discord_uid)
+        SELECT id FROM users
+        WHERE id NOT IN (SELECT discord_uid FROM discord_whitelist)
+    """)
+
+
 def _migrate_saved_filters(conn):
     """Migrations pour la table saved_filters.
 
@@ -382,6 +413,7 @@ def _run_migrations(conn):
     _migrate_generated_prompts(conn)
     _migrate_prompt_examples(conn)
     _migrate_saved_filters(conn)
+    _migrate_whitelist(conn)
 
 
 # ── Post-migration table & index creation ─────────────────────────────
@@ -531,6 +563,7 @@ def _create_indexes(conn):
     conn.execute("CREATE INDEX IF NOT EXISTS idx_file_uploads_user ON file_uploads(user_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_file_uploads_status ON file_uploads(status)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_file_uploads_fp ON file_uploads(size, fingerprint_head, fingerprint_tail)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_whitelist_uid ON discord_whitelist(discord_uid)")
 
 
 # ── Default templates ────────────────────────────────────────────────

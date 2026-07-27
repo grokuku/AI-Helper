@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================================
-# FR.IA-keywords — Linting JavaScript (ESLint)
+# AI-Helper-keywords — Linting JavaScript (ESLint)
 # Lance eslint sur web/js/ et frontend/js/ avec --fix
 # ============================================================================
 

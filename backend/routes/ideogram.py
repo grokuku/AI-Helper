@@ -1,4 +1,4 @@
-"""Routes ideogram for FR.IA backend."""
+"""Routes ideogram for AI-Helper backend."""
 
 import logging
 from context import *
@@ -7,8 +7,8 @@ from routes.enhance import _prepare_enhance, convert_bboxes_to_normalized
 
 # ── Endpoints decoupled pour Ideogram 4 ──────────────────────────
 # Ces 2 endpoints sont utilises par les nodes ComfyUI :
-#   - FR.IA Ideogram Prep   → POST /api/ideogram/prep
-#   - FR.IA Ideogram Parse  → POST /api/ideogram/parse
+#   - AI-Helper Ideogram Prep   → POST /api/ideogram/prep
+#   - AI-Helper Ideogram Parse  → POST /api/ideogram/parse
 # Le Prep construit les 2 prompts passe 1 + un context JSON pour la passe 2.
 # Le Parse extrait/valide le JSON du LLM, convertit les bboxes, et (si pass=1)
 # construit le prompt de validation pour la passe 2.

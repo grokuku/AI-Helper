@@ -1,4 +1,4 @@
-# Roadmap — FR.IA Helper
+# Roadmap — AI-Helper Helper
 
 > Fichier vivant pour noter les idées, fonctionnalités et réflexions.
 
@@ -116,8 +116,8 @@ Tous les findings Blobby ont été corrigés lors de la session précédente.
 
 ### ✅ Blobby — Rollback de la migration ratée des settings
 
-- **Problème** : 8 commits qui tentaient de déplacer les settings Blobby du chat (⚙️) vers la modale FR.IA de ComfyUI (`renderBlobbyTab` dans `fria_menu.js`). Cause : boucle infinie (`openSettings` → click Blobby tab → `renderBlobbyTab` → `openSettings`...), `Blobby is not defined` (const pas sur `window`), settings jamais appliqués en temps réel.
-- **Correction** : revert `web/js/blobby_companion.js` et `web/js/fria_menu.js` à leur état `71dd2b0` (settings dans le chat, mémoire vectorielle intacte). Tous les fixes backend conservés par cherry-pick.
+- **Problème** : 8 commits qui tentaient de déplacer les settings Blobby du chat (⚙️) vers la modale AI-Helper de ComfyUI (`renderBlobbyTab` dans `aih_menu.js`). Cause : boucle infinie (`openSettings` → click Blobby tab → `renderBlobbyTab` → `openSettings`...), `Blobby is not defined` (const pas sur `window`), settings jamais appliqués en temps réel.
+- **Correction** : revert `web/js/blobby_companion.js` et `web/js/aih_menu.js` à leur état `71dd2b0` (settings dans le chat, mémoire vectorielle intacte). Tous les fixes backend conservés par cherry-pick.
 
 ### ✅ Blobby — Corrections diverses
 
@@ -197,7 +197,7 @@ Tous les findings Blobby ont été corrigés lors de la session précédente.
 | **L7** | `app-admin.js` | `document.execCommand('copy')` déprécié (3 occurrences : `copyEnhanceOutput`, `genCopy`, fallback `copyApiKey`). | ⬜ Restant |
 | **L8** | `import_export.py` | Variables `delete_after`/`tmp` scope fragile dans `try/finally` (protégé par court-circuit `and`). | ⬜ Restant |
 | **L9** | `keywords.py` | Check de doublon global incluant les keywords privés. | ⬜ Restant |
-| **L10** | `FRIA_ComfyUI/README.md` | Contradiction `FRIA_Tools` vs `FRIA_Keywords`. | ⬜ Restant |
+| **L10** | `AIH_ComfyUI/README.md` | Contradiction `AIH_Tools` vs `AIH_Keywords`. | ⬜ Restant |
 | **L11** | `exporter.py` | Troncature `[:100]` dans le footer (coupe un titre en plein milieu). | ⬜ Restant |
 | **N2** | `app-keywords.js` | **NOUVEAU** : `escapeHtml()` définie 2 fois (lignes ~760-761). | ⬜ Low |
 | **N3** | `enhance_node.py` | **NOUVEAU** : `"seed": null` envoyé quand seed=0 (`seed if seed > 0 else None`). | ⬜ Medium |
@@ -286,11 +286,11 @@ Tous les findings Blobby ont été corrigés lors de la session précédente.
 - Migration BDD : colonne `created_at` ajoutée à la table `keywords`
 
 ### ⬜ Blobby — CORS sync serveur (à planifier)
-- **Problème** : Blobby (dans ComfyUI) fait des requêtes vers `fria.holaf.fr/api/settings` pour synchroniser ses données. Le serveur répond **500** (erreur serveur) et Flask-CORS n'ajoute pas les headers CORS sur les réponses d'erreur → le navigateur bloque la réponse → erreurs CORS dans la console.
+- **Problème** : Blobby (dans ComfyUI) fait des requêtes vers `aih.holaf.fr/api/settings` pour synchroniser ses données. Le serveur répond **500** (erreur serveur) et Flask-CORS n'ajoute pas les headers CORS sur les réponses d'erreur → le navigateur bloque la réponse → erreurs CORS dans la console.
 - **Impact** : utilisateurs en local via IP directe (ex: `http://192.168.x.x:8188`) ont les mêmes erreurs CORS. Les données locales (localStorage) fonctionnent quand même.
 - **Ce qui marche** : animation canvas (local), commandes shell/git (local ComfyUI), chat LLM (si token valide — CORS open sur `/api/*` en 200, mais pas sur les 500).
 - **Ce qui casse** : sync settings Blobby (`GET /api/settings` → 500 → CORS manquant). Chat LLM aussi si le token est expiré/invalide.
-- **Note** : les erreurs `authentik.holaf.fr` dans la console ne viennent PAS de FR.IA — c'est un reverse proxy d'auth configuré séparément sur le ComfyUI de l'utilisateur, pas lié à notre code.
+- **Note** : les erreurs `authentik.holaf.fr` dans la console ne viennent PAS de AI-Helper — c'est un reverse proxy d'auth configuré séparément sur le ComfyUI de l'utilisateur, pas lié à notre code.
 - **Solutions possibles** :
   - [ ] Ajouter les headers CORS manuellement sur les réponses d'erreur (error handler Flask)
   - [ ] Ajouter un flag pour désactiver la sync serveur de Blobby
@@ -429,18 +429,18 @@ User: "tu te souviens de mon projet de workflow flux?"
 
 ### ✅ Blobby Companion — Intégration complète
 - **Intégration** : personnage interactif 100% Canvas 2D qui vit sur le canvas ComfyUI.
-- **Activation** : via menu FR.IA > "Activer Blobby" avec badge ON/OFF + option "💬 Chat" visible seulement quand Blobby est actif.
-- **Clic droit** plus utilisé — tout se fait depuis le menu FR.IA.
+- **Activation** : via menu AI-Helper > "Activer Blobby" avec badge ON/OFF + option "💬 Chat" visible seulement quand Blobby est actif.
+- **Clic droit** plus utilisé — tout se fait depuis le menu AI-Helper.
 
 ### ✅ Chat Blobby
 - **Modale de discussion** flottante, déplaçable, redimensionnable (`resize: both`), avec persistance position/taille.
 - **Slider de transparence** dans l'en-tête (10-100%), persisté.
-- **Historique** sauvegardé dans `localStorage.FRIA_config.blobbyData.chatHistory` (50 derniers messages).
+- **Historique** sauvegardé dans `localStorage.AIH_config.blobbyData.chatHistory` (50 derniers messages).
 - **Barre de contexte** en bas : estime les tokens (`~XXX tokens | YYYY max`) avec code couleur selon le ratio.
 - **Caractère Groot-like** : Blobby ne répond que "Blobby" avec variations expressives.
 - **Humeur influencée** : le prompt LLM inclut l'humeur actuelle (happy/surprised/sleepy).
 - **Provider LLM** configurable dans les paramètres (dropdown).
-- **Sync serveur** vers backend FR.IA avec debounce 2s + indicateur visuel ⬤ (vert/jaune/rouge).
+- **Sync serveur** vers backend AI-Helper avec debounce 2s + indicateur visuel ⬤ (vert/jaune/rouge).
 
 ### ✅ Paramètres Blobby (3 onglets)
 - **Général** : choix du provider LLM + slider FPS animation (0-165).
@@ -469,7 +469,7 @@ User: "tu te souviens de mon projet de workflow flux?"
 - **Import** : checkbox "Convertir via LLM" + dropdown provider + niveau NSFW (SFW/Sexy/Érotique/Porno).
 - **Génération IA** : textarea d'instructions + dropdown provider + niveau NSFW → résultat parsé en tableau éditable dans l'onglet Import.
 - **LLM instruction stricte** : format `keyword | description | section | subsection | nsfw(0/1)` imposé, pas de texte hors-format.
-- **Persistance choix** : provider et niveau NSFW sauvegardés dans `FRIA_config`.
+- **Persistance choix** : provider et niveau NSFW sauvegardés dans `AIH_config`.
 
 ### ✅ Scan des doublons
 - **Timeout 60s supprimé** : plus de limite arbitraire.
@@ -507,8 +507,8 @@ User: "tu te souviens de mon projet de workflow flux?"
   - `enhance_node.py`, `prep_node.py`, `ideogram4_node.py`, `ideogram_prep_node.py` : `prompt_type` STRING → `template_id` INT
   - Conversion défensive contre `''` (ComfyUI peut envoyer une string vide pour un INT)
 - **Widgets JS ComfyUI** :
-  - 4 widgets réécrits (`fria_enhance_widget.js`, `fria_prep_widget.js`, `fria_ideogram4_widget.js`, `fria_ideogram_prep_widget.js`)
-  - Pattern commun : `Promise.all` pour attendre les listes, flag `_friaRestored` pour éviter la sync prématurée, callback natif appelé après `w.value = val` pour propager au graph
+  - 4 widgets réécrits (`aih_enhance_widget.js`, `aih_prep_widget.js`, `aih_ideogram4_widget.js`, `aih_ideogram_prep_widget.js`)
+  - Pattern commun : `Promise.all` pour attendre les listes, flag `_aihRestored` pour éviter la sync prématurée, callback natif appelé après `w.value = val` pour propager au graph
   - `ResizeObserver` retiré (causait un bug de grid collapse au release de la souris), remplacé par `gridTemplateColumns = "1fr 1fr"` forcé
   - Dropdown Template peuplé avec `item.id` (INT)
   - Payload envoie `template_id` (pas `prompt_type`)
@@ -522,7 +522,7 @@ User: "tu te souviens de mon projet de workflow flux?"
   - Dropdown DOM peuplé avec `item.id`
   - `syncNativeWidgets()` appelle `widget.callback(val)` après `w.value = val` pour propager au graph ComfyUI
   - `restoreFromNativeWidgets()` lit le widget natif comme un INT (gère le cas 0)
-  - Flag `_friaRestored` empêche la sync prématurée pendant le chargement
+  - Flag `_aihRestored` empêche la sync prématurée pendant le chargement
   - `Promise.all` pour attendre toutes les listes avant la première sync
   - Le widget natif est correctement sérialisé dans le workflow JSON
 - **Bénéfice** : plus de bug de retour à SDXL, le template choisi est conservé après F5.
@@ -599,7 +599,7 @@ User: "tu te souviens de mon projet de workflow flux?"
 
 - **Suppression de `prompt_type`** dans 3 tables BDD (prompt_templates, generated_prompts, prompt_examples) avec migration `DROP/CREATE/INSERT` pour les données existantes.
 - **Renommage `template_id` (INT)** dans 4 nodes Python ComfyUI avec conversion défensive contre string vide.
-- **Réécriture de 4 widgets JS ComfyUI** : flag `_friaRestored`, callback natif, `Promise.all`, suppression de `ResizeObserver`, dropdowns peuplés avec `item.id`.
+- **Réécriture de 4 widgets JS ComfyUI** : flag `_aihRestored`, callback natif, `Promise.all`, suppression de `ResizeObserver`, dropdowns peuplés avec `item.id`.
 - **Backend `_prepare_enhance`** : résolution par `id`, suppression de `type_formats`/`format_instruction` mort, suppression de `_default_format_for_type`.
 - **Templates par défaut** : insertion directe avec `name` (ex: "SDXL", "SDXL Markdown", "Ideogram 4") et `output_format` correspondant.
 - **Aliases temporaires** : `prompt_type` (STRING) est encore accepté comme alias dans `_prepare_enhance` (cast en INT) pour rétro-compatibilité — à retirer après migration des nodes des utilisateurs.
@@ -615,7 +615,7 @@ User: "tu te souviens de mon projet de workflow flux?"
 
 - **`_init_db()` appelé une fois au démarrage** : retiré de `get_db()`, déplacé dans `app.py` après les imports des routes (pour éviter les imports circulaires).
 - **`is_admin()` fail secure** : `return True` → `return False` on exception.
-- **`AbortSignal.timeout()` fallback** dans `fria_menu.js` pour navigateurs anciens.
+- **`AbortSignal.timeout()` fallback** dans `aih_menu.js` pour navigateurs anciens.
 - **Debug button** : `document.write` + interpolation remplacés par `createElement` + `textContent` (prévention XSS).
 
 ### ✅ Résolu cette session (refactoring massif du code)
@@ -637,8 +637,8 @@ User: "tu te souviens de mon projet de workflow flux?"
 - **Recherche sémantique dans `/api/enhance` silencieusement cassée** — fix SELECT avec embedding.
 - **Filtre union → simple laisse `filter_type='union'` en BDD**.
 - **Discord OAuth** : `SECRET_KEY` fixé, `DISCORD_REDIRECT_URI` aligné avec Discord Dev Portal.
-- **Migration serveur cloud** : `getApiUrl()` lit `localStorage.FRIA_config.serverUrl`.
-- **Terminal FR.IA** : panel flottant singleton via menu FR.IA, WebSocket `/fr_ia/terminal`, PTY serveur, xterm.js.
+- **Migration serveur cloud** : `getApiUrl()` lit `localStorage.AIH_config.serverUrl`.
+- **Terminal AI-Helper** : panel flottant singleton via menu AI-Helper, WebSocket `/aih/terminal`, PTY serveur, xterm.js.
 - **Qwen → Qwen-Image** : documentation mise à jour.
 
 ### ✅ Résolu cette session (audit code review 6 fichiers)
@@ -766,7 +766,7 @@ Styles réutilisables ajoutés aux prompts avant envoi au LLM (ex: "Hyper realis
 ### Vue d'ensemble
 
 ```
-FR.IA-keywords backend (Flask, kw.holaf.fr)
+AI-Helper-keywords backend (Flask, kw.holaf.fr)
     │
     ├── /api/enhance/prompts, /api/ideogram/prep, etc.
     │      │
@@ -901,8 +901,8 @@ FR.IA-keywords backend (Flask, kw.holaf.fr)
 #### Phase 4 — Polish & Bonus (en cours)
 - [x] **Suppression de `prompt_type` (juin 2026)** — voir section de normalisation
 - [x] **Ideogram 4 : backend support** (juin 2026) — Branche dédiée dans `_prepare_enhance` qui formate l'entrée en sections nommées (GENERAL DESCRIPTION + ELEMENTS TO PLACE + IMAGE DIMENSIONS + STYLE) au lieu du format avec priorités. Champs `width` et `height`. Bbox obligatoire dans le template.
-- [x] **Ideogram 4 : nodes ComfyUI** (juin 2026) — `FRIAIdeogram4Node` (builder avec bouton Generate + preview) et `FRIAIdeogramPrepNode` (découplé, 3 strings).
-- [x] **Ideogram 4 : node preview** — `FRIAIdeogram4Node` rend un preview visuel des bboxes (PIL + canvas).
+- [x] **Ideogram 4 : nodes ComfyUI** (juin 2026) — `AIHIdeogram4Node` (builder avec bouton Generate + preview) et `AIHIdeogramPrepNode` (découplé, 3 strings).
+- [x] **Ideogram 4 : node preview** — `AIHIdeogram4Node` rend un preview visuel des bboxes (PIL + canvas).
 - [ ] Checkbox Prompt négatif
 - [ ] Base de prompts négatifs
 - [x] Instructions spéciales dans le prompt système (backend OK, UI à vérifier)
@@ -923,7 +923,7 @@ Code review complet, classé par priorité :
 - [ ] **Bug n°11 : variables `cur`/`cur2`/`conn`/`conn2` multiples dans `enhance_prompt`** — Renommer en `_db_ep`, `_db_rand`, `_db_template`. *À faire*.
 - [ ] **`var filtersBar` déclaré mais plus utilisé** dans `app-core.js`. *À supprimer.* (Code toujours présent ligne 17)
 - [ ] **Troncature inesthétique dans `exporter.py`** — Le `[:100]` coupe la liste concaténée des catégories au milieu d'un titre. *À corriger*.
-- [ ] **README ComfyUI : nom de dossier contradictoire** — `git clone ... FRIA_Tools` mais l'avertissement dit `FRIA_Keywords`. *À corriger*.
+- [ ] **README ComfyUI : nom de dossier contradictoire** — `git clone ... AIH_Tools` mais l'avertissement dit `AIH_Keywords`. *À corriger*.
 
 **⚠️ Points d'attention :**
 - [x] **Vérifier persistance des paramètres enhance** — L'API `/api/settings` existe, le frontend appelle PUT après chaque changement.
@@ -990,7 +990,7 @@ Code review complet, classé par priorité :
 - [ ] **Seed ComfyUI ignoré dans `/api/enhance`** — `random.choice()` et `ORDER BY RANDOM()` ignorent le seed.
 - [x] **Code mort dans `enhance_prompt`** — `format_instruction` et query `prompt_examples` supprimés.
 - [x] **`prompt_type` STRING reçu comme `''` au RUN** — Conversion défensive dans les 4 nodes Python + dropdowns JS jamais vides.
-- [x] **Widget natif `prompt_type` non synchronisé avec dropdown DOM** — Remplacé par `template_id` (INT) avec callback + flag `_friaRestored` + `Promise.all`.
+- [x] **Widget natif `prompt_type` non synchronisé avec dropdown DOM** — Remplacé par `template_id` (INT) avec callback + flag `_aihRestored` + `Promise.all`.
 - [x] **Dropdown Template revient à SDXL après F5** — Résolu par `template_id` INT + callback + restoration.
 - [x] **`_init_db()` appelé à chaque connexion** — Déplacé dans `app.py`, appelé une fois au démarrage.
 - [x] **Import circulaire `_init_db` dans `extensions.py`** — Déplacé dans `app.py` après les imports de routes.
@@ -1019,7 +1019,7 @@ Code review complet, classé par priorité :
 - [ ] **Code mort : `_loadApiKeySettings()` jamais appelé** — À supprimer.
 
 ### Frontend — ComfyUI widgets
-- [x] **Bug dropdown Template** — `template_id` INT, callback, `Promise.all`, flag `_friaRestored`.
+- [x] **Bug dropdown Template** — `template_id` INT, callback, `Promise.all`, flag `_aihRestored`.
 - [x] **Grid collapse au release de la souris** — `ResizeObserver` retiré, `gridTemplateColumns = "1fr 1fr"` forcé.
 - [x] **Templates Ideogram 4 utilisaient `t.prompt_type`** — Remplacé par `t.id`.
 - [x] **Cache TTL pour templates** — `refreshTemplatesIfStale` ajouté.
@@ -1027,13 +1027,13 @@ Code review complet, classé par priorité :
 
 ---
 
-## 🧩 FR.IA — Extension ComfyUI
+## 🧩 AI-Helper — Extension ComfyUI
 
 ### Concept
 
-Extension légère qui ajoute un bouton `[FR.IA]` dans la barre de menu de ComfyUI.
+Extension légère qui ajoute un bouton `[AI-Helper]` dans la barre de menu de ComfyUI.
 
-### Menu `[FR.IA ▾]`
+### Menu `[AI-Helper ▾]`
 
 | Option | Action |
 |--------|--------|
@@ -1042,14 +1042,14 @@ Extension légère qui ajoute un bouton `[FR.IA]` dans la barre de menu de Comfy
 
 ### Modale Paramètres
 
-- **URL du serveur** : défaut `https://kw.holaf.fr`, configuré via menu FR.IA → Compte
+- **URL du serveur** : défaut `https://kw.holaf.fr`, configuré via menu AI-Helper → Compte
 - **Clé API** : token Bearer généré depuis `/api/auth/token`
 
 ### Architecture
 
 | Composant | Rôle | Statut |
 |-----------|------|--------|
-| **Menu `[FR.IA ▾]`** | Point d'entrée global | ✅ |
+| **Menu `[AI-Helper ▾]`** | Point d'entrée global | ✅ |
 | **Node Elements Picker** | Composer des éléments (filtres, sémantique, random) | ✅ |
 | **Node Prompt Enhancer** | Optimise via LLM cloud | ✅ |
 | **Node Prompt Prep** | Prépare 3 strings pour un LLM externe | ✅ |
@@ -1067,18 +1067,18 @@ Tous les nœuds sauf Diagnostic et Ideogram Parse utilisent le pattern suivant :
 - **Widget natif `preset_id`** (INT) caché, piloté par le DOM (sauf Prep et Ideogram Prep qui n'ont pas de preset).
 - **Widgets JS** : dropdowns peuplés depuis `/api/prompts/templates`, `/api/styles`, `/api/presets`.
 - **Sync** : `widget.value = val` puis `widget.callback(val)` pour propager au graph.
-- **Restore** : flag `_friaRestored` + `Promise.all` pour les chargements.
+- **Restore** : flag `_aihRestored` + `Promise.all` pour les chargements.
 - **Resize** : `node.onResize` met à jour la largeur du container, `gridTemplateColumns = "1fr 1fr"` forcé.
 - **Conversion défensive côté Python** : `int(val) if val != "" else 0` pour les INT.
 
 ### Fichiers de l'extension
 
 ```
-FR.IA-ComfyUI/
+AI-Helper-ComfyUI/
 ├── __init__.py
 ├── nodes/
 │   ├── __init__.py
-│   ├── _credentials.py          # lecture fria_credentials.json
+│   ├── _credentials.py          # lecture aih_credentials.json
 │   ├── elements_node.py         # Elements Picker
 │   ├── enhance_node.py          # Prompt Enhancer (cloud)
 │   ├── prep_node.py             # Prompt Prep (decoupled)
@@ -1086,17 +1086,17 @@ FR.IA-ComfyUI/
 │   ├── ideogram_prep_node.py    # Ideogram Prep (decoupled)
 │   ├── ideogram_parse_node.py   # Ideogram Parse + preview bboxes
 │   ├── diagnostic_node.py       # Diagnostic
-│   ├── terminal.py              # PTY serveur pour /fr_ia/terminal
+│   ├── terminal.py              # PTY serveur pour /aih/terminal
 │   └── update_manager.py        # Mise à jour du repo
 ├── web/
 │   └── js/
-│       ├── fria_menu.js
-│       ├── fria_elements_widget.js
-│       ├── fria_enhance_widget.js
-│       ├── fria_prep_widget.js
-│       ├── fria_ideogram4_widget.js
-│       ├── fria_ideogram_prep_widget.js
-│       ├── fria_terminal_widget.js
+│       ├── aih_menu.js
+│       ├── aih_elements_widget.js
+│       ├── aih_enhance_widget.js
+│       ├── aih_prep_widget.js
+│       ├── aih_ideogram4_widget.js
+│       ├── aih_ideogram_prep_widget.js
+│       ├── aih_terminal_widget.js
 │       ├── xterm.js              # bundle UMD
 │       └── xterm-addon-fit.js    # bundle UMD
 ├── pyproject.toml
@@ -1118,7 +1118,7 @@ FR.IA-ComfyUI/
 
 ### Notes de packaging
 
-- Le nom du dossier doit être **`FRIA_Tools`** (le nom du repo GitHub) pour que Python importe `FRIA_ComfyUI` correctement. Le README doit refléter cette consigne (corriger l'avertissement obsolète "FRIA_Keywords").
+- Le nom du dossier doit être **`AIH_Tools`** (le nom du repo GitHub) pour que Python importe `AIH_ComfyUI` correctement. Le README doit refléter cette consigne (corriger l'avertissement obsolète "AIH_Keywords").
 
 ### Site web — Onglet "Compte" dans la modale Paramètres
 
@@ -1132,7 +1132,7 @@ FR.IA-ComfyUI/
 2. Vérifier alignement exact `DISCORD_REDIRECT_URI` ↔ Redirects sur Discord Dev Portal
 3. Si reverse-proxy HTTPS : ajouter `ProxyFix` à `extensions.py`
 4. Pull du repo + restart extension ComfyUI → `web/js/*` rechargés
-5. Côté user : menu **FR.IA → Compte** → mettre la nouvelle `URL du serveur` + clé API + vider cache navigateur
+5. Côté user : menu **AI-Helper → Compte** → mettre la nouvelle `URL du serveur` + clé API + vider cache navigateur
 6. Tester login Discord + génération d'un node Ideogram4
 
 ---
@@ -1141,6 +1141,6 @@ FR.IA-ComfyUI/
 
 - Les commits se font par l'utilisateur, pas l'assistant.
 - Convention : un commit = un changement logique.
-- Le serveur de prod est sur `/projects/FRIA_Tools` (cloud), pas `FR.IA-keywords/`.
+- Le serveur de prod est sur `/projects/AIH_Tools` (cloud), pas `AI-Helper-keywords/`.
 - Le frontend web est servi par Flask depuis `frontend/`.
-- Le frontend ComfyUI est servi par ComfyUI depuis `web/js/` (extension `FRIA_ComfyUI`).
+- Le frontend ComfyUI est servi par ComfyUI depuis `web/js/` (extension `AIH_ComfyUI`).

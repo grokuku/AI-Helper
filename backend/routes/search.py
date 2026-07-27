@@ -1,4 +1,4 @@
-"""Routes search for FR.IA backend."""
+"""Routes search for AI-Helper backend."""
 
 from context import *
 

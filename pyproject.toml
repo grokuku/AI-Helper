@@ -2,7 +2,7 @@
 target-version = "py38"
 line-length = 120
 extend-exclude = [
-    "FRIA_ComfyUI",
+    "AIH_ComfyUI",
     "venv",
     "__pycache__",
 ]

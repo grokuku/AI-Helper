@@ -77,7 +77,7 @@ def mock_paramiko():
 def storage(mock_paramiko):
     """A fresh SFTPStorage instance using the mocked paramiko."""
     s = SFTPStorage(host="sftp.example", port=22, user="tester",
-                    password="pw", base_path="/fria")
+                    password="pw", base_path="/aih")
     return s
 
 
@@ -145,7 +145,7 @@ class TestSFTPWriteReadExistsDelete:
         mock_paramiko["sftp"].put.assert_called_once()
         args = mock_paramiko["sftp"].put.call_args[0]
         assert args[0] == str(local)
-        assert args[1] == "/fria/remote.txt"
+        assert args[1] == "/aih/remote.txt"
 
     def test_sftp_write_empty_file(self, storage, mock_paramiko):
         """test_sftp_write_empty_file → create_empty creates a 0-byte file"""
@@ -154,7 +154,7 @@ class TestSFTPWriteReadExistsDelete:
         # sftp.open called with 'wb' mode
         open_call = mock_paramiko["sftp"].open.call_args
         assert open_call[0][1] == "wb"
-        assert open_call[0][0] == "/fria/empty.txt"
+        assert open_call[0][0] == "/aih/empty.txt"
 
     def test_sftp_read(self, storage, mock_paramiko, tmp_path):
         """test_sftp_read → mock sftp.get, vérifie le téléchargement"""
@@ -163,7 +163,7 @@ class TestSFTPWriteReadExistsDelete:
         assert ok is True
         mock_paramiko["sftp"].get.assert_called_once()
         args = mock_paramiko["sftp"].get.call_args[0]
-        assert args[0] == "/fria/remote.txt"
+        assert args[0] == "/aih/remote.txt"
         assert args[1] == str(dest)
 
     def test_sftp_read_nonexistent_file(self, storage, mock_paramiko, tmp_path):
@@ -176,7 +176,7 @@ class TestSFTPWriteReadExistsDelete:
         """test_sftp_exists_true → mock sftp.stat OK"""
         mock_paramiko["sftp"].stat.side_effect = lambda p: MagicMock()
         assert storage.exists("file.txt") is True
-        mock_paramiko["sftp"].stat.assert_called_with("/fria/file.txt")
+        mock_paramiko["sftp"].stat.assert_called_with("/aih/file.txt")
 
     def test_sftp_exists_false(self, storage, mock_paramiko):
         """test_sftp_exists_false → mock sftp.stat lève IOError"""
@@ -187,7 +187,7 @@ class TestSFTPWriteReadExistsDelete:
         """test_sftp_delete → mock sftp.remove, vérifie l'appel"""
         ok = storage.delete("file.txt")
         assert ok is True
-        mock_paramiko["sftp"].remove.assert_called_once_with("/fria/file.txt")
+        mock_paramiko["sftp"].remove.assert_called_once_with("/aih/file.txt")
 
     def test_sftp_delete_failure_returns_false(self, storage, mock_paramiko):
         """test_sftp_delete failure → returns False"""
@@ -199,7 +199,7 @@ class TestSFTPWriteReadExistsDelete:
         mock_paramiko["sftp"].listdir.return_value = ["a.txt", "b.txt", "c.log"]
         result = storage.list_dir("somewhere")
         assert result == ["a.txt", "b.txt", "c.log"]
-        mock_paramiko["sftp"].listdir.assert_called_once_with("/fria/somewhere")
+        mock_paramiko["sftp"].listdir.assert_called_once_with("/aih/somewhere")
 
     def test_sftp_list_files_failure_returns_empty(self, storage, mock_paramiko):
         mock_paramiko["sftp"].listdir.side_effect = IOError("no dir")
@@ -216,10 +216,10 @@ class TestSFTPChunkStream:
         assert ok is True
         # sftp.open was called in append mode
         open_call = mock_paramiko["sftp"].open.call_args
-        assert open_call[0][0] == "/fria/video/raw.mp4"
+        assert open_call[0][0] == "/aih/video/raw.mp4"
         assert open_call[0][1] == "ab"
         # The handle should be kept open in _open_handles
-        assert "/fria/video/raw.mp4" in storage._open_handles
+        assert "/aih/video/raw.mp4" in storage._open_handles
 
     def test_sftp_write_chunk_stream_reuses_handle(self, storage, mock_paramiko):
         """Second call to append_chunk_stream reuses the open handle."""
@@ -243,9 +243,9 @@ class TestSFTPChunkStream:
         """close_handle closes the pipelined handle for a given path."""
         stream = io.BytesIO(b"data")
         storage.append_chunk_stream("file.bin", stream)
-        assert "/fria/file.bin" in storage._open_handles
+        assert "/aih/file.bin" in storage._open_handles
         storage.close_handle("file.bin")
-        assert "/fria/file.bin" not in storage._open_handles
+        assert "/aih/file.bin" not in storage._open_handles
 
 
 # ── Close ────────────────────────────────────────────────────────────
@@ -278,26 +278,26 @@ class TestSFTPClose:
 class TestSFTPPathHelpers:
     def test_sftp_full_path_relative(self, storage):
         """test_sftp_full_path → vérifie la construction du chemin"""
-        assert storage._full_path("a/b.txt") == "/fria/a/b.txt"
+        assert storage._full_path("a/b.txt") == "/aih/a/b.txt"
 
     def test_sftp_full_path_absolute(self, storage):
         """Absolute remote paths are returned as-is."""
         assert storage._full_path("/abs/b.txt") == "/abs/b.txt"
 
     def test_base_path_trailing_slash_stripped(self, mock_paramiko):
-        s = SFTPStorage(host="h", base_path="/fria/")
-        assert s.base_path == "/fria"
+        s = SFTPStorage(host="h", base_path="/aih/")
+        assert s.base_path == "/aih"
 
     def test_get_backend_name(self, storage):
         name = storage.get_backend_name()
-        assert name == "sftp://sftp.example:22/fria"
+        assert name == "sftp://sftp.example:22/aih"
 
     def test_mkdirp_creates_missing_dirs(self, storage, mock_paramiko):
         """_mkdir_p walks up and creates directories that don't exist."""
         # Everything raises IOError (doesn't exist), so all dirs get created
         mock_paramiko["sftp"].stat.side_effect = IOError("nope")
         mock_paramiko["sftp"].mkdir = MagicMock()
-        storage._mkdir_p(mock_paramiko["sftp"], "/fria/sub/deep")
+        storage._mkdir_p(mock_paramiko["sftp"], "/aih/sub/deep")
         # At least the deepest dirs should have been created
         assert mock_paramiko["sftp"].mkdir.called
 
@@ -307,16 +307,16 @@ class TestSFTPPathHelpers:
 
         def _stat(path):
             call_log.append(path)
-            if path == "/fria":
+            if path == "/aih":
                 return MagicMock()  # exists
             raise IOError("nope")
 
         mock_paramiko["sftp"].stat.side_effect = _stat
         mock_paramiko["sftp"].mkdir = MagicMock()
-        storage._mkdir_p(mock_paramiko["sftp"], "/fria/a/b")
-        # Should not try to mkdir /fria (it exists)
+        storage._mkdir_p(mock_paramiko["sftp"], "/aih/a/b")
+        # Should not try to mkdir /aih (it exists)
         mkdir_calls = [c.args[0] for c in mock_paramiko["sftp"].mkdir.call_args_list]
-        assert "/fria" not in mkdir_calls
+        assert "/aih" not in mkdir_calls
 
 
 # ── Factory / singleton ──────────────────────────────────────────────

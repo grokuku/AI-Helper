@@ -1,11 +1,10 @@
 """
 Module d'authentification Discord OAuth2 + JWT.
-Limite les accès aux membres d'un serveur Discord spécifique (optionnel).
+Limite les accès aux utilisateurs dont l'UID Discord est présent dans la whitelist.
 
 Configuration via variables d'environnement (ou .env) :
   DISCORD_CLIENT_ID      requis
   DISCORD_CLIENT_SECRET  requis
-  DISCORD_GUILD_ID       optionnel — ID du serveur à restreindre
   DISCORD_REDIRECT_URI   optionnel — défaut: http://localhost:5000/api/auth/discord/callback
   SECRET_KEY             requis — pour les sessions Flask et la signature JWT
   JWT_SECRET_KEY         optionnel — pour la signature JWT (défaut: SECRET_KEY)
@@ -41,7 +40,7 @@ def init_oauth(app):
         client_secret=os.environ["DISCORD_CLIENT_SECRET"],
         authorize_url="https://discord.com/api/oauth2/authorize",
         access_token_url="https://discord.com/api/oauth2/token",
-        client_kwargs={"scope": "identify guilds guilds.members.read"},
+        client_kwargs={"scope": "identify"},
     )
     return oauth
 
@@ -63,6 +62,10 @@ def make_discord_session(token: dict) -> requests.Session:
 def get_user_guilds(ses: requests.Session) -> list[dict]:
     """Récupère la liste des serveurs (guilds) de l'utilisateur.
 
+    NOTE : Cette fonction et ``get_guild_member`` ci-dessous sont conservées
+    pour la compatibilité API, mais ne sont plus appelées par le flow d'auth
+    depuis le passage au système de whitelist d'UIDs Discord.
+
     Args:
         ses (requests.Session): La session Discord authentifiée.
 
@@ -78,32 +81,31 @@ def get_user_guilds(ses: requests.Session) -> list[dict]:
     return resp.json()
 
 
-def check_guild_access(ses: requests.Session) -> tuple[bool, str | None]:
-    """Vérifie si l'utilisateur est membre du serveur Discord requis.
-
-    Si ``DISCORD_GUILD_ID`` n'est pas défini, aucune restriction n'est appliquée.
+def check_whitelist_access(user_id: str) -> tuple[bool, str | None]:
+    """Vérifie si l'UID Discord de l'utilisateur est présent dans la whitelist.
 
     Args:
-        ses (requests.Session): La session Discord authentifiée.
+        user_id (str): L'UID Discord de l'utilisateur.
 
     Returns:
         tuple: ``(ok, error_message)`` où ``ok`` est un booléen et
             ``error_message`` est ``None`` si l'accès est autorisé.
     """
-    guild_id = os.environ.get("DISCORD_GUILD_ID")
-    if not guild_id:
-        return True, None  # Pas de restriction
-
     try:
-        guilds = get_user_guilds(ses)
-        if not any(g["id"] == guild_id for g in guilds):
-            return False, (
-                "Tu n'es pas membre du serveur Discord requis. "
-                "Rejoins-le d'abord puis réessaie."
-            )
-        return True, None
+        from db import get_db
+        conn = get_db()
+        row = conn.execute(
+            "SELECT 1 FROM discord_whitelist WHERE discord_uid = ?", (user_id,)
+        ).fetchone()
+        conn.close()
+        if row:
+            return True, None
+        return False, (
+            "Ton UID Discord n'est pas dans la whitelist. "
+            "Demande à un administrateur de t'ajouter."
+        )
     except Exception as e:
-        return False, f"Erreur lors de la vérification du serveur : {e}"
+        return False, f"Erreur lors de la vérification de la whitelist : {e}"
 
 
 def get_guild_member(ses: requests.Session, guild_id: str) -> dict | None:

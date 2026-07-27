@@ -1,4 +1,4 @@
-"""Routes auth for FR.IA backend."""
+"""Routes auth for AI-Helper backend."""
 
 from context import *
 
@@ -25,23 +25,18 @@ def discord_callback():
 
     ses = make_discord_session(token)
 
-    # Vérification du serveur (si GUILD_ID configuré)
-    ok, err = check_guild_access(ses)
-    if not ok:
-        return f"Accès refusé : {err}", 403
-
-    # Infos utilisateur
+    # Infos utilisateur (récupérées AVANT la vérification d'accès)
     discord_user = get_user_info(ses)
     user_id = discord_user["id"]
     display_name = discord_user.get("global_name") or discord_user["username"]
 
-    # Pseudo sur le serveur Discord (si configuré)
-    guild_id = os.environ.get("DISCORD_GUILD_ID")
+    # Vérification de la whitelist (remplace l'ancien check_guild_access)
+    ok, err = check_whitelist_access(user_id)
+    if not ok:
+        return f"Accès refusé : {err}", 403
+
+    # guild_nickname n'est plus utilisé (plus de guild check) — colonne gardée pour compat
     guild_nickname = None
-    if guild_id:
-        member = get_guild_member(ses, guild_id)
-        if member:
-            guild_nickname = member.get("nick") or member.get("user", {}).get("global_name")
 
     # Détermination du rôle + sauvegarde
     conn = get_db()
@@ -92,12 +87,12 @@ def discord_callback():
     session["user"] = {
         "id": user_id,
         "username": discord_user["username"],
-        "display_name": guild_nickname or display_name,
+        "display_name": display_name,
         "avatar": discord_user.get("avatar"),
         "avatar_url": avatar_url(discord_user),
         "role": role,
         "settings": user_settings,
-        "guild_nickname": guild_nickname,
+        "guild_nickname": None,
     }
     session.permanent = True
 
@@ -163,7 +158,7 @@ def api_token():
     if request.method == 'POST':
         # Régénérer le token
         import secrets
-        new_token = 'fr_ia_' + secrets.token_hex(24)
+        new_token = 'aih_' + secrets.token_hex(24)
         conn.execute("UPDATE users SET api_token = ? WHERE id = ?", (new_token, user_id))
         conn.commit()
         conn.close()
@@ -178,7 +173,7 @@ def api_token():
 
     # Pas de token → en créer un
     import secrets
-    new_token = 'fr_ia_' + secrets.token_hex(24)
+    new_token = 'aih_' + secrets.token_hex(24)
     conn.execute("UPDATE users SET api_token = ? WHERE id = ?", (new_token, user_id))
     conn.commit()
     conn.close()

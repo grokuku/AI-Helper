@@ -1,4 +1,4 @@
-"""Shared imports and globals for FR.IA backend route modules."""
+"""Shared imports and globals for AI-Helper backend route modules."""
 
 import os
 import sqlite3
@@ -17,7 +17,7 @@ from extensions import app, oauth, DB_PATH, MD_PATH, BASE_DIR
 from parser import parse_markdown
 from exporter import export_to_markdown
 from embeddings import generate_embedding, cosine_similarity, is_available, set_config
-from auth import make_discord_session, check_guild_access, get_guild_member, get_user_info, avatar_url, get_logged_user, create_jwt, create_refresh_token, verify_jwt, jwt_required
+from auth import make_discord_session, check_whitelist_access, get_user_guilds, get_guild_member, get_user_info, avatar_url, get_logged_user, create_jwt, create_refresh_token, verify_jwt, jwt_required
 
 from routes.helpers import (
     _login_required, _admin_required, _get_current_user_id, _authenticate_via_token,
@@ -36,7 +36,7 @@ __all__ = [
     'redirect', 'render_template_string', 'g', 'Response',
     'parse_markdown', 'export_to_markdown',
     'generate_embedding', 'cosine_similarity', 'is_available', 'set_config',
-    'make_discord_session', 'check_guild_access', 'get_guild_member',
+    'make_discord_session', 'check_whitelist_access', 'get_user_guilds', 'get_guild_member',
     'get_user_info', 'avatar_url', 'get_logged_user',
     'create_jwt', 'create_refresh_token', 'verify_jwt', 'jwt_required',
     '_login_required', '_admin_required', '_get_current_user_id',

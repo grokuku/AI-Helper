@@ -1300,7 +1300,7 @@ function kwOpenBulkImport() {
     // Restaurer taille et position
     var modal = document.getElementById('bi-modal');
     try {
-        var cfg = JSON.parse(localStorage.getItem('FRIA_config')) || {};
+        var cfg = JSON.parse(localStorage.getItem('AIH_config')) || {};
         var r = cfg.biModalRect;
         if (r) {
             modal.style.position = 'fixed';
@@ -1335,9 +1335,9 @@ function _saveBiModalRect() {
     if (!modal) return;
     var rect = modal.getBoundingClientRect();
     try {
-        var cfg = JSON.parse(localStorage.getItem('FRIA_config')) || {};
+        var cfg = JSON.parse(localStorage.getItem('AIH_config')) || {};
         cfg.biModalRect = {left: rect.left, top: rect.top, width: rect.width, height: rect.height};
-        localStorage.setItem('FRIA_config', JSON.stringify(cfg));
+        localStorage.setItem('AIH_config', JSON.stringify(cfg));
     } catch (e) {}
 }
 
@@ -1393,12 +1393,12 @@ function biToggleLLM() {
 
 function _saveBiPrefs() {
     try {
-        var cfg = JSON.parse(localStorage.getItem('FRIA_config')) || {};
+        var cfg = JSON.parse(localStorage.getItem('AIH_config')) || {};
         cfg.biLlmPreset = document.getElementById('bi-llm-preset').value;
         cfg.biLlmNsfw = document.getElementById('bi-llm-nsfw').value;
         cfg.biGenPreset = document.getElementById('bi-gen-preset').value;
         cfg.biGenNsfw = document.getElementById('bi-gen-nsfw').value;
-        localStorage.setItem('FRIA_config', JSON.stringify(cfg));
+        localStorage.setItem('AIH_config', JSON.stringify(cfg));
     } catch (e) {}
 }
 
@@ -1412,7 +1412,7 @@ async function loadBiPresets() {
         }
         var presets = await res.json();
         var saved;
-        try { saved = JSON.parse(localStorage.getItem('FRIA_config')) || {}; } catch { saved = {}; }
+        try { saved = JSON.parse(localStorage.getItem('AIH_config')) || {}; } catch { saved = {}; }
 
         [
             {sel: 'bi-llm-preset', save: 'biLlmPreset'},

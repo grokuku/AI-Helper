@@ -43,7 +43,7 @@ logging.basicConfig(
     level=logging.DEBUG,
     handlers=[_file_handler, _console_handler],
 )
-logger = logging.getLogger('fria')
+logger = logging.getLogger('ai_helper')
 
 # Chargement de la config Ollama stockée en BDD (si présent)
 def _load_ollama_config_at_startup():

@@ -42,7 +42,7 @@ def _authenticate_via_token() -> str | None:
 
     Accepte deux types de tokens :
         - JWT token (via ``verify_jwt``)
-        - API token legacy (``fr_ia_...`` stocké en BDD)
+        - API token legacy (``aih_...`` stocké en BDD)
 
     Returns:
         str | None: L'ID utilisateur si le token est valide, sinon ``None``.
@@ -57,7 +57,7 @@ def _authenticate_via_token() -> str | None:
     if payload and payload.get('type') == 'access':
         return payload['sub']
 
-    # 2) Fallback : API token legacy (fr_ia_...)
+    # 2) Fallback : API token legacy (aih_...)
     try:
         conn = get_db()
         row = conn.execute(

@@ -1,4 +1,4 @@
-# FR.IA-keywords — Règles du projet
+# AI-Helper — Règles du projet
 
 ## Conventions générales
 
@@ -18,10 +18,10 @@
 ## Architecture du projet
 
 ```
-FR.IA-keywords/
+AI-Helper/
 ├── backend/          # Serveur Flask (app.py, auth.py, parser.py, etc.)
 ├── frontend/         # Interface web (index.html)
-├── FRIA_ComfyUI/     # Extension ComfyUI (nodes, web/)
+├── AIH_ComfyUI/     # Extension ComfyUI (nodes, web/)
 ├── web/js/           # Widgets JS pour ComfyUI
 ├── AGENTS.md         # Règles du projet
 └── ROADMAP.md        # Roadmap et état d'avancement
@@ -95,7 +95,7 @@ FR.IA-keywords/
 - Le LAYOUT (position) dépend du ratio : paysage = étaler horizontalement, portrait = empiler
 - **Mais en coords pixels** : une sphère = bbox carré (x_span ≈ y_span), le LLM n'a pas à compenser l'aspect ratio
 
-### Node ComfyUI (FRIAIdeogram4Node)
+### Node ComfyUI (AIHIdeogram4Node)
 - RETURN_TYPES : (STRING, INT, INT, IMAGE, STRING) = (prompt, width, height, preview, debug)
 - Widgets natifs : seed, width, height, description, element_1..4, _api_config (1 seul hidden)
 - **PAS de forceInput** sur width/height, **PAS de multiline** sur element_1..4

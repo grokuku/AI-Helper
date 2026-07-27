@@ -1,4 +1,4 @@
-"""Routes helpers for FR.IA backend — backward-compatibility re-exports.
+"""Routes helpers for AI-Helper backend — backward-compatibility re-exports.
 
 This module re-exports all functions that were originally defined here
 so that existing imports (`from routes.helpers import X`) continue to work

@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================================
-# FR.IA-keywords — Formatage Python (Ruff)
+# AI-Helper — Formatage Python (Ruff)
 # Lance: ruff check --fix (auto-fix des problèmes) puis ruff format
 # ============================================================================
 

@@ -1,4 +1,4 @@
-"""Routes filters for FR.IA backend."""
+"""Routes filters for AI-Helper backend."""
 
 from context import *
 

@@ -1,4 +1,4 @@
-"""Shared pytest fixtures for the FR.IA backend test suite."""
+"""Shared pytest fixtures for the AI-Helper backend test suite."""
 
 import os
 import sys
@@ -13,8 +13,8 @@ import pytest
 _TEST_FERNET_KEY = "ZmDfcTF7_60GrrY167zsiPc4z_R0GfV9nJWz3z4YqXc="
 
 # Create a temp DB file BEFORE importing any backend module, because
-# extensions.py reads FRIA_DB_PATH at import time.
-_TEMP_DB_DIR = tempfile.mkdtemp(prefix="fria_test_")
+# extensions.py reads AIH_DB_PATH at import time.
+_TEMP_DB_DIR = tempfile.mkdtemp(prefix="aih_test_")
 _TEST_DB_PATH = os.path.join(_TEMP_DB_DIR, "test.db")
 
 os.environ["JWT_SECRET_KEY"] = "test-jwt-secret-key-for-pytest-0123456789"
@@ -22,7 +22,7 @@ os.environ["SECRET_KEY"] = "test-flask-secret-key-for-pytest"
 os.environ["ENCRYPTION_KEY"] = _TEST_FERNET_KEY
 os.environ["DISCORD_CLIENT_ID"] = "test-discord-id"
 os.environ["DISCORD_CLIENT_SECRET"] = "test-discord-secret"
-os.environ["FRIA_DB_PATH"] = _TEST_DB_PATH
+os.environ["AIH_DB_PATH"] = _TEST_DB_PATH
 os.environ["DISCORD_GUILD_ID"] = ""  # no guild restriction in tests
 
 # Make the backend directory importable

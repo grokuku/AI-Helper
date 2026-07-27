@@ -23,7 +23,7 @@ from storage import get_storage, StorageBackend
 
 CHUNK_SIZE = 25 * 1024 * 1024  # 25 MB par chunk
 MAX_FILE_SIZE = 10 * 1024 * 1024 * 1024  # 10 GB max
-TEMP_DIR = tempfile.gettempdir() + "/fria_uploads"
+TEMP_DIR = tempfile.gettempdir() + "/aih_uploads"
 os.makedirs(TEMP_DIR, exist_ok=True)
 
 
@@ -435,7 +435,7 @@ def download_file(upload_id):
     )
 
 
-@app.route('/api/fria/models/remote', methods=['GET'])
+@app.route('/api/aih/models/remote', methods=['GET'])
 def list_remote_models():
     """
     Liste les modèles distants disponibles (uploadés par les utilisateurs).
@@ -530,7 +530,7 @@ def list_remote_models():
         conn.close()
 
 
-@app.route('/api/fria/models/remote/<upload_id>', methods=['GET'])
+@app.route('/api/aih/models/remote/<upload_id>', methods=['GET'])
 def get_remote_model_detail(upload_id):
     """Détail d'un modèle distant spécifique."""
     conn = get_db()
@@ -563,7 +563,7 @@ def get_remote_model_detail(upload_id):
         conn.close()
 
 
-@app.route('/api/fria/models/remote/<upload_id>/download', methods=['POST'])
+@app.route('/api/aih/models/remote/<upload_id>/download', methods=['POST'])
 def increment_model_download(upload_id):
     """Incrémente le compteur de téléchargements d'un modèle."""
     conn = get_db()
@@ -578,7 +578,7 @@ def increment_model_download(upload_id):
         conn.close()
 
 
-@app.route('/api/fria/models/remote/<upload_id>', methods=['DELETE'])
+@app.route('/api/aih/models/remote/<upload_id>', methods=['DELETE'])
 def delete_remote_model(upload_id):
     """
     Supprime un modèle distant (admin uniquement).

@@ -1,4 +1,4 @@
-"""Routes admin for FR.IA backend."""
+"""Routes admin for AI-Helper backend."""
 
 from context import *
 
@@ -208,7 +208,7 @@ def admin_sftp_settings():
     try:
         if request.method == 'POST':
             data = request.get_json() or {}
-            for key, default in [('sftp_host', ''), ('sftp_port', '22'), ('sftp_user', ''), ('sftp_password', ''), ('sftp_base_path', '/fria')]:
+            for key, default in [('sftp_host', ''), ('sftp_port', '22'), ('sftp_user', ''), ('sftp_password', ''), ('sftp_base_path', '/aih')]:
                 val = data.get(key.replace('sftp_', ''), default)
                 if val == '' and key == 'sftp_password':
                     continue  # ne pas écraser le mot de passe si vide
@@ -324,6 +324,51 @@ def admin_db_clear():
     conn = get_db()
     conn.execute('DELETE FROM keyword_embeddings')
     conn.execute('DELETE FROM keywords')
+    conn.commit()
+    conn.close()
+    return jsonify({'status': 'ok'})
+
+
+# ── Whitelist Discord ────────────────────────────────────────────────
+
+@app.route('/api/admin/whitelist', methods=['GET'])
+def admin_whitelist_list():
+    """Liste tous les UIDs whitelistés (admin seulement)."""
+    guard = _admin_required()
+    if guard:
+        return guard
+    conn = get_db()
+    rows = conn.execute('SELECT discord_uid, added_by, added_at FROM discord_whitelist ORDER BY added_at DESC').fetchall()
+    result = [dict(r) for r in rows]
+    conn.close()
+    return jsonify(result)
+
+
+@app.route('/api/admin/whitelist', methods=['POST'])
+def admin_whitelist_add():
+    """Ajoute un UID Discord à la whitelist (admin seulement)."""
+    guard = _admin_required()
+    if guard:
+        return guard
+    data = request.get_json()
+    uid = data.get('discord_uid', '').strip()
+    if not uid:
+        return jsonify({'error': 'UID Discord requis'}), 400
+    conn = get_db()
+    conn.execute('INSERT OR IGNORE INTO discord_whitelist (discord_uid, added_by) VALUES (?, ?)', (uid, _get_current_user_id()))
+    conn.commit()
+    conn.close()
+    return jsonify({'status': 'ok'})
+
+
+@app.route('/api/admin/whitelist/<discord_uid>', methods=['DELETE'])
+def admin_whitelist_remove(discord_uid):
+    """Retire un UID Discord de la whitelist (admin seulement)."""
+    guard = _admin_required()
+    if guard:
+        return guard
+    conn = get_db()
+    conn.execute('DELETE FROM discord_whitelist WHERE discord_uid = ?', (discord_uid,))
     conn.commit()
     conn.close()
     return jsonify({'status': 'ok'})

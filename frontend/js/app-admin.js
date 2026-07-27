@@ -534,7 +534,7 @@
         document.getElementById('admin-sftp-port').value = data.port || 22;
         document.getElementById('admin-sftp-user').value = data.user || '';
         document.getElementById('admin-sftp-password').value = '';  // jamais afficher le mot de passe
-        document.getElementById('admin-sftp-basepath').value = data.base_path || '/fria';
+        document.getElementById('admin-sftp-basepath').value = data.base_path || '/aih';
         var st = document.getElementById('admin-sftp-status');
         if (data.host) {
           st.textContent = 'Configuré';
@@ -553,7 +553,7 @@
       var port = parseInt(document.getElementById('admin-sftp-port').value) || 22;
       var user = document.getElementById('admin-sftp-user').value.trim();
       var password = document.getElementById('admin-sftp-password').value;  // pas de trim (peut avoir des espaces)
-      var base_path = document.getElementById('admin-sftp-basepath').value.trim() || '/fria';
+      var base_path = document.getElementById('admin-sftp-basepath').value.trim() || '/aih';
 
       var body = { host: host, port: port, user: user, base_path: base_path };
       // Ne pas envoyer le mot de passe s'il est vide (garder l'ancien)

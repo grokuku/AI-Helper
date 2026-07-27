@@ -1,4 +1,4 @@
-"""Routes enhance for FR.IA backend."""
+"""Routes enhance for AI-Helper backend."""
 
 import logging
 from context import *
@@ -79,7 +79,7 @@ def convert_bboxes_to_normalized(json_text, width, height):
 def _build_debug_markdown(sections, conversion_debug, width, height):
     """Assemble un markdown de debug a partir des sections collectees."""
     lines = []
-    lines.append("# FR.IA Ideogram 4 — Debug")
+    lines.append("# AI-Helper Ideogram 4 — Debug")
     lines.append("")
     lines.append(f"**Image** : {width}x{height}")
     lines.append("")
@@ -289,7 +289,7 @@ def enhance_prepare():
 def enhance_prompts():
     """
     Variante legerement decouplee de /api/enhance/prepare pour le node ComfyUI
-    FR.IA Prompt Prep.
+    AI-Helper Prompt Prep.
 
     Fait le meme travail de preparation (merge texte, fetch preset, build system
     prompt depuis template) mais NE FAIT PAS d'appel LLM et NE CREE PAS de

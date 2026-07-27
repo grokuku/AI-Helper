@@ -1,5 +1,5 @@
 """
-Routes Workflows partagés pour FR.IA backend.
+Routes Workflows partagés pour AI-Helper backend.
 Partage de workflows ComfyUI entre utilisateurs avec compression gzip.
 
 Endpoints :

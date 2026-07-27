@@ -1,5 +1,5 @@
 """
-Storage abstraction layer for FR.IA backend.
+Storage abstraction layer for AI-Helper backend.
 
 Provides a unified interface for file storage that can be backed by:
   - LocalStorage : filesystem (default, no config needed)
@@ -15,7 +15,7 @@ Env vars:
   SFTP_USER       — username
   SFTP_PASSWORD   — password (or use SFTP_KEY_PATH)
   SFTP_KEY_PATH   — path to SSH private key
-  SFTP_BASE_PATH  — base directory on the SFTP server (default /fria)
+  SFTP_BASE_PATH  — base directory on the SFTP server (default /aih)
 """
 
 import os
@@ -183,7 +183,7 @@ class SFTPStorage(StorageBackend):
 
     def __init__(self, host: str, port: int = 22, user: str = "",
                  password: str = None, key_path: str = None,
-                 base_path: str = "/fria"):
+                 base_path: str = "/aih"):
         self.host = host
         self.port = port
         self.user = user
@@ -402,7 +402,7 @@ def get_storage() -> StorageBackend:
     sftp_port = 22
     sftp_user = ""
     sftp_password = None
-    sftp_base_path = "/fria"
+    sftp_base_path = "/aih"
 
     try:
         import sqlite3
@@ -431,7 +431,7 @@ def get_storage() -> StorageBackend:
             sftp_port = int(os.environ.get("SFTP_PORT", "22"))
             sftp_user = os.environ.get("SFTP_USER", "")
             sftp_password = os.environ.get("SFTP_PASSWORD")
-            sftp_base_path = os.environ.get("SFTP_BASE_PATH", "/fria")
+            sftp_base_path = os.environ.get("SFTP_BASE_PATH", "/aih")
 
     if sftp_host:
         _storage_instance = SFTPStorage(
@@ -533,6 +533,6 @@ def start_backup_scheduler(db_path: str, interval_hours: int = 24):
             except Exception:
                 logging.exception("[backup] scheduled backup failed")
 
-    t = threading.Thread(target=_run, daemon=True, name="fria-backup")
+    t = threading.Thread(target=_run, daemon=True, name="aih-backup")
     t.start()
     logging.info(f"[backup] Scheduler started (every {interval_hours}h)")

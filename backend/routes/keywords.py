@@ -1,4 +1,4 @@
-"""Routes keywords for FR.IA backend.
+"""Routes keywords for AI-Helper backend.
 CRUD complet pour les mots-clés avec système de modération :
 
 - privacy_status: 'public' | 'public_pending' | 'private'
