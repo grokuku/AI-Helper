@@ -177,12 +177,24 @@
                     }
                 });
             }
-            if (_allItems.length === 0) {
-                initItems().then(_openWithItems);
-                return;
-            }
-            _openWithItems();
+            // Toujours re-fetch pour avoir les données fraîches
+            initItems().then(_openWithItems);
         };
+
+        // ── Refresh au mousedown sur le select (cache TTL 15s) ──
+        select.addEventListener("mousedown", function() {
+            // Re-fetch si plus de 15 secondes depuis le dernier fetch
+            if (!select._aihLastFetch || Date.now() - select._aihLastFetch > 15000) {
+                select._aihLastFetch = Date.now();
+                initItems().then(function() {
+                    // Re-populate le dropdown avec les nouvelles données
+                    // sans perdre la valeur actuellement sélectionnée
+                    var shortlist = getShortlist();
+                    populateDropdown(_allItems, shortlist);
+                    if (onSelect) onSelect(select.value, shortlist);
+                });
+            }
+        });
 
         // ── "🎲 Random" reste sélectionné visuellement (valeur sentinelle -1) ──
         // Le widget natif style_id est mis à -1 par syncNativeWidgets() du widget hôte.
