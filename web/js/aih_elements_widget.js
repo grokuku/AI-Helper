@@ -1077,7 +1077,7 @@ AIH.waitForApp(function(app) {
                 if (!detail?.node || !detail?.output) return;
                 
                 // Trouver le nœud dans le graph
-                const node = window.app.graph.getNodeById(detail.node);
+                const node = window.app?.graph?.getNodeById(detail.node);
                 if (!node || node.type !== "AIHElementsNode" || !node._resultArea) return;
 
                 const output = detail.output;
