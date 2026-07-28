@@ -51,8 +51,9 @@ class AIHIdeogramPrepNode:
                 "element_3": ("STRING", {"default": ""}),
                 "element_4": ("STRING", {"default": ""}),
                 "special_instructions": ("STRING", {"default": ""}),
-                "style_id": ("INT", {"default": 0, "min": 0}),
+                "style_id": ("INT", {"default": 0, "min": -1}),
                 "template_id": ("INT", {"default": 0, "min": 0}),
+                "style_shortlist": ("STRING", {"default": "[]"}),  # frontend-only (filtre dropdown), pas envoyé à l'API
             },
         }
 
@@ -61,7 +62,8 @@ class AIHIdeogramPrepNode:
 
     def prepare(self, seed=0, width=1024, height=1024, description="",
                 element_1="", element_2="", element_3="", element_4="",
-                special_instructions="", style_id=0, template_id=0):
+                special_instructions="", style_id=0, template_id=0,
+                style_shortlist="[]"):
         import logging as _log
         # Defensive : ComfyUI peut envoyer une string vide pour un INT
         try:
@@ -72,8 +74,31 @@ class AIHIdeogramPrepNode:
             style_id = int(style_id) if style_id != "" else 0
         except (ValueError, TypeError):
             style_id = 0
-        _log.warning(f"[AIH Ideogram Prep PYTHON] template_id={template_id} style_id={style_id}")
+
         # api_key et api_url lus depuis le fichier de credentials
+        api_url = _credentials.get_api_url()
+        api_key = _credentials.get_api_key()
+
+        # Si style_id == -1 (mode random), piocher un style au hasard
+        if style_id == -1:
+            try:
+                import requests as _req
+                resp = _req.get(
+                    f"{api_url}/styles",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    timeout=10
+                )
+                if resp.ok:
+                    styles = resp.json()
+                    if styles:
+                        import random as _rand
+                        chosen = _rand.choice(styles)
+                        style_id = chosen.get("id", 0) if isinstance(chosen, dict) else 0
+            except Exception as e:
+                logging.warning(f"[AIH Ideogram Prep] Random style fetch failed: {e}")
+                style_id = 0
+
+        _log.warning(f"[AIH Ideogram Prep PYTHON] template_id={template_id} style_id={style_id}")
         api_url = _credentials.get_api_url()
         api_key = _credentials.get_api_key()
 

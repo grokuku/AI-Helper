@@ -27,17 +27,16 @@
 
                 const styleWidget = node.widgets?.find(x => x.name === "style_id");
                 const templateIdWidget = node.widgets?.find(x => x.name === "template_id");
-                if (styleWidget) {
-                    styleWidget.hidden = true;
-                    if (styleWidget.inputEl) styleWidget.inputEl.style.display = "none";
-                    if (styleWidget.parentEl) styleWidget.parentEl.style.display = "none";
-                }
-                if (templateIdWidget) {
-                    templateIdWidget.hidden = true;
-                    if (templateIdWidget.inputEl) templateIdWidget.inputEl.style.display = "none";
-                    if (templateIdWidget.parentEl) templateIdWidget.parentEl.style.display = "none";
-                }
-                for (const inputName of ["style_id", "template_id"]) {
+                const hideWidget = (n, name) => {
+                    const w = n.widgets?.find(x => x.name === name);
+                    if (w) {
+                        w.hidden = true;
+                        if (w.inputEl) w.inputEl.style.display = "none";
+                        if (w.parentEl) w.parentEl.style.display = "none";
+                    }
+                };
+                ["style_id", "template_id", "style_shortlist"].forEach(n => hideWidget(node, n));
+                for (const inputName of ["style_id", "template_id", "style_shortlist"]) {
                     const slot = node.findInputSlot?.(inputName);
                     if (slot !== undefined && slot !== -1) {
                         node.removeInput(slot);
@@ -69,10 +68,15 @@
                     return resp.json().catch(() => []);
                 };
 
-                function syncStyleWidget() {
-                    if (!_aihRestored) return;
+                function syncStyleWidget(force) {
+                    if (!_aihRestored && !force) return;
                     if (styleWidget) {
-                        const val = parseInt(styleSelect.value) || 0;
+                        var val;
+                        if (styleSelect.value === '_random') {
+                            val = -1;  // sentinelle : random persistant
+                        } else {
+                            val = parseInt(styleSelect.value) || 0;
+                        }
                         styleWidget.value = val;
                         if (styleWidget.callback) styleWidget.callback(val);
                     }
@@ -83,14 +87,29 @@
                     }
                 }
 
+                // Helper : résoudre la sentinelle -1 en un ID de style aléatoire
+                function resolveRandomStyle() {
+                    if (styleSelect.value !== '_random') return parseInt(styleSelect.value) || 0;
+                    var realOptions = Array.from(styleSelect.options)
+                        .filter(o => o.value !== '0' && o.value !== '_random' && o.value !== '')
+                        .map(o => parseInt(o.value));
+                    if (realOptions.length > 0) {
+                        return realOptions[Math.floor(Math.random() * realOptions.length)];
+                    }
+                    return 0;
+                }
+
                 function restoreFromNativeWidget() {
                     let restored = false;
                     if (styleWidget) {
-                        const sid = parseInt(styleWidget.value) || 0;
-                        if (sid > 0 && [...styleSelect.options].some(o => o.value === String(sid))) {
+                        const sid = parseInt(styleWidget.value);
+                        if (sid === -1 && [...styleSelect.options].some(o => o.value === '_random')) {
+                            styleSelect.value = '_random';
+                            restored = true;
+                        } else if (sid > 0 && [...styleSelect.options].some(o => o.value === String(sid))) {
                             styleSelect.value = String(sid);
                             restored = true;
-                        } else if (sid === 0) {
+                        } else if (sid === 0 || isNaN(sid)) {
                             styleSelect.value = "0";
                         }
                     }
@@ -107,30 +126,7 @@
                     return restored;
                 }
 
-                async function populateStyleSelect() {
-                    styleSelect.innerHTML = `<option value="0">-- Style --</option>`;
-                    try {
-                        const items = await apiGet("styles");
-                        if (!Array.isArray(items)) return;
-                        items.forEach(item => {
-                            const o = document.createElement("option");
-                            o.value = item.id;
-                            o.textContent = item.name;
-                            styleSelect.appendChild(o);
-                        });
-                    } catch {}
-                }
-
-                async function refreshStylesIfStale() {
-                    const now = Date.now();
-                    if (now - (_cache.styles || 0) < CACHE_TTL) return;
-                    _cache.styles = now;
-                    const oldVal = styleSelect.value;
-                    await populateStyleSelect();
-                    if ([...styleSelect.options].some(o => o.value === oldVal)) {
-                        styleSelect.value = oldVal;
-                    }
-                }
+                // populateStyleSelect et refreshStylesIfStale remplacés par AIH.PickerConfig ci-dessous
 
                 const container = document.createElement("div");
                 Object.assign(container.style, {
@@ -193,29 +189,33 @@
                 }
                 typeSelect.addEventListener("mousedown", refreshTemplatesIfStale);
 
+                typeSelect.onchange = syncStyleWidget;
+
                 const styleDiv = document.createElement("div");
                 const styleRow = document.createElement("div");
-                Object.assign(styleRow.style, { display: "flex", gap: "4px", alignItems: "center" });
+                Object.assign(styleRow.style, { display: "flex", gap: "4px", alignItems: "center", width: "100%" });
                 const styleSelect = document.createElement("select");
                 Object.assign(styleSelect.style, selectStyle);
-                styleSelect.style.flex = "1";
-                typeSelect.onchange = syncStyleWidget;
                 styleSelect.onchange = syncStyleWidget;
-                styleSelect.addEventListener("mousedown", refreshStylesIfStale);
-                const styleRefreshBtn = document.createElement("button");
-                styleRefreshBtn.textContent = "↻";
-                Object.assign(styleRefreshBtn.style, {
-                    padding: "2px 5px", fontSize: "10px", cursor: "pointer",
-                    border: "1px solid #555", borderRadius: "3px",
-                    background: "#3a3a3e", color: "#aaa", flex: "0 0 auto",
-                });
-                styleRefreshBtn.title = "Rafraîchir la liste des styles";
-                styleRefreshBtn.onclick = () => { _cache.styles = 0; refreshStylesIfStale(); };
                 styleDiv.appendChild(mkLabel("Style"));
                 styleRow.appendChild(styleSelect);
-                styleRow.appendChild(styleRefreshBtn);
                 styleDiv.appendChild(styleRow);
                 grid.appendChild(styleDiv);
+                // Style picker avec config modal (remplace le bouton ↻ par ⚙️)
+                var stylePicker = AIH.PickerConfig.setup({
+                    select: styleSelect,
+                    node: node,
+                    widgetName: 'style_id',
+                    listWidgetName: 'style_shortlist',
+                    apiPath: 'styles',
+                    label: 'Style',
+                    placeholder: '-- Style --',
+                    idField: 'id',
+                    nameField: 'name',
+                    authorField: 'owner_name',
+                    descField: 'style_text',
+                    fetchItems: apiGet,
+                });
 
                 container.appendChild(grid);
 
@@ -230,18 +230,24 @@
                 });
                 widget.computeSize = () => [node.size[0] - 20, 105];
 
-                Promise.all([populateTemplateSelect(), populateStyleSelect()]).then(() => {
+                Promise.all([populateTemplateSelect(), stylePicker.init()]).then(() => {
                     const restored = restoreFromNativeWidget();
-                    if (restored) syncStyleWidget();
+                    if (restored) syncStyleWidget(true);
                     else {
                         typeSelect.value = String(parseInt(templateIdWidget?.value) || 0);
-                        styleSelect.value = String(parseInt(styleWidget?.value) || 0);
-                        syncStyleWidget();
+                        // Gérer la sentinelle -1 (random persistant)
+                        var sval = parseInt(styleWidget?.value);
+                        if (sval === -1 && [...styleSelect.options].some(o => o.value === '_random')) {
+                            styleSelect.value = '_random';
+                        } else {
+                            styleSelect.value = String(sval || 0);
+                        }
+                        syncStyleWidget(true);
                     }
                     let ra = 0;
                     function delayedRestore() {
                         const r = restoreFromNativeWidget();
-                        if (r) syncStyleWidget();
+                        if (r) syncStyleWidget(true);
                         if (++ra < 20) setTimeout(delayedRestore, 300);
                     }
                     setTimeout(delayedRestore, 100);
@@ -262,7 +268,7 @@
                     let ra = 0;
                     const retry = () => {
                         const restored = restoreFromNativeWidget();
-                        if (restored) syncStyleWidget();
+                        if (restored) syncStyleWidget(true);
                         if (!restored && ++ra < 20) setTimeout(retry, 300);
                     };
                     retry();

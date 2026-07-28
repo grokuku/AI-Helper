@@ -209,7 +209,13 @@
                     };
                     set("template_id", parseInt(templateSelect.value) || 0);
                     set("preset_id", parseInt(presetSelect.value) || 0);
-                    set("style_id", parseInt(styleSelect.value) || 0);
+                    var sval;
+                    if (styleSelect.value === '_random') {
+                        sval = -1;  // sentinelle : random persistant
+                    } else {
+                        sval = parseInt(styleSelect.value) || 0;
+                    }
+                    set("style_id", sval);
                 }
 
                 templateSelect.onchange = syncNativeWidgets;
@@ -238,11 +244,14 @@
                         }
                     }
                     if (styleIdWidget) {
-                        const sid = parseInt(styleIdWidget.value) || 0;
-                        if (sid > 0 && [...styleSelect.options].some(o => o.value === String(sid))) {
+                        const sid = parseInt(styleIdWidget.value);
+                        if (sid === -1 && [...styleSelect.options].some(o => o.value === '_random')) {
+                            styleSelect.value = '_random';
+                            restored = true;
+                        } else if (sid > 0 && [...styleSelect.options].some(o => o.value === String(sid))) {
                             styleSelect.value = String(sid);
                             restored = true;
-                        } else if (sid === 0) {
+                        } else if (sid === 0 || isNaN(sid)) {
                             styleSelect.value = "0";
                         }
                     }
@@ -271,7 +280,13 @@
                     else {
                         templateSelect.value = String(parseInt(templateIdWidget?.value) || 0);
                         presetSelect.value = String(parseInt(presetIdWidget?.value) || 0);
-                        styleSelect.value = String(parseInt(styleIdWidget?.value) || 0);
+                        // Gérer la sentinelle -1 (random persistant)
+                        var sval = parseInt(styleIdWidget?.value);
+                        if (sval === -1 && [...styleSelect.options].some(o => o.value === '_random')) {
+                            styleSelect.value = '_random';
+                        } else {
+                            styleSelect.value = String(sval || 0);
+                        }
                         syncNativeWidgets();
                     }
                     let ra = 0;
@@ -315,12 +330,23 @@
                         // Texte brut
                     }
 
+                    // Résoudre le style aléatoire si la sentinelle -1 est active
+                    let styleId = parseInt(styleSelect.value) || null;
+                    if (styleSelect.value === '_random' || styleId === -1) {
+                        var realOptions = Array.from(styleSelect.options)
+                            .filter(o => o.value !== '0' && o.value !== '_random' && o.value !== '')
+                            .map(o => parseInt(o.value));
+                        if (realOptions.length > 0) {
+                            styleId = realOptions[Math.floor(Math.random() * realOptions.length)];
+                        }
+                    }
+
                     const payload = {
                         text: basePrompt,
                         seed: seedW > 0 ? seedW : null,
                         template_id: parseInt(templateSelect.value) || 0,
                         preset_id: parseInt(presetSelect.value) || null,
-                        style_id: parseInt(styleSelect.value) || null,
+                        style_id: styleId,
                         special_instructions: specialInstructions,
                     };
                     if (elements.length > 0) {

@@ -267,7 +267,13 @@
                         if (w.callback) w.callback(val);
                     };
                     set("preset_id", parseInt(presetSelect.value) || 0);
-                    set("style_id", parseInt(styleSelect.value) || 0);
+                    var sval;
+                    if (styleSelect.value === '_random') {
+                        sval = -1;  // sentinelle : random persistant
+                    } else {
+                        sval = parseInt(styleSelect.value) || 0;
+                    }
+                    set("style_id", sval);
                     set("template_id", parseInt(templateSelect.value) || 0);
                     set("validation_template_id", parseInt(valTmplSelect.value) || 0);
                 }
@@ -288,9 +294,15 @@
                             presetSelect.value = String(pw.value);
                             restored = true;
                         }
-                        if (sw && sw.value > 0 && [...styleSelect.options].some(o => o.value === String(sw.value))) {
-                            styleSelect.value = String(sw.value);
-                            restored = true;
+                        if (sw) {
+                            const sid = parseInt(sw.value);
+                            if (sid === -1 && [...styleSelect.options].some(o => o.value === '_random')) {
+                                styleSelect.value = '_random';
+                                restored = true;
+                            } else if (sid > 0 && [...styleSelect.options].some(o => o.value === String(sid))) {
+                                styleSelect.value = String(sid);
+                                restored = true;
+                            }
                         }
                         if (tw) {
                             const tid = parseInt(tw.value) || 0;
@@ -357,6 +369,17 @@
                     const widthW = get("width")?.value;
                     const heightW = get("height")?.value;
 
+                    // Résoudre le style aléatoire si la sentinelle -1 est active
+                    let styleId = parseInt(styleSelect.value) || null;
+                    if (styleSelect.value === '_random' || styleId === -1) {
+                        var realOptions = Array.from(styleSelect.options)
+                            .filter(o => o.value !== '0' && o.value !== '_random' && o.value !== '')
+                            .map(o => parseInt(o.value));
+                        if (realOptions.length > 0) {
+                            styleId = realOptions[Math.floor(Math.random() * realOptions.length)];
+                        }
+                    }
+
                     const payload = {
                         text: description,
                         seed: seedW > 0 ? seedW : null,
@@ -366,7 +389,7 @@
                         height: heightW || 1024,
                         ep_elements: elTexts.map(t => ({ type: "text", text: t })),
                         preset_id: parseInt(presetSelect.value) || null,
-                        style_id: parseInt(styleSelect.value) || null,
+                        style_id: styleId,
                     };
 
                     if (!description && elTexts.length === 0) {

@@ -48,7 +48,7 @@ class AIHPromptPrepNode:
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
                 "base_prompt": ("STRING", {"multiline": True, "default": ""}),
                 "template_id": ("INT", {"default": 0, "min": 0}),
-                "style_id": ("INT", {"default": 0, "min": 0}),
+                "style_id": ("INT", {"default": 0, "min": -1}),
                 "style_shortlist": ("STRING", {"default": "[]"}),  # frontend-only (filtre dropdown), pas envoyé à l'API
                 "special_instructions": ("STRING", {"default": ""}),
             },
@@ -77,6 +77,25 @@ class AIHPromptPrepNode:
             style_id = int(style_id) if style_id != "" else 0
         except (ValueError, TypeError):
             style_id = 0
+
+        # Si style_id == -1 (mode random), piocher un style au hasard
+        if style_id == -1:
+            try:
+                import requests as _req
+                resp = _req.get(
+                    f"{api_url}/styles",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    timeout=10
+                )
+                if resp.ok:
+                    styles = resp.json()
+                    if styles:
+                        import random as _rand
+                        chosen = _rand.choice(styles)
+                        style_id = chosen.get("id", 0) if isinstance(chosen, dict) else 0
+            except Exception as e:
+                logging.warning(f"[AIH Prep] Random style fetch failed: {e}")
+                style_id = 0
 
         # Parser elements : soit un tableau direct, soit l'objet _elements_json complet
         elems = []

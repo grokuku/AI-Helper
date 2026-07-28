@@ -91,7 +91,12 @@
                         if (templateIdWidget.callback) templateIdWidget.callback(val);
                     }
                     if (styleWidget) {
-                        const val = parseInt(styleSelect.value) || 0;
+                        var val;
+                        if (styleSelect.value === '_random') {
+                            val = -1;  // sentinelle : random persistant
+                        } else {
+                            val = parseInt(styleSelect.value) || 0;
+                        }
                         styleWidget.value = val;
                         if (styleWidget.callback) styleWidget.callback(val);
                     }
@@ -111,11 +116,14 @@
                         }
                     }
                     if (styleWidget) {
-                        const sid = parseInt(styleWidget.value) || 0;
-                        if (sid > 0 && [...styleSelect.options].some(o => o.value === String(sid))) {
+                        const sid = parseInt(styleWidget.value);
+                        if (sid === -1 && [...styleSelect.options].some(o => o.value === '_random')) {
+                            styleSelect.value = '_random';
+                            restored = true;
+                        } else if (sid > 0 && [...styleSelect.options].some(o => o.value === String(sid))) {
                             styleSelect.value = String(sid);
                             restored = true;
-                        } else if (sid === 0) {
+                        } else if (sid === 0 || isNaN(sid)) {
                             styleSelect.value = "0";
                         }
                     }
@@ -237,7 +245,13 @@
                     else {
                         // Premier chargement : forcer les selects sur les widgets natifs
                         typeSelect.value = String(parseInt(templateIdWidget?.value) || 0);
-                        styleSelect.value = String(parseInt(styleWidget?.value) || 0);
+                        // Gérer la sentinelle -1 (random persistant)
+                        var sval = parseInt(styleWidget?.value);
+                        if (sval === -1 && [...styleSelect.options].some(o => o.value === '_random')) {
+                            styleSelect.value = '_random';
+                        } else {
+                            styleSelect.value = String(sval || 0);
+                        }
                         syncNativeWidgets(true);
                     }
                     let ra = 0;

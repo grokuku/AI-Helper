@@ -184,19 +184,13 @@
             _openWithItems();
         };
 
-        // ── Résoudre "🎲 Random" en un ID réel ──
+        // ── "🎲 Random" reste sélectionné visuellement (valeur sentinelle -1) ──
+        // Le widget natif style_id est mis à -1 par syncNativeWidgets() du widget hôte.
+        // La résolution en ID réel se fait au moment du preview/exécution (dans chaque widget).
         select.addEventListener('change', function() {
             if (select.value === '_random') {
-                // Choisir un ID aléatoire parmi les options réelles (pas placebo, pas random)
-                var realOptions = [];
-                for (var i = 0; i < select.options.length; i++) {
-                    var opt = select.options[i];
-                    if (opt.value !== '0' && opt.value !== '_random') realOptions.push(opt.value);
-                }
-                if (realOptions.length > 0) {
-                    var pick = realOptions[Math.floor(Math.random() * realOptions.length)];
-                    select.value = pick;
-                }
+                // Ne PAS résoudre en un ID fixe : garder _random sélectionné visuellement.
+                // Le widget caché sera mis à -1 par le handler onchange du widget hôte.
             }
         });
 

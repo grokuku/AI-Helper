@@ -6,6 +6,133 @@
 
 ---
 
+## 🚀 Session (29/06/2026) — Renommage FRIA→AIH, Node Keywords & Elements Picker LLM
+
+### ✅ Refactor global : FRIA → AIH
+
+Renommage complet et systématique du prefix `FRIA` → `AIH` dans toute la codebase :
+
+| Élément | Avant | Après |
+|---------|-------|------|
+| Dossier ComfyUI | `FRIA_ComfyUI/` | `AIH_ComfyUI/` |
+| Fichiers JS | `fria_*.js` | `aih_*.js` |
+| Routes HTTP | `/fria/*` | `/aih/*` |
+| localStorage | `FRIA_config` | `AIH_config` |
+| Classes Python | `FRIA*` prefixes | `AIH*` prefixes |
+| Fonctions JS | `_fetchFriaApi` | `_fetchAihApi` |
+| Placeholders SFTP | `fria` | `aih` (frontend/index.html) |
+
+- **Nettoyage** : suppression des fichiers morts (`FRIA_ComfyUI/`, `fria_shared.js`)
+- **Ajout** : `AIH.getServerUrl()` dans `aih_shared.js`
+
+### ✅ Menu ComfyUI — changement de titre
+
+- Titre du menu : `"AIH ▾"` → `"AI Helper ▾"`
+
+### ✅ Nouvelle node : AIH Keywords
+
+Node ComfyUI complète pour la génération et le filtrage de keywords, avec widget JS riche.
+
+| Composant | Détail |
+|-----------|--------|
+| **Node Python** | `AIHKeywordsNode` — `AIH_ComfyUI/nodes/keywords_node.py` |
+| **Widget JS** | `web/js/aih_keywords_widget.js` |
+
+**Inputs :**
+- Section dropdown (liste des sections de la BDD)
+- Subsection dropdown (filtrée par section)
+- NSFW dropdown : Tout / SFW / NSFW
+- Confidence slider (défaut 50%)
+- Include / Exclude / Semantic text fields
+
+**Boutons :**
+- Load (dropdown des filtres sauvegardés depuis l'API)
+- Save (POST `/api/filters`)
+- Reset
+
+**Sorties :**
+- `random_keyword` (STRING, déterministe par seed)
+- `keywords_list` (STRING)
+- Format de sortie : dropdown Text / JSON / Markdown
+
+**Fonctionnalités :**
+- Auto-update : debounce 500ms sur tous les changements → GET `/api/keywords`
+- Persistance workflow : widget caché `_keywords_config` (serializable), restauration complète au chargement
+- Seed caché : `control_after_generate` masqué pour forcer la réexécution à chaque run
+- Recherche sémantique : implémentée côté backend (GET `/api/keywords` avec paramètre `semantic` + `min_confidence`, embedding cosine similarity)
+- Layout : NSFW à gauche, slider au milieu (flex:1), format à droite
+
+**Fix backend :** mismatch de clé `semantic` vs `semantic_text` dans `filters.py` (rétro-compatible)
+
+### ✅ Elements Picker — Mode LLM Intelligent
+
+Ajout d'un mode LLM contextuel dans l'Elements Picker :
+
+| Fonctionnalité | Détail |
+|---------------|--------|
+| Toggle 🧠 par liste | Activation du filtrage LLM contextuel (OFF par défaut) |
+| Dropdown Preset IA | Sélection du modèle LLM (GET `/api/presets`) |
+| Champ nombre par défaut | Pour la syntaxe `||concept` (défaut 10) |
+| Syntaxe `||concept:N` | Génération de listes par LLM (ex: `||couleur:10` → 10 couleurs) |
+| Mode filtrage (🧠 ON, liste manuelle) | LLM filtre la liste selon le contexte accumulé → random dans la sous-liste |
+| Mode génération (||concept, 🧠 ON) | LLM génère une liste contextuelle → random dedans |
+| Mode génération (||concept, 🧠 OFF) | LLM génère une liste simple → random dedans |
+| Contexte séquentiel | Traitement haut→bas, accumulation des choix précédents |
+| Fallback erreur LLM | Random sur liste d'origine (manuel) ou skip (||) |
+| Appel backend | POST `/api/keywords/llm-process` avec `{preset_id, instruction, input_text}` |
+| Sérialisation | `preset_id`, `llm_default_count`, `brain_toggles[]` dans `_elements_json` |
+
+### ✅ Elements Picker — Nouveau format de listes
+
+Migration du format de parsing des listes dans l'Elements Picker :
+
+| Aspect | Ancien format | Nouveau format |
+|-------|--------------|---------------|
+| Syntaxe | `bleu::rouge::vert` | `{bleu::rouge::vert}` |
+| Split | par `::` | blocs entre accolades `{}` |
+| Templates | N/A | `femme de {25::30::35::40} ans` → "femme de 30 ans" |
+| Blocs multiples | N/A | `{blond::brun} cheveux {long::court}` → "brun cheveux court" |
+| Texte littéral | N/A | Sans `{}` = texte brut retourné tel quel |
+| Badge visuel | N/A | 🔀N affiche le nombre de choix par bloc en temps réel |
+| Compatibilité LLM | `||concept:N` inchangé | `||` et `{}` ne se mélangent pas |
+
+### ✅ Fix ordre de chargement JS
+
+- Renommage `aih_shared.js` → `03_aih_shared.js` et `aih_widget_base.js` → `04_aih_widget_base.js`
+- Correction du crash `AIH.waitForApp is not a function` (ordre alphabétique ComfyUI)
+- Fix global pour tous les widgets (elements, enhance, ideogram, prep, terminal)
+
+### 📋 Analyse des icônes
+
+Inventaire complet des icônes utilisées dans la codebase :
+
+- **78 emojis/icônes uniques** sur 20+ fichiers
+- **12 incohérences identifiées** (✓/✗ vs ✅/❌, 🔄 surutilisé, 📦 pour 3 concepts, etc.)
+- Remplacement par SVG icons0.dev prévu pour plus tard (non fait cette session)
+
+### 📝 Fichiers créés
+
+| Fichier | Description |
+|---------|-------------|
+| `AIH_ComfyUI/nodes/keywords_node.py` | Node Python AIH Keywords |
+| `web/js/aih_keywords_widget.js` | Widget JS AIH Keywords |
+
+### 📝 Fichiers modifiés
+
+| Fichier | Changement |
+|---------|-----------|
+| `__init__.py` (root) | Enregistrement `AIHKeywordsNode` |
+| `web/js/aih_shared.js` (→ `03_aih_shared.js`) | Ajout `getServerUrl()`, renommage |
+| `web/js/aih_elements_widget.js` | Mode LLM, format `{}`, badge choix |
+| `AIH_ComfyUI/nodes/elements_node.py` | Parsing `{}`, LLM, `||concept` |
+| `frontend/index.html` | Placeholders SFTP `fria`→`aih` |
+| `web/js/02_aih_model_browser.js` | `_fetchFriaApi` → `_fetchAihApi` |
+| `web/js/aih_menu.js` | Titre menu "AI Helper ▾" |
+| `backend/routes/keywords.py` | Recherche sémantique |
+| `backend/routes/filters.py` | Fix clé `semantic`/`semantic_text` (rétro-compatible) |
+
+---
+
 ## 🚀 Session (28/06/2026) — Code Review Blobby Companion
 
 ### ⬜ Code review Blobby Companion — 4/4 findings
