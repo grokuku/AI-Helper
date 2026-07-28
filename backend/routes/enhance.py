@@ -841,9 +841,12 @@ def _resolve_ep_semantic_keyword(cur, user_id, elem):
 def _resolve_ep_keywords(conn, user_id, ep_elements):
     """Resout les mots-cles EP depuis les filtres ou la recherche semantique.
 
-    Pour chaque element EP :
+    Pour chaque element EP, dans l'ordre original :
     - type 'filter' : pioche un mot-cle parmi ceux du filtre (filter_cache).
-    - type 'text'  : recherche semantique par embedding (top 5, seuil 0.45).
+    - type 'text'  : utilise le texte original (recherche semantique en fallback).
+
+    Retourne une liste ordonnee de tous les resultats, dans le meme ordre
+    que les ep_elements d'origine.
 
     Args:
         conn: connexion sqlite3 active.
@@ -851,24 +854,24 @@ def _resolve_ep_keywords(conn, user_id, ep_elements):
         ep_elements (list): elements EP [{type, id?, text?}, ...].
 
     Returns:
-        str: ep_text (mots-cles separes par ', '), ou '' si aucun.
+        list[str]: ordered_ep_results (liste ordonnee des resultats),
+                   ou [] si aucun.
     """
-    ep_keywords = []
+    ordered_ep_results = []
     if ep_elements:
         cur = conn.cursor()
         for elem in ep_elements:
             if elem.get('type') == 'filter' and elem.get('id'):
                 kw = _resolve_ep_filter_keyword(cur, elem)
                 if kw:
-                    ep_keywords.append(kw)
+                    ordered_ep_results.append(kw)
             elif elem.get('type') == 'text' and elem.get('text'):
-                kw = _resolve_ep_semantic_keyword(cur, user_id, elem)
-                if kw:
-                    ep_keywords.append(kw)
-    return ', '.join(ep_keywords) if ep_keywords else ''
+                # Utiliser le texte original comme resolution
+                ordered_ep_results.append(elem['text'].strip())
+    return ordered_ep_results
 
 
-def _collect_used_sections(cur, text, ep_text):
+def _collect_used_sections(cur, text, ordered_ep_results):
     """Determine les sections de keywords deja utilisees dans le texte et l'EP.
 
     Tokenise le texte combine (split sur espaces/virgules), garde les tokens de
@@ -877,12 +880,13 @@ def _collect_used_sections(cur, text, ep_text):
     Args:
         cur: curseur sqlite3 reutilisable.
         text (str): texte saisi.
-        ep_text (str): mots-cles EP.
+        ordered_ep_results (list): liste ordonnee des resultats EP.
 
     Returns:
         set: ensemble des section_id deja utilises (vide si aucun token).
     """
-    all_kw_text = (text + ' ' + ep_text).lower()
+    ep_text_flat = ', '.join(ordered_ep_results) if ordered_ep_results else ''
+    all_kw_text = (text + ' ' + ep_text_flat).lower()
     existing = []
     for kw in all_kw_text.replace(',', ' ').split():
         kw = kw.strip()
@@ -896,16 +900,17 @@ def _collect_used_sections(cur, text, ep_text):
     return {r[0] for r in cur.fetchall() if r[0]}
 
 
-def _resolve_random_keywords(conn, text, ep_text, random_count):
+def _resolve_random_keywords(conn, text, ordered_ep_results, random_count):
     """Pioche des mots-cles aleatoires depuis des sections non encore utilisees.
 
-    Les sections deja presentes dans `text` + `ep_text` sont exclues pour eviter
-    les doublons. La requete SQL utilise des placeholders parametres (sure).
+    Les sections deja presentes dans `text` + `ordered_ep_results` sont exclues
+    pour eviter les doublons. La requete SQL utilise des placeholders parametres
+    (sure).
 
     Args:
         conn: connexion sqlite3 active.
         text (str): texte saisi.
-        ep_text (str): mots-cles EP deja resolus.
+        ordered_ep_results (list): liste ordonnee des resultats EP.
         random_count (int): nombre de mots-cles a piocher.
 
     Returns:
@@ -914,7 +919,7 @@ def _resolve_random_keywords(conn, text, ep_text, random_count):
     if random_count <= 0:
         return ''
     cur = conn.cursor()
-    used_sections = _collect_used_sections(cur, text, ep_text)
+    used_sections = _collect_used_sections(cur, text, ordered_ep_results)
     # Piocher des keywords depuis des sections inutilisees
     if used_sections:
         ph = ','.join('?' for _ in used_sections)
@@ -957,21 +962,20 @@ def _format_named_elements(ep_elements):
     return f"ELEMENTS TO PLACE IN THE SCENE:\n{elems_str}"
 
 
-def _build_merged_text(text, ep_text, rand_text, style_text, special_instructions, width, height, ep_elements):
+def _build_merged_text(text, ordered_ep_results, rand_text, style_text, special_instructions, width, height):
     """Construit le prompt utilisateur fusionne a partir de tous les contenus.
 
-    Concatene dans l'ordre : texte, EP, random, style, instructions speciales,
-    dimensions image, puis les elements nommes a placer dans la scene.
+    Concatene dans l'ordre : texte, EP (dans l'ordre original des elements),
+    random, style, instructions speciales, dimensions image.
 
     Args:
         text (str): texte saisi.
-        ep_text (str): mots-cles EP.
+        ordered_ep_results (list): liste ordonnee des resultats EP (filtres + textes).
         rand_text (str): mots-cles aleatoires.
         style_text (str): texte du style a preserver.
         special_instructions (str): instructions speciales.
         width (int): largeur de l'image (0 si inconnue).
         height (int): hauteur de l'image (0 si inconnue).
-        ep_elements (list): elements EP (pour extraire les sujets nommes).
 
     Returns:
         str: merged_text si non vide, sinon (jsonify, status) si aucun contenu.
@@ -979,8 +983,9 @@ def _build_merged_text(text, ep_text, rand_text, style_text, special_instruction
     merged_parts = []
     if text:
         merged_parts.append(text)
-    if ep_text:
-        merged_parts.append(ep_text)
+    ep_text_joined = ', '.join(ordered_ep_results) if ordered_ep_results else ''
+    if ep_text_joined:
+        merged_parts.append(ep_text_joined)
     if rand_text:
         merged_parts.append(rand_text)
     if style_text:
@@ -989,9 +994,6 @@ def _build_merged_text(text, ep_text, rand_text, style_text, special_instruction
         merged_parts.append("ADDITIONAL INSTRUCTIONS:\n" + special_instructions)
     if width and height:
         merged_parts.append(_format_image_dimensions(width, height))
-    named = _format_named_elements(ep_elements)
-    if named:
-        merged_parts.append(named)
     merged_text = '\n\n'.join(merged_parts)
     if not merged_text.strip():
         return jsonify({'error': 'Aucun contenu a generer'}), 400
@@ -1234,15 +1236,15 @@ def _prepare_enhance(user_id, data):
         # 3. Resoudre le style si style_id fourni
         style_text, negative_prompt = _resolve_style(conn, style_id, style_text)
 
-        # 4. Resoudre les elements EP
-        ep_text = _resolve_ep_keywords(conn, user_id, ep_elements)
+        # 4. Resoudre les elements EP (liste ordonnee)
+        ordered_ep_results = _resolve_ep_keywords(conn, user_id, ep_elements)
 
         # 5. Random elements : piocher depuis sections non encore utilisees
-        rand_text = _resolve_random_keywords(conn, text, ep_text, random_count)
+        rand_text = _resolve_random_keywords(conn, text, ordered_ep_results, random_count)
 
         # 6. Construction de l'entree utilisateur (genérique)
-        merged = _build_merged_text(text, ep_text, rand_text, style_text,
-                                    special_instructions, width, height, ep_elements)
+        merged = _build_merged_text(text, ordered_ep_results, rand_text, style_text,
+                                    special_instructions, width, height)
         if isinstance(merged, tuple):  # erreur (jsonify, status)
             return merged
         merged_text = merged
