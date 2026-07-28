@@ -348,6 +348,20 @@ class AIHElementsNode:
                 el for i, el in enumerate(elements) if i not in indices_to_skip
             ]
 
+        # --- Injecter elements_input comme élément réel dans la payload ---
+        # Bug #1 & #2 : elements_input était seulement dans le context LLM,
+        # jamais dans le payload final. Il faut l'ajouter comme un élément raw
+        # pour qu'il soit :
+        #   - inclus dans la sortie finale (Bug #2 : contenu pas utilisé)
+        #   - traité à une position fixe, sans décaler l'ordre des autres
+        #     éléments via le context LLM (Bug #1 : ordre qui change quand vide)
+        if elements_input and elements_input.strip():
+            elements.insert(0, {
+                "type": "raw",
+                "text": elements_input.strip(),
+                "visible": True,
+            })
+
         # Vérifier qu'il y a du contenu à générer
         if not elements and random_count <= 0:
             return {
