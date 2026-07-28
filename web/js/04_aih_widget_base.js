@@ -6,7 +6,7 @@
  * eventually be refactored to use these helpers instead of their own inline
  * copies of waitForApp() and beforeRegisterNodeDef() hooks.
  *
- * Depends on: aih_shared.js (for AIH namespace / getApiKey)
+ * Depends on: 03_aih_shared.js (for AIH namespace / getApiKey)
  */
 (function() {
     "use strict";
