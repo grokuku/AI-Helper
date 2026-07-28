@@ -57,7 +57,6 @@
                 // ---- Fixer la taille du textarea natif base_prompt ----
                 const FIXED_TA_HEIGHT = 90;
                 const basePromptWidget = node.widgets?.find(w => w.name === "base_prompt");
-                var _aihRealTAHeight = 150; // fallback conservateur (textarea + label wrapper)
                 if (basePromptWidget) {
                     const fixBasePrompt = () => {
                         if (basePromptWidget.inputEl) {
@@ -69,28 +68,11 @@
                         }
                     };
                     fixBasePrompt();
-                    // Mesurer le wrapper ComfyUI (parentEl) après rendu, pas juste le textarea.
-                    // Le textarea fait 120px mais ComfyUI ajoute un label + padding autour.
-                    const measureWrapper = () => {
-                        if (basePromptWidget.parentEl) {
-                            var rectH = basePromptWidget.parentEl.getBoundingClientRect().height;
-                            if (rectH && rectH > 0) { _aihRealTAHeight = rectH; return; }
-                            var pOh = basePromptWidget.parentEl.offsetHeight;
-                            if (pOh && pOh > 0) { _aihRealTAHeight = pOh; return; }
-                        }
-                        // fallback sur le textarea lui-même
-                        var taOh = basePromptWidget.inputEl && basePromptWidget.inputEl.offsetHeight;
-                        if (taOh && taOh > 0) _aihRealTAHeight = taOh;
-                    };
-                    // Première mesure immédiate (peut être 0 si pas encore rendu)
-                    measureWrapper();
-                    // Seconde mesure après la frame de rendu ComfyUI
-                    requestAnimationFrame(function() {
-                        fixBasePrompt();
-                        measureWrapper();
-                    });
+                    // Hauteur du wrapper = textarea (90px) + label (~20px) + padding (~8px) ≈ 118px
+                    // Calcul explicite pour eviter les problemes de mesure asynchrone.
+                    var textareaWrapperHeight = FIXED_TA_HEIGHT + 20 + 8;
                     basePromptWidget.computeSize = function() {
-                        return [0, _aihRealTAHeight];
+                        return [0, textareaWrapperHeight];
                     };
                 }
 
@@ -247,25 +229,25 @@
                 // Les widgets natifs (base_prompt, seed, etc.) ont une taille fixe,
                 // et le DOM widget s'agrandit quand on resize la node verticalement.
                 const DOM_WIDGET_HEIGHT = 240;
-                function computeDomHeight() {
-                    let otherHeight = 0;
-                    if (node.widgets) {
-                        for (const w of node.widgets) {
-                            if (w === widget) continue;
-                            if (w.hidden) continue;
-                            let h = 26;
-                            if (w.computeSize) {
-                                try {
-                                    const s = w.computeSize();
-                                    if (Array.isArray(s) && s[1]) h = s[1];
-                                } catch {}
-                            }
-                            otherHeight += h;
+                const CHROME = 70; // titre node + padding
+                // Somme des hauteurs des widgets natifs visibles (utilise computeSize de chaque widget)
+                function fixedWidgetsHeight() {
+                    let h = 0;
+                    for (const w of node.widgets) {
+                        if (w === widget) continue;
+                        if (w.hidden) continue;
+                        let wh = 26;
+                        if (w.computeSize) {
+                            try {
+                                const s = w.computeSize();
+                                if (Array.isArray(s) && s[1]) wh = s[1];
+                            } catch {}
                         }
+                        h += wh;
                     }
-                    const chrome = 70; // titre node + padding
-                    return Math.max(node.size[1] - otherHeight - chrome, DOM_WIDGET_HEIGHT);
+                    return h;
                 }
+                // computeSize reste CONSTANT (PAS de feedback loop avec node.size[1])
                 widget.computeSize = () => [node.size[0] - 20, DOM_WIDGET_HEIGHT];
 
                 // ---- Sync des widgets natifs ----
@@ -376,15 +358,18 @@
                 const onResize = node.onResize;
                 node.onResize = function (size) {
                     const r = onResize?.apply(this, arguments);
-                    // Le container doit faire exactement la hauteur annoncée à LiteGraph
-                    container.style.height = DOM_WIDGET_HEIGHT + "px";
+                    // Hauteur VISUELLE dynamique : le DOM widget remplit l'espace restant
+                    // apres les widgets natifs, sans modifier computeSize (pas de feedback loop).
+                    var remainingHeight = node.size[1] - fixedWidgetsHeight() - CHROME;
+                    container.style.height = Math.max(remainingHeight, DOM_WIDGET_HEIGHT) + "px";
                     container.style.width = (size[0] - 20) + "px";
                     tsRow.style.gridTemplateColumns = "1fr 1fr";
                     return r;
                 };
-                // Set initial container height matching computeSize
+                // Set initial container height based on available space
                 requestAnimationFrame(() => {
-                    container.style.height = DOM_WIDGET_HEIGHT + "px";
+                    var remH = node.size[1] - fixedWidgetsHeight() - CHROME;
+                    container.style.height = Math.max(remH, DOM_WIDGET_HEIGHT) + "px";
                 });
                 tsRow.style.gridTemplateColumns = "1fr 1fr";
 

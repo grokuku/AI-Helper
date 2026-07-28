@@ -51,7 +51,6 @@
                 // ---- Fixer la taille du textarea natif description ----
                 const FIXED_TA_HEIGHT = 90;
                 const descriptionWidget = node.widgets?.find(w => w.name === "description");
-                var _aihRealTAHeight = 150; // fallback conservateur (textarea + label wrapper)
                 if (descriptionWidget) {
                     const fixDescription = () => {
                         if (descriptionWidget.inputEl) {
@@ -63,28 +62,11 @@
                         }
                     };
                     fixDescription();
-                    // Mesurer le wrapper ComfyUI (parentEl) après rendu, pas juste le textarea.
-                    // Le textarea fait 120px mais ComfyUI ajoute un label + padding autour.
-                    const measureWrapper = () => {
-                        if (descriptionWidget.parentEl) {
-                            var rectH = descriptionWidget.parentEl.getBoundingClientRect().height;
-                            if (rectH && rectH > 0) { _aihRealTAHeight = rectH; return; }
-                            var pOh = descriptionWidget.parentEl.offsetHeight;
-                            if (pOh && pOh > 0) { _aihRealTAHeight = pOh; return; }
-                        }
-                        // fallback sur le textarea lui-même
-                        var taOh = descriptionWidget.inputEl && descriptionWidget.inputEl.offsetHeight;
-                        if (taOh && taOh > 0) _aihRealTAHeight = taOh;
-                    };
-                    // Première mesure immédiate (peut être 0 si pas encore rendu)
-                    measureWrapper();
-                    // Seconde mesure après la frame de rendu ComfyUI
-                    requestAnimationFrame(function() {
-                        fixDescription();
-                        measureWrapper();
-                    });
+                    // Hauteur du wrapper = textarea (90px) + label (~20px) + padding (~8px) ≈ 118px
+                    // Calcul explicite pour eviter les problemes de mesure asynchrone.
+                    var textareaWrapperHeight = FIXED_TA_HEIGHT + 20 + 8;
                     descriptionWidget.computeSize = function() {
-                        return [0, _aihRealTAHeight];
+                        return [0, textareaWrapperHeight];
                     };
                 }
 
@@ -299,10 +281,10 @@
                     return h;
                 }
                 const CHROME = 70;
-                function applyContainerHeight() {
-                    // Le container doit faire exactement la hauteur annoncée à LiteGraph
-                    container.style.height = FIXED_DOM_HEIGHT + "px";
-                }
+                // La hauteur du container est pilotée dynamiquement dans onResize
+                // via le calcul de l'espace restant (node.size[1] - fixedWidgetsHeight() - CHROME).
+                // applyContainerHeight n'est plus utilisée ; le calcul est fait directement
+                // dans onResize et requestAnimationFrame.
 
                 Promise.all([populateTemplateSelect(), stylePicker.init()]).then(() => {
                     const restored = restoreFromNativeWidget();
@@ -330,17 +312,22 @@
                 const onResize = node.onResize;
                 node.onResize = function (size) {
                     const r = onResize?.apply(this, arguments);
-                    // Le container doit faire exactement la hauteur annoncée à LiteGraph
+                    // Hauteur VISUELLE dynamique : le DOM widget remplit l'espace restant
+                    // apres les widgets natifs, sans modifier computeSize (pas de feedback loop).
+                    var remainingHeight = node.size[1] - fixedWidgetsHeight() - CHROME;
+                    container.style.height = Math.max(remainingHeight, FIXED_DOM_HEIGHT) + "px";
                     container.style.width = (size[0] - 20) + "px";
-                    applyContainerHeight();
                     // Forcer la grille 2 colonnes pour eviter l'effondrement
                     if (grid) grid.style.gridTemplateColumns = "1fr 1fr";
                     return r;
                 };
                 if (grid) grid.style.gridTemplateColumns = "1fr 1fr";
                 requestAnimationFrame(() => {
-                    if (node.size) container.style.width = (node.size[0] - 20) + "px";
-                    applyContainerHeight();
+                    if (node.size) {
+                        container.style.width = (node.size[0] - 20) + "px";
+                        var remH = node.size[1] - fixedWidgetsHeight() - CHROME;
+                        container.style.height = Math.max(remH, FIXED_DOM_HEIGHT) + "px";
+                    }
                 });
 
                 node._aihRestore = function () {
