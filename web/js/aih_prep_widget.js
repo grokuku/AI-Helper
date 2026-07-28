@@ -62,7 +62,7 @@
                 const styleWidget = node.widgets?.find(x => x.name === "style_id");
 
                 // ---- Fixer la taille du textarea natif base_prompt ----
-                const FIXED_TA_HEIGHT = 120;
+                const FIXED_TA_HEIGHT = 90;
                 const basePromptWidget = node.widgets?.find(w => w.name === "base_prompt");
                 var _aihRealTAHeight = 150; // fallback conservateur (textarea + label wrapper)
                 if (basePromptWidget) {
@@ -346,10 +346,9 @@
                 node.onResize = function (size) {
                     const r = onResize?.apply(this, arguments);
                     widget.computeSize = () => [size[0] - 20, DOM_WIDGET_HEIGHT];
-                    // Set container DOM height dynamically — safe because onResize
-                    // only fires on user resize, not on computeSize calls.
+                    // Le container doit faire exactement la hauteur annoncée à LiteGraph
                     if (container) {
-                        container.style.height = computeDomHeight() + "px";
+                        container.style.height = DOM_WIDGET_HEIGHT + "px";
                         container.style.width = (size[0] - 20) + "px";
                     }
                     // Forcer la grille 2 colonnes a rester en 2 colonnes
@@ -364,10 +363,9 @@
                 if (grid) {
                     grid.style.gridTemplateColumns = "1fr 1fr";
                 }
-                // Set initial container height if node is already taller than content
+                // Set initial container height matching computeSize
                 requestAnimationFrame(() => {
-                    const dh = computeDomHeight();
-                    if (dh > DOM_WIDGET_HEIGHT && container) container.style.height = dh + "px";
+                    if (container) container.style.height = DOM_WIDGET_HEIGHT + "px";
                 });
 
                 node._aihRestore = function () {

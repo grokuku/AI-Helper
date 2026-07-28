@@ -48,7 +48,7 @@
                 }
 
                 // ---- Fixer la taille du textarea natif description ----
-                const FIXED_TA_HEIGHT = 120;
+                const FIXED_TA_HEIGHT = 90;
                 const descriptionWidget = node.widgets?.find(w => w.name === "description");
                 var _aihRealTAHeight = 150; // fallback conservateur (textarea + label wrapper)
                 if (descriptionWidget) {
@@ -289,8 +289,8 @@
                 }
                 const CHROME = 70; // titre node + padding
                 function applyContainerHeight() {
-                    const hh = Math.max(node.size[1] - fixedWidgetsHeight() - CHROME, 120);
-                    container.style.height = hh + "px";
+                    // Le container doit faire exactement la hauteur annoncée à LiteGraph
+                    container.style.height = FIXED_DOM_HEIGHT + "px";
                 }
 
                 const MIN_WIDTH = 340;
@@ -298,7 +298,7 @@
                 node.onResize = function (size) {
                     if (origOnResize) origOnResize.call(this, size);
                     if (size[0] < MIN_WIDTH) size[0] = MIN_WIDTH;
-                    // computeSize reste FIXE — pas de feedback loop
+                    // Le container doit faire exactement la hauteur annoncée à LiteGraph
                     container.style.width = (size[0] - 20) + "px";
                     applyContainerHeight();
                 };
