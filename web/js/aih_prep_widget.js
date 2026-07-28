@@ -20,7 +20,12 @@
  * (helper Python _credentials). Plus de widget STRING _api_config.
  */
 (function() {
-    AIH.waitForApp(function(app) {
+    function aihBoot() {
+        // Les fichiers d'extension ComfyUI ne sont pas chargés dans un ordre
+        // garanti : attendre que 03_aih_shared.js / 04_aih_widget_base.js aient
+        // défini window.AIH avant d'enregistrer l'extension.
+        if (!window.AIH || !window.AIH.waitForApp) { setTimeout(aihBoot, 50); return; }
+    window.AIH.waitForApp(function(app) {
         app.registerExtension({
             name: "AIH.PromptPrep",
             async beforeRegisterNodeDef(nodeType, nodeData) {
@@ -363,4 +368,6 @@
             },
         });
     });
+    }
+    aihBoot();
 })();
