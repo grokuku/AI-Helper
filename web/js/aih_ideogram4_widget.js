@@ -63,7 +63,7 @@
                     fixDescription();
                     // Hauteur du wrapper = textarea (90px) + label (~20px) + padding (~8px) ≈ 118px
                     // Calcul explicite pour eviter les problemes de mesure asynchrone.
-                    var textareaWrapperHeight = FIXED_TA_HEIGHT + 20 + 8;
+                    var textareaWrapperHeight = FIXED_TA_HEIGHT + 20;
                     descriptionWidget.computeSize = function() {
                         return [0, textareaWrapperHeight];
                     };
