@@ -1272,6 +1272,11 @@ def _prepare_enhance(user_id, data):
         # supporté par les APIs compatible OpenAI (DeepSeek, OpenAI, etc.).
         # Il provoque un 400 Bad Request → on ne l'envoie pas.
         # 'frequency_penalty' (0.0–2.0) et 'temperature' sont standard OpenAI.
+        #
+        # ATTENTION: certains endpoints (Ollama ancien, certains proxies) ne supportent
+        # pas frequency_penalty et renvoient 400. On ne l'envoie QUE pour les APIs cloud
+        # connues (DeepSeek, OpenAI, etc.), pas pour les serveurs locaux.
+        is_local_llm = any(h in base_url.lower() for h in ['localhost', '127.0.0.1', '0.0.0.0'])
         llm_request = {
             'model': model,
             'messages': [
@@ -1279,8 +1284,10 @@ def _prepare_enhance(user_id, data):
                 {'role': 'user', 'content': merged_text}
             ],
             'temperature': 0.3,
-            'frequency_penalty': 0.5,
         }
+        if not is_local_llm:
+            # frequency_penalty uniquement pour les APIs cloud compatibles OpenAI
+            llm_request['frequency_penalty'] = 0.5
         llm_config = {
             'base_url': base_url,
             'api_key': api_key,
@@ -1342,8 +1349,52 @@ def _call_llm_internal(llm_request, llm_config):
     base_url = llm_config['base_url']
     api_key = llm_config.get('api_key', '')
     headers = {'Content-Type': 'application/json', 'Authorization': f'Bearer {api_key}'} if api_key else {'Content-Type': 'application/json'}
-    r = requests.post(f'{base_url}/chat/completions', headers=headers, json=llm_request, timeout=(10, 180))
-    r.raise_for_status()
+
+    # ── Construire l'URL complete ──────────────────────────────────────
+    # DeepSeek: base_url peut etre "https://api.deepseek.com" ou "https://api.deepseek.com/v1"
+    # Dans les deux cas, l'endpoint est /chat/completions.
+    # (DeepSeek supporte les deux formes, avec ou sans /v1/)
+    url = f'{base_url}/chat/completions'
+
+    # ── Log diagnostique : payload complet (sans API key) ───────────────
+    # On clone le payload pour le log sans risque de modification
+    safe_payload = {k: v for k, v in llm_request.items()}
+    logging.warning(
+        f"[enhance] LLM CALL url={url!r} "
+        f"model={llm_request.get('model')!r} "
+        f"payload_keys={list(llm_request.keys())} "
+        f"temperature={llm_request.get('temperature')} "
+        f"frequency_penalty={llm_request.get('frequency_penalty')} "
+        f"max_tokens={llm_request.get('max_tokens')} "
+        f"messages_count={len(llm_request.get('messages', []))} "
+        f"has_api_key={bool(api_key)} "
+        f"headers={ {k: ('***' if k.lower() == 'authorization' else v) for k, v in headers.items()} }"
+    )
+    logging.warning(f"[enhance] LLM PAYLOAD (sans api_key): {json.dumps(safe_payload, ensure_ascii=False, default=str)[:2000]}")
+
+    def _do_request():
+        """Effectue la requete et leve une exception detaillee en cas d'erreur HTTP."""
+        resp = requests.post(url, headers=headers, json=llm_request, timeout=(10, 180))
+        if not resp.ok:
+            # Capturer le body de la reponse — DeepSeek renvoie un JSON d'erreur detaille
+            error_body = ''
+            try:
+                error_body = resp.text
+            except Exception:
+                pass
+            logging.error(
+                f"[enhance] LLM HTTP {resp.status_code} ERROR "
+                f"url={url!r} body={error_body[:1000]!r}"
+            )
+            # Inclure le body dans l'exception pour que l'utilisateur voie le vrai message
+            raise requests.HTTPError(
+                f"{resp.status_code} Client Error: Bad Request for url: {url} — "
+                f"DeepSeek response body: {error_body[:500]}",
+                response=resp
+            )
+        return resp
+
+    r = _do_request()
     result = r.json()
     output = result['choices'][0]['message']['content'].strip()
     # Retry si l'output est vide OU manifestement tronque (Ollama Cloud est instable)
@@ -1356,8 +1407,7 @@ def _call_llm_internal(llm_request, llm_config):
         else:
             logging.warning(f"[enhance] LLM output trop court (len={len(output)}), retry {retry+1}/3")
         try:
-            r = requests.post(f'{base_url}/chat/completions', headers=headers, json=llm_request, timeout=(10, 180))
-            r.raise_for_status()
+            r = _do_request()
             result = r.json()
             output = result['choices'][0]['message']['content'].strip()
         except requests.RequestException as e:
@@ -1528,7 +1578,6 @@ def _prepare_validation_pass(current_output, original_input, style_text, width, 
             {'role': 'user', 'content': user_content},
         ],
         'temperature': 0.1,
-        'frequency_penalty': 0.0,
     }
     # Debug : enregistrer l'appel de validation
     debug['api_calls'].append({
@@ -1591,11 +1640,18 @@ def _do_validation_pass(current_output, original_input, style_text, width, heigh
     base_url = llm_config['base_url']
     api_key = llm_config.get('api_key', '')
     headers = {'Content-Type': 'application/json', 'Authorization': f'Bearer {api_key}'} if api_key else {'Content-Type': 'application/json'}
+    url = f'{base_url}/chat/completions'
     try:
-        r = _req.post(f'{base_url}/chat/completions', headers=headers, json=llm_request, timeout=180)
-        r.raise_for_status()
+        r = _req.post(url, headers=headers, json=llm_request, timeout=180)
+        if not r.ok:
+            error_body = r.text
+            logging.error(f"[enhance] VALIDATION HTTP {r.status_code} ERROR url={url!r} body={error_body[:1000]!r}")
+            debug['api_calls'][-1]['error'] = f"HTTP {r.status_code}: {error_body[:500]}"
+            return None, debug
         result = r.json()
     except Exception as e:
+        import logging
+        logging.error(f"[enhance] VALIDATION EXCEPTION: {e!r}")
         debug['api_calls'][-1]['error'] = str(e)
         return None, debug
     return _finish_validation_pass(result, debug)
