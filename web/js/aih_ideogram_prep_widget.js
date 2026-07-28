@@ -51,7 +51,7 @@
                 // ---- Fixer la taille du textarea natif description ----
                 const FIXED_TA_HEIGHT = 120;
                 const descriptionWidget = node.widgets?.find(w => w.name === "description");
-                var _aihRealTAHeight = FIXED_TA_HEIGHT + 10; // fallback 130
+                var _aihRealTAHeight = 150; // fallback conservateur (textarea + label wrapper)
                 if (descriptionWidget) {
                     const fixDescription = () => {
                         if (descriptionWidget.inputEl) {
@@ -63,12 +63,25 @@
                         }
                     };
                     fixDescription();
-                    var oh = descriptionWidget.inputEl && descriptionWidget.inputEl.offsetHeight;
-                    if (oh && oh > 0) _aihRealTAHeight = oh;
+                    // Mesurer le wrapper ComfyUI (parentEl) après rendu, pas juste le textarea.
+                    // Le textarea fait 120px mais ComfyUI ajoute un label + padding autour.
+                    const measureWrapper = () => {
+                        if (descriptionWidget.parentEl) {
+                            var rectH = descriptionWidget.parentEl.getBoundingClientRect().height;
+                            if (rectH && rectH > 0) { _aihRealTAHeight = rectH; return; }
+                            var pOh = descriptionWidget.parentEl.offsetHeight;
+                            if (pOh && pOh > 0) { _aihRealTAHeight = pOh; return; }
+                        }
+                        // fallback sur le textarea lui-même
+                        var taOh = descriptionWidget.inputEl && descriptionWidget.inputEl.offsetHeight;
+                        if (taOh && taOh > 0) _aihRealTAHeight = taOh;
+                    };
+                    // Première mesure immédiate (peut être 0 si pas encore rendu)
+                    measureWrapper();
+                    // Seconde mesure après la frame de rendu ComfyUI
                     requestAnimationFrame(function() {
                         fixDescription();
-                        var oh2 = descriptionWidget.inputEl && descriptionWidget.inputEl.offsetHeight;
-                        if (oh2 && oh2 > 0) _aihRealTAHeight = oh2;
+                        measureWrapper();
                     });
                     descriptionWidget.computeSize = function() {
                         return [0, _aihRealTAHeight];
@@ -268,13 +281,20 @@
                 const FIXED_DOM_HEIGHT = 200; // valeur fixe retournée à LiteGraph
                 widget.computeSize = () => [node.size[0] - 20, FIXED_DOM_HEIGHT];
 
+                // Somme dynamique des computeSize() de tous les widgets natifs visibles
                 function fixedWidgetsHeight() {
                     let h = 0;
                     for (const w of node.widgets) {
                         if (w === widget) continue;
                         if (w.hidden) continue;
-                        if (w === descriptionWidget) { h += _aihRealTAHeight; continue; }
-                        h += 26;
+                        let wh = 26;
+                        if (w.computeSize) {
+                            try {
+                                const s = w.computeSize();
+                                if (Array.isArray(s) && s[1]) wh = s[1];
+                            } catch {}
+                        }
+                        h += wh;
                     }
                     return h;
                 }

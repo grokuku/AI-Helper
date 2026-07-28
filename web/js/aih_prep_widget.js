@@ -64,7 +64,7 @@
                 // ---- Fixer la taille du textarea natif base_prompt ----
                 const FIXED_TA_HEIGHT = 120;
                 const basePromptWidget = node.widgets?.find(w => w.name === "base_prompt");
-                var _aihRealTAHeight = FIXED_TA_HEIGHT + 10; // fallback 130
+                var _aihRealTAHeight = 150; // fallback conservateur (textarea + label wrapper)
                 if (basePromptWidget) {
                     const fixBasePrompt = () => {
                         if (basePromptWidget.inputEl) {
@@ -76,12 +76,25 @@
                         }
                     };
                     fixBasePrompt();
-                    var oh = basePromptWidget.inputEl && basePromptWidget.inputEl.offsetHeight;
-                    if (oh && oh > 0) _aihRealTAHeight = oh;
+                    // Mesurer le wrapper ComfyUI (parentEl) après rendu, pas juste le textarea.
+                    // Le textarea fait 120px mais ComfyUI ajoute un label + padding autour.
+                    const measureWrapper = () => {
+                        if (basePromptWidget.parentEl) {
+                            var rectH = basePromptWidget.parentEl.getBoundingClientRect().height;
+                            if (rectH && rectH > 0) { _aihRealTAHeight = rectH; return; }
+                            var pOh = basePromptWidget.parentEl.offsetHeight;
+                            if (pOh && pOh > 0) { _aihRealTAHeight = pOh; return; }
+                        }
+                        // fallback sur le textarea lui-même
+                        var taOh = basePromptWidget.inputEl && basePromptWidget.inputEl.offsetHeight;
+                        if (taOh && taOh > 0) _aihRealTAHeight = taOh;
+                    };
+                    // Première mesure immédiate (peut être 0 si pas encore rendu)
+                    measureWrapper();
+                    // Seconde mesure après la frame de rendu ComfyUI
                     requestAnimationFrame(function() {
                         fixBasePrompt();
-                        var oh2 = basePromptWidget.inputEl && basePromptWidget.inputEl.offsetHeight;
-                        if (oh2 && oh2 > 0) _aihRealTAHeight = oh2;
+                        measureWrapper();
                     });
                     basePromptWidget.computeSize = function() {
                         return [0, _aihRealTAHeight];

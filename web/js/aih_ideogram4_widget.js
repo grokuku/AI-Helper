@@ -50,7 +50,7 @@
                 // ---- Fixer la taille du textarea natif description ----
                 const FIXED_TA_HEIGHT = 120;
                 const descriptionWidget = node.widgets?.find(w => w.name === "description");
-                var _aihRealTAHeight = FIXED_TA_HEIGHT + 10; // fallback 130
+                var _aihRealTAHeight = 150; // fallback conservateur (textarea + label wrapper)
                 if (descriptionWidget) {
                     const fixDescription = () => {
                         if (descriptionWidget.inputEl) {
@@ -62,12 +62,25 @@
                         }
                     };
                     fixDescription();
-                    var oh = descriptionWidget.inputEl && descriptionWidget.inputEl.offsetHeight;
-                    if (oh && oh > 0) _aihRealTAHeight = oh;
+                    // Mesurer le wrapper ComfyUI (parentEl) après rendu, pas juste le textarea.
+                    // Le textarea fait 120px mais ComfyUI ajoute un label + padding autour.
+                    const measureWrapper = () => {
+                        if (descriptionWidget.parentEl) {
+                            var rectH = descriptionWidget.parentEl.getBoundingClientRect().height;
+                            if (rectH && rectH > 0) { _aihRealTAHeight = rectH; return; }
+                            var pOh = descriptionWidget.parentEl.offsetHeight;
+                            if (pOh && pOh > 0) { _aihRealTAHeight = pOh; return; }
+                        }
+                        // fallback sur le textarea lui-même
+                        var taOh = descriptionWidget.inputEl && descriptionWidget.inputEl.offsetHeight;
+                        if (taOh && taOh > 0) _aihRealTAHeight = taOh;
+                    };
+                    // Première mesure immédiate (peut être 0 si pas encore rendu)
+                    measureWrapper();
+                    // Seconde mesure après la frame de rendu ComfyUI
                     requestAnimationFrame(function() {
                         fixDescription();
-                        var oh2 = descriptionWidget.inputEl && descriptionWidget.inputEl.offsetHeight;
-                        if (oh2 && oh2 > 0) _aihRealTAHeight = oh2;
+                        measureWrapper();
                     });
                     descriptionWidget.computeSize = function() {
                         return [0, _aihRealTAHeight];
@@ -242,32 +255,6 @@
                 container.appendChild(mkLabel("Resultat"));
                 container.appendChild(resultTextarea);
 
-                const previewNote = document.createElement("div");
-                Object.assign(previewNote.style, {
-                    fontSize: "10px", color: "#888", textAlign: "center",
-                    fontStyle: "italic", padding: "2px",
-                });
-                previewNote.textContent = "💡 Preview = sortie IMAGE | Debug = sortie STRING du node";
-                container.appendChild(previewNote);
-
-                const debugBtn = document.createElement("button");
-                debugBtn.textContent = "🔍 Voir debug LLM";
-                Object.assign(debugBtn.style, {
-                    width: "100%", padding: "4px", borderRadius: "4px",
-                    border: "1px solid #555", background: "#3a3a3e", color: "#ccc",
-                    fontSize: "10px", cursor: "pointer", marginTop: "4px",
-                });
-                debugBtn.onclick = () => {
-                    const md = node._lastDebugMd || "Aucun debug. Lance un Generate d'abord.";
-                    const w = window.open("", "AIH Debug", "width=800,height=600");
-                    w.document.write(`<html><head><title>AIH Debug</title><style>body{background:#1a1a1e;color:#ccc;font-family:monospace;font-size:12px;padding:16px;}pre{white-space:pre-wrap;background:#2a2a2e;padding:8px;border-radius:4px;}h1,h2,h3{color:#6366f1;}h2{border-bottom:1px solid #444;padding-bottom:4px;}code{background:#3a3a3e;padding:1px 4px;border-radius:2px;}</style></head><body></body></html>`);
-                    const pre = w.document.createElement("pre");
-                    pre.textContent = md;
-                    w.document.body.appendChild(pre);
-                    w.document.close();
-                };
-                container.appendChild(debugBtn);
-
                 const domWidget = node.addDOMWidget("ideogram4_ui", "custom", container, {
                     getValue: () => "",
                     setValue: (v) => {},
@@ -283,13 +270,20 @@
                 domWidget.computeSize = () => [node.size[0] - 20, FIXED_DOM_HEIGHT];
 
                 // Hauteur des widgets natifs (description + autres ~26px chacun)
+                // Somme dynamique des computeSize() de tous les widgets natifs visibles
                 function fixedWidgetsHeight() {
                     let h = 0;
                     for (const w of node.widgets) {
                         if (w === domWidget) continue;
                         if (w.hidden) continue;
-                        if (w === descriptionWidget) { h += _aihRealTAHeight; continue; }
-                        h += 26;
+                        let wh = 26;
+                        if (w.computeSize) {
+                            try {
+                                const s = w.computeSize();
+                                if (Array.isArray(s) && s[1]) wh = s[1];
+                            } catch {}
+                        }
+                        h += wh;
                     }
                     return h;
                 }
