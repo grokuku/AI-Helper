@@ -247,9 +247,9 @@
       document.getElementById('preset-form-url').value = '';
       document.getElementById('preset-form-key').value = '';
       document.getElementById('preset-form-model').value = '';
+      document.getElementById('preset-form-key').placeholder = 'API Key (optionnel)';
       document.getElementById('preset-form-global').checked = false;
-      document.getElementById('preset-models-dropdown').classList.add('hidden');
-      document.getElementById('preset-models-dropdown').innerHTML = '';
+      document.getElementById('preset-models-datalist').innerHTML = '';
     }
 
     async function loadPresets() {
@@ -310,6 +310,7 @@
         document.getElementById('preset-form-url').value = p.base_url;
         document.getElementById('preset-form-model').value = p.model;
         document.getElementById('preset-form-key').value = '';
+        document.getElementById('preset-form-key').placeholder = '••••••• (inchangé)';
         document.getElementById('preset-form-global').checked = p.is_global;
         // Stocker l'ID pour un update
         document.getElementById('preset-form-name').dataset.editId = id;
@@ -410,16 +411,14 @@
           if (!r2.ok) throw await safeJson(r2);
           models = await safeJson(r2);
         }
-        var dd = document.getElementById('preset-models-dropdown');
-        dd.innerHTML = '';
+        var dl = document.getElementById('preset-models-datalist');
+        dl.innerHTML = '';
         models.forEach(function(m) {
           var opt = document.createElement('option');
           opt.value = m.id;
           opt.textContent = m.id + (m.owned_by ? ' (' + m.owned_by + ')' : '');
-          dd.appendChild(opt);
+          dl.appendChild(opt);
         });
-        dd.classList.remove('hidden');
-        dd.onchange = function() { document.getElementById('preset-form-model').value = this.value; };
         if (models.length === 0) showModal('Modeles', 'Aucun modele trouve', 'error');
       } catch (e) {
         showModal('Erreur', (e.error || e.message || 'Impossible de lister les modeles'), 'error');

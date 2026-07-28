@@ -261,40 +261,44 @@
                 });
                 domWidget.options = domWidget.options || {};
 
-                // ---- Calcul dynamique de la hauteur du DOM widget ----
-                // Le DOM widget remplit l'espace restant après les widgets natifs.
-                // Les widgets natifs (description, seed, etc.) ont une taille fixe,
-                // et le DOM widget s'agrandit quand on resize la node verticalement.
-                function computeDomHeight() {
-                    let otherHeight = 0;
+                // ---- Hauteur FIXE pour le DOM widget (anti feedback loop) ----
+                // computeSize DOIT retourner une hauteur constante, sinon LiteGraph
+                // aggrandit la node à chaque frame (computeDomHeight lisait node.size[1]
+                // → feedback loop). La hauteur réelle du container est pilotée
+                // manuellement dans onResize / init.
+                const FIXED_DOM_HEIGHT = 200; // valeur fixe retournée à LiteGraph
+                domWidget.computeSize = () => [node.size[0] - 20, FIXED_DOM_HEIGHT];
+
+                // Hauteur des widgets natifs (description 120px + autres ~26px chacun)
+                function fixedWidgetsHeight() {
+                    let h = 0;
                     for (const w of node.widgets) {
                         if (w === domWidget) continue;
                         if (w.hidden) continue;
-                        let h = 26;
-                        if (w.computeSize) {
-                            try {
-                                const s = w.computeSize();
-                                if (Array.isArray(s) && s[1]) h = s[1];
-                            } catch {}
-                        }
-                        otherHeight += h;
+                        if (w === descriptionWidget) { h += 120; continue; }
+                        h += 26;
                     }
-                    const chrome = 50; // titre node + padding
-                    return Math.max(node.size[1] - otherHeight - chrome, 120);
+                    return h;
                 }
-                domWidget.computeSize = () => [node.size[0] - 20, computeDomHeight()];
+                const CHROME = 50; // titre node + padding
+                function applyContainerHeight() {
+                    const hh = Math.max(node.size[1] - fixedWidgetsHeight() - CHROME, 120);
+                    container.style.height = hh + "px";
+                }
 
                 const MIN_WIDTH = 340;
                 const origOnResize = node.onResize;
                 node.onResize = function (size) {
                     if (origOnResize) origOnResize.call(this, size);
                     if (size[0] < MIN_WIDTH) size[0] = MIN_WIDTH;
-                    domWidget.computeSize = () => [size[0] - 20, computeDomHeight()];
+                    // computeSize reste FIXE — pas de feedback loop
                     container.style.width = (size[0] - 20) + "px";
+                    applyContainerHeight();
                 };
                 requestAnimationFrame(() => {
                     if (node.size && node.size[0] < MIN_WIDTH) node.setSize([MIN_WIDTH, node.size[1]]);
                     if (node.size) container.style.width = (node.size[0] - 20) + "px";
+                    applyContainerHeight();
                 });
 
                 node._resultArea = resultTextarea;

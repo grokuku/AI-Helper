@@ -220,24 +220,30 @@
                 // Le DOM widget remplit l'espace restant après les widgets natifs.
                 // Les widgets natifs (base_prompt, seed, etc.) ont une taille fixe,
                 // et le DOM widget s'agrandit quand on resize la node verticalement.
+                const DOM_WIDGET_HEIGHT = 240;
                 function computeDomHeight() {
                     let otherHeight = 0;
-                    for (const w of node.widgets) {
-                        if (w === widget) continue;
-                        if (w.hidden) continue;
-                        let h = 26;
-                        if (w.computeSize) {
-                            try {
-                                const s = w.computeSize();
-                                if (Array.isArray(s) && s[1]) h = s[1];
-                            } catch {}
+                    if (node.widgets) {
+                        for (const w of node.widgets) {
+                            if (w === widget) continue;
+                            if (w.hidden) continue;
+                            let h = 26;
+                            if (w.computeSize) {
+                                try {
+                                    const s = w.computeSize();
+                                    if (Array.isArray(s) && s[1]) h = s[1];
+                                } catch {}
+                            }
+                            otherHeight += h;
                         }
-                        otherHeight += h;
                     }
                     const chrome = 50; // titre node + padding
-                    return Math.max(node.size[1] - otherHeight - chrome, 120);
+                    return Math.max(node.size[1] - otherHeight - chrome, DOM_WIDGET_HEIGHT);
                 }
-                widget.computeSize = () => [node.size[0] - 20, computeDomHeight()];
+                // computeSize must return a FIXED height — using node.size[1]
+                // here would create a feedback loop (node grows → computeSize
+                // returns more → node grows again).
+                widget.computeSize = () => [node.size[0] - 20, DOM_WIDGET_HEIGHT];
 
                 // ---- Sync des widgets natifs ----
                 function syncNativeWidgets(force) {
@@ -347,11 +353,20 @@
                 const onResize = node.onResize;
                 node.onResize = function (size) {
                     const r = onResize?.apply(this, arguments);
-                    widget.computeSize = () => [size[0] - 20, computeDomHeight()];
+                    // Fill remaining vertical space with the container.
+                    // This is safe: onResize only fires on user resize, not on
+                    // computeSize calls, so no feedback loop.
+                    const domHeight = computeDomHeight();
+                    container.style.height = domHeight + "px";
                     container.style.width = (size[0] - 20) + "px";
                     tsRow.style.gridTemplateColumns = "1fr 1fr";
                     return r;
                 };
+                // Set initial container height if node is already taller than content
+                requestAnimationFrame(() => {
+                    const dh = computeDomHeight();
+                    if (dh > DOM_WIDGET_HEIGHT) container.style.height = dh + "px";
+                });
                 tsRow.style.gridTemplateColumns = "1fr 1fr";
 
                 // ---- Test Enhance ----
