@@ -72,6 +72,32 @@ function hideWidget(node, name) {
 }
 
 // ========================
+// Formatteur de liste de mots-clés
+// ========================
+
+/**
+ * Formate un tableau de keywords selon le format choisi.
+ * @param {Array} keywords - Tableau d'objets {keyword, description, ...} ou de strings
+ * @param {string} format - "text", "json" ou "markdown"
+ * @returns {string} La chaîne formatée
+ */
+function formatKeywordsList(keywords, format) {
+    const items = keywords || [];
+    const extract = kw => (kw && kw.keyword) ? kw.keyword : (typeof kw === "string" ? kw : "");
+
+    if (format === "json") {
+        return JSON.stringify(items.map(k => (typeof k === "string" ? { keyword: k } : k)));
+    }
+
+    if (format === "markdown") {
+        return items.map(k => "- " + extract(k)).join("\n");
+    }
+
+    // format "text" (défaut) — CSV simple
+    return items.map(k => extract(k)).join(", ");
+}
+
+// ========================
 // Helpers UI
 // ========================
 
@@ -148,6 +174,14 @@ function debounce(fn, delay) {
                 // et réexécute la node à chaque run, mais il n'est pas visible.
                 {
                     hideWidget(node, "seed");
+
+                    // ComfyUI ajoute automatiquement un widget control_after_generate
+                    // à côté de tout widget nommé "seed" — on le cache aussi.
+                    var cag = node.widgets?.find(w => w.name === "control_after_generate");
+                    if (cag) {
+                        cag.hidden = true;
+                        if (cag.computeSize) cag.computeSize = () => [0, -4];
+                    }
                 }
 
                 // ---- Supprimer la socket d'entrée de _keywords_config ----
@@ -179,7 +213,7 @@ function debounce(fn, delay) {
                     const w = node.widgets?.find(x => x.name === "_keywords_config");
                     if (!w) return;
                     w.value = JSON.stringify({
-                        keywords_text: (node._aihKeywords || []).map(k => k.keyword || k).join(", "),
+                        keywords_text: formatKeywordsList(node._aihKeywords, config.output_format),
                         keywords: node._aihKeywords || [],
                         total: node._aihTotal || 0,
                         config: { ...config },
@@ -425,8 +459,7 @@ function debounce(fn, delay) {
                 formatSel.innerHTML = '<option value="text">Text</option><option value="json">JSON</option><option value="markdown">Markdown</option>';
                 formatSel.value = config.output_format || "text";
                 formatSel.onchange = function () {
-                    config.output_format = this.value;
-                    syncKeywordsConfig();
+                    updateConfigAndFetch({ output_format: this.value });
                 };
 
                 row2.appendChild(nsfwSel);
