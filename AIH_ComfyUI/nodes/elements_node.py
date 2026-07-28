@@ -5,10 +5,18 @@ L'UI interactive est rendue par web/js/aih_elements_widget.js.
 Au "Run" (workflow), Python appelle directement l'API /api/generate
 avec le seed courant + les éléments sérialisés → résultat déterministe.
 Au "Test generation", JS appelle l'API pour un aperçu instantané.
+
+Mode "intelligent" LLM :
+  - Syntaxe ||concept:N dans une liste → liste générée par LLM
+  - 🧠 ON sur une liste manuelle → filtrage LLM par contexte
+  - Appel POST /api/keywords/llm-process (preset_id, instruction, input_text)
+  - Traitement séquentiel avec accumulation de contexte
 """
 
 import json
+import logging
 import random
+import re
 
 
 def _hash32(s):
@@ -18,6 +26,10 @@ def _hash32(s):
         h ^= ord(ch)
         h = (h * 0x01000193) & 0xffffffff
     return h
+
+
+# Regex pour détecter la syntaxe ||concept ou ||concept:N (ancre en début de texte)
+_LLM_CONCEPT_RE = re.compile(r'\|\|([^:]+)(?::(\d+))?')
 
 
 def _pick_alternative(raw_text, seed, element_index):
@@ -35,6 +47,57 @@ def _pick_alternative(raw_text, seed, element_index):
         return random.choice(alts)
     h = _hash32(f"{seed}|{element_index}|{raw_text}")
     return alts[h % len(alts)]
+
+
+def _pick_from_list(items, seed, element_index, raw_text):
+    """Choisit un élément dans une liste. Déterministe si seed > 0, sinon random."""
+    if not items:
+        return ""
+    if seed <= 0:
+        return random.choice(items)
+    h = _hash32(f"{seed}|{element_index}|{raw_text}")
+    return items[h % len(items)]
+
+
+def _call_llm_process(api_url, api_key, preset_id, instruction, input_text=""):
+    """Appelle POST /api/keywords/llm-process.
+
+    Retourne le texte output (str) ou None si erreur/timeout/réponse vide.
+    """
+    try:
+        import requests
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        }
+        body = {
+            "preset_id": preset_id,
+            "instruction": instruction,
+            "input_text": input_text,
+        }
+        r = requests.post(
+            f"{api_url}/keywords/llm-process",
+            json=body,
+            headers=headers,
+            timeout=30,
+        )
+        r.raise_for_status()
+        data = r.json()
+        output = data.get("output", "")
+        return output if output else None
+    except Exception as e:
+        logging.warning(f"[AIH Elements] LLM call failed: {e}")
+        return None
+
+
+def _parse_llm_list(output_text):
+    """Parse une sortie LLM en liste d'éléments (séparés par virgules ou newlines)."""
+    if not output_text:
+        return []
+    # Remplacer les newlines par virgules puis splitter
+    cleaned = output_text.replace("\n", ",").replace("\r", ",")
+    items = [x.strip() for x in cleaned.split(",") if x.strip()]
+    return items
 
 
 class AIHElementsNode:
@@ -75,13 +138,128 @@ class AIHElementsNode:
         elements = elems_cfg.get("elements", [])
         random_count = int(elems_cfg.get("random_count", 0))
 
+        # --- Mode intelligent LLM ---
+        preset_id = int(elems_cfg.get("preset_id", 0) or 0)
+        llm_default_count = int(elems_cfg.get("llm_default_count", 10) or 10)
+        brain_toggles = elems_cfg.get("brain_toggles", [])
+
         # Filtrer les entrees marquees visible=False (masquees depuis l'UI)
         elements = [el for el in elements if el.get("visible") is not False]
 
-        # Resoudre les alternatives "::" dans les textes raw/texte (deterministe)
+        # Resoudre les alternatives "::" et les listes LLM "||" dans les textes raw/texte.
+        # Traitement séquentiel : le contexte accumule les mots-clés choisis dans les
+        # listes précédentes pour les appels LLM avec 🧠 ON.
+        context = []  # liste des mots-clés choisis (pour le contexte LLM)
+        indices_to_skip = set()  # indices d'éléments LLM à skip (liste vide)
+
         for i, el in enumerate(elements):
-            if el.get("type") in ("raw", "text"):
-                el["text"] = _pick_alternative(el.get("text", ""), seed, i)
+            if el.get("type") not in ("raw", "text"):
+                continue
+
+            raw_text = el.get("text", "")
+            if not raw_text:
+                continue
+
+            brain_on = (
+                bool(brain_toggles[i])
+                if isinstance(brain_toggles, list) and i < len(brain_toggles)
+                else False
+            )
+
+            # --- Détection syntaxe ||concept:N (liste générée par LLM) ---
+            llm_match = _LLM_CONCEPT_RE.match(raw_text.strip())
+
+            if llm_match:
+                concept = llm_match.group(1).strip()
+                count_str = llm_match.group(2)
+                count = int(count_str) if count_str else llm_default_count
+
+                # preset_id == 0 → pas de LLM disponible, skip cette liste
+                if preset_id == 0:
+                    indices_to_skip.add(i)
+                    continue
+
+                # Construire instruction et input_text selon 🧠 ON/OFF
+                if brain_on:
+                    instruction = (
+                        f"Génère {count} {concept} cohérents avec le contexte. "
+                        f"Retourne uniquement une liste séparée par des virgules."
+                    )
+                    input_text = (
+                        f"Contexte: [{', '.join(context)}]" if context else ""
+                    )
+                else:
+                    instruction = (
+                        f"Génère {count} {concept}. "
+                        f"Retourne uniquement une liste séparée par des virgules."
+                    )
+                    input_text = ""
+
+                output = _call_llm_process(
+                    api_url, api_key, preset_id, instruction, input_text
+                )
+                if output:
+                    items = _parse_llm_list(output)
+                    if items:
+                        chosen = _pick_from_list(items, seed, i, raw_text)
+                        el["text"] = chosen
+                        context.append(chosen)
+                    else:
+                        indices_to_skip.add(i)
+                else:
+                    # Fallback LLM ||: skip (liste vide)
+                    indices_to_skip.add(i)
+                continue
+
+            # --- Liste manuelle (a::b::c) ou valeur simple ---
+            alts = [part.strip() for part in raw_text.split("::") if part.strip()]
+            is_multi = len(alts) >= 2
+
+            if is_multi and brain_on and preset_id != 0:
+                # 🧠 ON + liste manuelle → filtrage LLM par contexte
+                instruction = (
+                    "Filtre cette liste pour garder uniquement les éléments "
+                    "cohérents avec le contexte. Retourne uniquement une liste "
+                    "séparée par des virgules."
+                )
+                input_text = (
+                    f"Contexte: [{', '.join(context)}]\nListe: [{', '.join(alts)}]"
+                )
+
+                output = _call_llm_process(
+                    api_url, api_key, preset_id, instruction, input_text
+                )
+                if output:
+                    filtered = _parse_llm_list(output)
+                    if filtered:
+                        chosen = _pick_from_list(filtered, seed, i, raw_text)
+                        el["text"] = chosen
+                        context.append(chosen)
+                        continue
+                    else:
+                        logging.warning(
+                            "[AIH Elements] LLM filter returned empty list, "
+                            "falling back to random"
+                        )
+                else:
+                    logging.warning(
+                        "[AIH Elements] LLM filter call failed, "
+                        "falling back to random"
+                    )
+                # Fallback: random dans la liste complète d'origine
+                el["text"] = _pick_alternative(raw_text, seed, i)
+                context.append(el["text"])
+            else:
+                # Comportement standard (déterministe par seed)
+                el["text"] = _pick_alternative(raw_text, seed, i)
+                if el["text"]:
+                    context.append(el["text"])
+
+        # Retirer les éléments LLM qui n'ont pas pu être générés (listes vides)
+        if indices_to_skip:
+            elements = [
+                el for i, el in enumerate(elements) if i not in indices_to_skip
+            ]
 
         # Vérifier qu'il y a du contenu à générer
         if not elements and random_count <= 0:

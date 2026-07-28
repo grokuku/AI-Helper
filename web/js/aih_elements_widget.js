@@ -112,6 +112,9 @@ AIH.waitForApp(function(app) {
                         random_count: randCb.checked ? (parseInt(randN.value) || 3) : 0,
                         random_sfw: sfwCb.checked,
                         random_nsfw: nsfwCb.checked,
+                        preset_id: parseInt(presetSelect.value) || 0,
+                        llm_default_count: parseInt(llmCountInput.value) || 10,
+                        brain_toggles: node._aihElements.map(e => !!e.brain),
                     });
                 }
 
@@ -119,6 +122,91 @@ AIH.waitForApp(function(app) {
                     // No-op: _api_config supprime, api_key/url lus depuis le
                     // fichier de credentials cote Python.
                 }
+
+                // ---- Preset IA dropdown + llm_default_count (en haut du widget) ----
+                // Pattern identique au enhance widget : cache 15s, refresh sur mousedown.
+                const _presetCache = (window.__AIH_cache = window.__AIH_cache || { presets: 0, styles: 0, tmpl: 0 });
+                const PRESET_CACHE_TTL = 15000;
+
+                const presetRow = document.createElement("div");
+                Object.assign(presetRow.style, {
+                    display: "flex", gap: "4px", alignItems: "center", marginBottom: "8px",
+                    flex: "0 0 auto",
+                });
+
+                const presetSelect = document.createElement("select");
+                presetSelect.innerHTML = '<option value="0">-- Preset IA --</option>';
+                Object.assign(presetSelect.style, {
+                    flex: "1", padding: "3px 6px", borderRadius: "4px",
+                    border: "1px solid #555", background: "#3a3a3e",
+                    color: "#ccc", fontSize: "11px", cursor: "pointer",
+                });
+
+                const llmCountLabel = document.createElement("span");
+                llmCountLabel.textContent = "||N:";
+                llmCountLabel.title = "Nombre par défaut quand on utilise ||concept sans préciser le nombre";
+                Object.assign(llmCountLabel.style, {
+                    fontSize: "10px", color: "#888", whiteSpace: "nowrap", flexShrink: "0",
+                });
+
+                const llmCountInput = document.createElement("input");
+                llmCountInput.type = "number";
+                llmCountInput.value = "10";
+                llmCountInput.min = 1;
+                llmCountInput.max = 999;
+                Object.assign(llmCountInput.style, {
+                    width: "40px", padding: "2px 4px", borderRadius: "4px",
+                    border: "1px solid #555", background: "#1a1a1e",
+                    color: "#fff", fontSize: "11px", textAlign: "center", flexShrink: "0",
+                });
+
+                presetRow.appendChild(presetSelect);
+                presetRow.appendChild(llmCountLabel);
+                presetRow.appendChild(llmCountInput);
+
+                presetSelect.onchange = () => { syncElementsWidget(); };
+                llmCountInput.onchange = () => { syncElementsWidget(); };
+                llmCountInput.oninput = () => { syncElementsWidget(); };
+
+                // ---- Peupler le dropdown preset depuis /api/presets ----
+                async function populatePresets() {
+                    try {
+                        const items = await apiCall("GET", "presets");
+                        if (!Array.isArray(items)) return;
+                        const oldVal = presetSelect.value;
+                        const pendingId = presetSelect.dataset.pendingId;
+                        presetSelect.innerHTML = '<option value="0">-- Preset IA --</option>';
+                        items.forEach(item => {
+                            const o = document.createElement("option");
+                            o.value = item.id;
+                            o.textContent = item.name;
+                            presetSelect.appendChild(o);
+                        });
+                        // Restaurer l'ancienne valeur ou la valeur en attente (workflow reload)
+                        const restoreVal = pendingId || oldVal;
+                        if (restoreVal && restoreVal !== "0" && [...presetSelect.options].some(o => o.value === String(restoreVal))) {
+                            presetSelect.value = String(restoreVal);
+                            delete presetSelect.dataset.pendingId;
+                            syncElementsWidget();
+                        } else if (oldVal && [...presetSelect.options].some(o => o.value === oldVal)) {
+                            presetSelect.value = oldVal;
+                        }
+                    } catch (err) {
+                        // Silencieux : le dropdown reste avec le placeholder
+                    }
+                }
+
+                async function refreshPresetsIfStale() {
+                    const now = Date.now();
+                    if (now - (_presetCache.presets || 0) < PRESET_CACHE_TTL) return;
+                    _presetCache.presets = now;
+                    await populatePresets();
+                }
+
+                presetSelect.addEventListener("mousedown", () => refreshPresetsIfStale());
+
+                // Peuplement initial
+                populatePresets();
 
                 // Sync initial
                 syncApiConfigWidget();
@@ -255,6 +343,27 @@ AIH.waitForApp(function(app) {
 
                         row.appendChild(grip);
                         row.appendChild(eyeBtn);
+
+                        // Icône cerveau (toggle LLM intelligent par liste)
+                        const brainBtn = document.createElement("button");
+                        brainBtn.type = "button";
+                        const brainOn = !!item.brain;
+                        brainBtn.textContent = "🧠";
+                        Object.assign(brainBtn.style, {
+                            background: "none", border: "none",
+                            cursor: "pointer", fontSize: "12px", padding: "0 2px",
+                            flexShrink: "0",
+                            filter: brainOn ? "none" : "grayscale(1) opacity(0.4)",
+                            color: brainOn ? "#818cf8" : "#666",
+                        });
+                        brainBtn.title = brainOn ? "Mode intelligent ON" : "Mode intelligent OFF";
+                        brainBtn.onclick = () => {
+                            item.brain = !item.brain;
+                            renderList();
+                            syncElementsWidget();
+                        };
+                        row.appendChild(brainBtn);
+
                         const iconSpan = document.createElement("span");
                         iconSpan.style.cssText = "flex-shrink:0;";
                         iconSpan.textContent = item.type === "filter" ? "🔽" : "📝";
@@ -727,6 +836,7 @@ AIH.waitForApp(function(app) {
                 result.readOnly = true;
 
                 // ---- Assemble ----
+                container.appendChild(presetRow); // fixe (Preset IA + ||N, en haut)
                 container.appendChild(tb);        // fixe
                 container.appendChild(listEl);    // flex: grow
                 container.appendChild(randRow);   // fixe
@@ -797,6 +907,36 @@ AIH.waitForApp(function(app) {
                         if (data.random_count > 0) {
                             randCb.checked = true;
                             randN.value = data.random_count;
+                        }
+                        // Restaurer le preset IA sélectionné
+                        if (data.preset_id !== undefined) {
+                            const pid = String(data.preset_id);
+                            if (pid !== "0" && [...presetSelect.options].some(o => o.value === pid)) {
+                                presetSelect.value = pid;
+                            } else if (pid !== "0") {
+                                // Options pas encore chargées : mémoriser pour populatePresets()
+                                presetSelect.dataset.pendingId = pid;
+                            } else {
+                                presetSelect.value = "0";
+                            }
+                        }
+                        // Restaurer le nombre par défaut pour ||
+                        if (data.llm_default_count !== undefined) {
+                            llmCountInput.value = String(data.llm_default_count);
+                        }
+                        // Restaurer les brain_toggles (un booléen par liste)
+                        if (data.brain_toggles && Array.isArray(data.brain_toggles)) {
+                            let brainChanged = false;
+                            data.brain_toggles.forEach((brain, i) => {
+                                if (n._aihElements[i]) {
+                                    const newBrain = !!brain;
+                                    if (!!n._aihElements[i].brain !== newBrain) {
+                                        n._aihElements[i].brain = newBrain;
+                                        brainChanged = true;
+                                    }
+                                }
+                            });
+                            if (brainChanged) renderList();
                         }
                         return true; // Succès
                     } catch (err) {
