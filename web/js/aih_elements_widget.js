@@ -61,8 +61,14 @@ function hideWidget(node, name) {
     return null;
 }
 
-// Attendre que l'app ComfyUI soit disponible
-AIH.waitForApp(function(app) {
+// Polling auto-contenu pour attendre window.app (évite la dépendance
+// à AIH.waitForApp qui peut charger après ce fichier)
+(function aihBoot() {
+    var app = window.app || (window.comfyAPI && window.comfyAPI.app && window.comfyAPI.app.app);
+    if (!app || !app.graph) {
+        setTimeout(aihBoot, 100);
+        return;
+    }
 
     app.registerExtension({
         name: "AIH.Elements",
@@ -1107,7 +1113,7 @@ AIH.waitForApp(function(app) {
             });
         }
     });
-});
+})();
 
 // ========================
 // Utilitaires : modales et toots
