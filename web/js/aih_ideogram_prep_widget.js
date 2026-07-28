@@ -43,6 +43,25 @@
                     }
                 }
 
+                // ---- Fixer la taille du textarea natif description ----
+                const FIXED_TA_HEIGHT = 120;
+                const descriptionWidget = node.widgets?.find(w => w.name === "description");
+                if (descriptionWidget) {
+                    const fixDescription = () => {
+                        if (descriptionWidget.inputEl) {
+                            descriptionWidget.inputEl.style.height = FIXED_TA_HEIGHT + "px";
+                            descriptionWidget.inputEl.style.minHeight = FIXED_TA_HEIGHT + "px";
+                            descriptionWidget.inputEl.style.maxHeight = FIXED_TA_HEIGHT + "px";
+                            descriptionWidget.inputEl.style.resize = "none";
+                        }
+                    };
+                    fixDescription();
+                    requestAnimationFrame(fixDescription);
+                    descriptionWidget.computeSize = function() {
+                        return [0, FIXED_TA_HEIGHT];
+                    };
+                }
+
                 const _cache = (window.__AIH_cache = window.__AIH_cache || { styles: 0, tmpl: 0 });
                 const CACHE_TTL = 15000;
 
@@ -228,7 +247,28 @@
                     serialize: false,
                     hideOnZoom: false,
                 });
-                widget.computeSize = () => [node.size[0] - 20, 105];
+                // ---- Calcul dynamique de la hauteur du DOM widget ----
+                // Le DOM widget remplit l'espace restant après les widgets natifs.
+                // Les widgets natifs (description, seed, etc.) ont une taille fixe,
+                // et le DOM widget s'agrandit quand on resize la node verticalement.
+                function computeDomHeight() {
+                    let otherHeight = 0;
+                    for (const w of node.widgets) {
+                        if (w === widget) continue;
+                        if (w.hidden) continue;
+                        let h = 26;
+                        if (w.computeSize) {
+                            try {
+                                const s = w.computeSize();
+                                if (Array.isArray(s) && s[1]) h = s[1];
+                            } catch {}
+                        }
+                        otherHeight += h;
+                    }
+                    const chrome = 50; // titre node + padding
+                    return Math.max(node.size[1] - otherHeight - chrome, 100);
+                }
+                widget.computeSize = () => [node.size[0] - 20, computeDomHeight()];
 
                 Promise.all([populateTemplateSelect(), stylePicker.init()]).then(() => {
                     const restored = restoreFromNativeWidget();
@@ -256,7 +296,7 @@
                 const onResize = node.onResize;
                 node.onResize = function (size) {
                     const r = onResize?.apply(this, arguments);
-                    widget.computeSize = () => [size[0] - 20, 105];
+                    widget.computeSize = () => [size[0] - 20, computeDomHeight()];
                     container.style.width = (size[0] - 20) + "px";
                     // Forcer la grille 2 colonnes pour eviter l'effondrement
                     if (grid) grid.style.gridTemplateColumns = "1fr 1fr";

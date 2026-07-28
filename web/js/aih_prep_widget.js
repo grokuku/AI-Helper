@@ -56,6 +56,25 @@
                 const templateIdWidget = node.widgets?.find(x => x.name === "template_id");
                 const styleWidget = node.widgets?.find(x => x.name === "style_id");
 
+                // ---- Fixer la taille du textarea natif base_prompt ----
+                const FIXED_TA_HEIGHT = 120;
+                const basePromptWidget = node.widgets?.find(w => w.name === "base_prompt");
+                if (basePromptWidget) {
+                    const fixBasePrompt = () => {
+                        if (basePromptWidget.inputEl) {
+                            basePromptWidget.inputEl.style.height = FIXED_TA_HEIGHT + "px";
+                            basePromptWidget.inputEl.style.minHeight = FIXED_TA_HEIGHT + "px";
+                            basePromptWidget.inputEl.style.maxHeight = FIXED_TA_HEIGHT + "px";
+                            basePromptWidget.inputEl.style.resize = "none";
+                        }
+                    };
+                    fixBasePrompt();
+                    requestAnimationFrame(fixBasePrompt);
+                    basePromptWidget.computeSize = function() {
+                        return [0, FIXED_TA_HEIGHT];
+                    };
+                }
+
                 // ---- Cache de rafraîchissement ----
                 const _cache = (window.__AIH_cache = window.__AIH_cache || {});
                 const CACHE_TTL = 15000;
@@ -236,7 +255,28 @@
                     serialize: false,
                     hideOnZoom: false,
                 });
-                widget.computeSize = () => [node.size[0] - 20, 110];
+                // ---- Calcul dynamique de la hauteur du DOM widget ----
+                // Le DOM widget remplit l'espace restant après les widgets natifs.
+                // Les widgets natifs (base_prompt, seed, etc.) ont une taille fixe,
+                // et le DOM widget s'agrandit quand on resize la node verticalement.
+                function computeDomHeight() {
+                    let otherHeight = 0;
+                    for (const w of node.widgets) {
+                        if (w === widget) continue;
+                        if (w.hidden) continue;
+                        let h = 26;
+                        if (w.computeSize) {
+                            try {
+                                const s = w.computeSize();
+                                if (Array.isArray(s) && s[1]) h = s[1];
+                            } catch {}
+                        }
+                        otherHeight += h;
+                    }
+                    const chrome = 50; // titre node + padding
+                    return Math.max(node.size[1] - otherHeight - chrome, 100);
+                }
+                widget.computeSize = () => [node.size[0] - 20, computeDomHeight()];
 
                 // ---- Initialisation ----
                 Promise.all([populateTemplateSelect(), stylePicker.init()]).then(() => {
@@ -273,7 +313,7 @@
                 const onResize = node.onResize;
                 node.onResize = function (size) {
                     const r = onResize?.apply(this, arguments);
-                    widget.computeSize = () => [size[0] - 20, 110];
+                    widget.computeSize = () => [size[0] - 20, computeDomHeight()];
                     if (container) container.style.width = (size[0] - 20) + "px";
                     // Forcer la grille 2 colonnes a rester en 2 colonnes
                     // (evite que le grid s'effondre si la largeur devient

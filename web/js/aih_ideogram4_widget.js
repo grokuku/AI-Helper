@@ -42,6 +42,25 @@
                     }
                 }
 
+                // ---- Fixer la taille du textarea natif description ----
+                const FIXED_TA_HEIGHT = 120;
+                const descriptionWidget = node.widgets?.find(w => w.name === "description");
+                if (descriptionWidget) {
+                    const fixDescription = () => {
+                        if (descriptionWidget.inputEl) {
+                            descriptionWidget.inputEl.style.height = FIXED_TA_HEIGHT + "px";
+                            descriptionWidget.inputEl.style.minHeight = FIXED_TA_HEIGHT + "px";
+                            descriptionWidget.inputEl.style.maxHeight = FIXED_TA_HEIGHT + "px";
+                            descriptionWidget.inputEl.style.resize = "none";
+                        }
+                    };
+                    fixDescription();
+                    requestAnimationFrame(fixDescription);
+                    descriptionWidget.computeSize = function() {
+                        return [0, FIXED_TA_HEIGHT];
+                    };
+                }
+
                 const getApiUrl = () => {
                     try {
                         const cfg = JSON.parse(localStorage.getItem("AIH_config") || "{}");
@@ -241,13 +260,36 @@
                     setValue: (v) => {},
                 });
                 domWidget.options = domWidget.options || {};
-                domWidget.options.height = 320;
+
+                // ---- Calcul dynamique de la hauteur du DOM widget ----
+                // Le DOM widget remplit l'espace restant après les widgets natifs.
+                // Les widgets natifs (description, seed, etc.) ont une taille fixe,
+                // et le DOM widget s'agrandit quand on resize la node verticalement.
+                function computeDomHeight() {
+                    let otherHeight = 0;
+                    for (const w of node.widgets) {
+                        if (w === domWidget) continue;
+                        if (w.hidden) continue;
+                        let h = 26;
+                        if (w.computeSize) {
+                            try {
+                                const s = w.computeSize();
+                                if (Array.isArray(s) && s[1]) h = s[1];
+                            } catch {}
+                        }
+                        otherHeight += h;
+                    }
+                    const chrome = 50; // titre node + padding
+                    return Math.max(node.size[1] - otherHeight - chrome, 120);
+                }
+                domWidget.computeSize = () => [node.size[0] - 20, computeDomHeight()];
 
                 const MIN_WIDTH = 340;
                 const origOnResize = node.onResize;
                 node.onResize = function (size) {
                     if (origOnResize) origOnResize.call(this, size);
                     if (size[0] < MIN_WIDTH) size[0] = MIN_WIDTH;
+                    domWidget.computeSize = () => [size[0] - 20, computeDomHeight()];
                     container.style.width = (size[0] - 20) + "px";
                 };
                 requestAnimationFrame(() => {

@@ -1268,6 +1268,10 @@ def _prepare_enhance(user_id, data):
         system_prompt = sys_prompt
 
         # 9. Construire le payload LLM (format OpenAI standard pour /chat/completions)
+        # NOTE: 'repeat_penalty' est un paramètre spécifique à Ollama/llama.cpp, NON
+        # supporté par les APIs compatible OpenAI (DeepSeek, OpenAI, etc.).
+        # Il provoque un 400 Bad Request → on ne l'envoie pas.
+        # 'frequency_penalty' (0.0–2.0) et 'temperature' sont standard OpenAI.
         llm_request = {
             'model': model,
             'messages': [
@@ -1276,7 +1280,6 @@ def _prepare_enhance(user_id, data):
             ],
             'temperature': 0.3,
             'frequency_penalty': 0.5,
-            'repeat_penalty': 1.2,
         }
         llm_config = {
             'base_url': base_url,
@@ -1516,6 +1519,8 @@ def _prepare_validation_pass(current_output, original_input, style_text, width, 
     # User prompt = la sortie brute de la passe 1
     user_content = current_output
 
+    # NOTE: 'repeat_penalty' est spécifique à Ollama/llama.cpp et provoque un
+    # 400 Bad Request sur les APIs compatible OpenAI (DeepSeek, etc.).
     llm_request = {
         'model': model,
         'messages': [
@@ -1524,7 +1529,6 @@ def _prepare_validation_pass(current_output, original_input, style_text, width, 
         ],
         'temperature': 0.1,
         'frequency_penalty': 0.0,
-        'repeat_penalty': 1.0,
     }
     # Debug : enregistrer l'appel de validation
     debug['api_calls'].append({
