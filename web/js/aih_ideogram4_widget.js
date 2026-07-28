@@ -269,7 +269,7 @@
                     }
                     return h;
                 }
-                const CHROME = 70; // titre node + padding
+                const CHROME = 112; // titre node + padding (+42 pour corriger le décalage de 42px)
                 // La hauteur du container est pilotée dynamiquement dans onResize
                 // via le calcul de l'espace restant (node.size[1] - fixedWidgetsHeight() - CHROME).
                 // applyContainerHeight n'est plus utilisée ; le calcul est fait directement

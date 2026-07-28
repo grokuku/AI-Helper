@@ -260,7 +260,7 @@
                 // aggrandit la node à chaque frame (computeDomHeight lisait node.size[1]
                 // → feedback loop). La hauteur réelle du container est pilotée
                 // manuellement dans onResize / init.
-                const FIXED_DOM_HEIGHT = 200; // valeur fixe retournée à LiteGraph
+                const FIXED_DOM_HEIGHT = 88; // valeur fixe retournée à LiteGraph (-112px: JS height + minimum node height reduction)
                 widget.computeSize = () => [node.size[0] - 20, FIXED_DOM_HEIGHT];
 
                 // Somme dynamique des computeSize() de tous les widgets natifs visibles

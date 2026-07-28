@@ -267,7 +267,7 @@
                 // Le DOM widget remplit l'espace restant après les widgets natifs.
                 // Les widgets natifs (base_prompt, seed, etc.) ont une taille fixe,
                 // et le DOM widget s'agrandit quand on resize la node verticalement.
-                const DOM_WIDGET_HEIGHT = 240;
+                const DOM_WIDGET_HEIGHT = 128; // -112px: JS height + minimum node height reduction
                 const CHROME = 70; // titre node + padding
                 // Somme des hauteurs des widgets natifs visibles (utilise computeSize de chaque widget)
                 function fixedWidgetsHeight() {
