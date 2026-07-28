@@ -374,18 +374,39 @@ AIH.waitForApp(function(app) {
                             const textInput = document.createElement("input");
                             textInput.type = "text";
                             textInput.value = item.text || "";
-                            textInput.placeholder = "Texte... ou A::B::C pour alternatives au hasard";
+                            textInput.placeholder = "Texte... ou {A::B::C} pour alternatives au hasard";
                             Object.assign(textInput.style, {
                                 flex: "1", minWidth: "0",
                                 padding: "2px 6px", borderRadius: "3px",
                                 border: "1px solid #555", background: "#1a1a1e",
                                 color: "#fff", fontSize: "11px",
                             });
+                            // Badge montrant le nombre de choix par bloc {}
+                            const choiceBadge = document.createElement("span");
+                            Object.assign(choiceBadge.style, {
+                                fontSize: "9px", color: "#818cf8", whiteSpace: "nowrap",
+                                flexShrink: "0", padding: "0 2px",
+                            });
+                            function updateChoiceBadge() {
+                                const blocks = parseChoiceBlocks(textInput.value);
+                                if (blocks.length === 0) {
+                                    choiceBadge.textContent = "";
+                                    choiceBadge.title = "";
+                                } else {
+                                    const counts = blocks.map(b => b.length);
+                                    choiceBadge.textContent = "🔀" + counts.join("·");
+                                    choiceBadge.title = blocks.length + " bloc(s) de choix : " +
+                                        blocks.map(b => "{" + b.join("::") + "}").join(" ");
+                                }
+                            }
                             textInput.oninput = () => {
                                 item.text = textInput.value;
+                                updateChoiceBadge();
                                 syncElementsWidget();
                             };
                             row.appendChild(textInput);
+                            row.appendChild(choiceBadge);
+                            updateChoiceBadge();
                         } else {
                             // Filtre : nom + meta
                             const label = document.createElement("span");
@@ -750,22 +771,49 @@ AIH.waitForApp(function(app) {
                     return h >>> 0;
                 }
 
-                // Choisit 1 alternative parmi celles separees par "::".
-                // Si 1 seule (ou aucune), retourne le texte tel quel.
+                // Parser les blocs de choix {A::B::C} dans un texte.
+                // Retourne un tableau de tableaux : [[alt1, alt2, ...], ...]
+                // Un bloc vide ou avec 0 alternatives est ignoré.
+                // Si aucun bloc {}, retourne [] (texte littéral).
+                function parseChoiceBlocks(rawText) {
+                    if (!rawText) return [];
+                    const blocks = [];
+                    const re = /\{([^}]+)\}/g;
+                    let m;
+                    while ((m = re.exec(rawText)) !== null) {
+                        const alts = m[1].split("::").map(s => s.trim()).filter(Boolean);
+                        if (alts.length > 0) blocks.push(alts);
+                    }
+                    return blocks;
+                }
+
+                // Résout les blocs de choix {A::B::C} dans un texte :
+                // - Chaque bloc {} est remplacé par 1 alternative au hasard.
+                // - Le texte hors {} est conservé tel quel (templates supportés).
+                // - Sans bloc {}, le texte est littéral (retourné tel quel).
                 // Deterministe : meme (seed, index, texte) => meme choix.
                 // Si seed == 0 (pas de seed), random non-deterministe.
                 function pickAlternative(rawText, seed, elementIndex) {
                     if (!rawText) return "";
-                    const alts = rawText.split("::").map(s => s.trim()).filter(Boolean);
-                    if (alts.length < 2) return rawText;
-                    if (seed <= 0) {
-                        // Pas de seed : random classique
-                        return alts[Math.floor(Math.random() * alts.length)];
-                    }
-                    // Hash du triplet (seed, index, rawText) pour eviter les
-                    // collisions entre elements ayant les memes alternatives
-                    const h = hash32(`${seed}|${elementIndex}|${rawText}`);
-                    return alts[h % alts.length];
+                    if (!/\{[^}]+\}/.test(rawText)) return rawText;
+                    let blockIdx = 0;
+                    return rawText.replace(/\{([^}]+)\}/g, (_fullMatch, inner) => {
+                        const alts = inner.split("::").map(s => s.trim()).filter(Boolean);
+                        if (alts.length === 0) return "";
+                        if (alts.length === 1) return alts[0];
+                        let chosen;
+                        if (seed <= 0) {
+                            // Pas de seed : random classique
+                            chosen = alts[Math.floor(Math.random() * alts.length)];
+                        } else {
+                            // Hash du triplet (seed, index, blockIdx, inner) pour
+                            // eviter les collisions entre blocs ayant les memes alternatives
+                            const h = hash32(`${seed}|${elementIndex}|${blockIdx}|${inner}`);
+                            chosen = alts[h % alts.length];
+                        }
+                        blockIdx++;
+                        return chosen;
+                    });
                 }
 
                 // ---- triggerGenerate ----
@@ -790,7 +838,7 @@ AIH.waitForApp(function(app) {
                         if (e.type === "filter") {
                             payload.elements.push({ type: "filter", id: e.id });
                         } else if (e.type === "text") {
-                            // Si le texte contient "::", choisir 1 alternative au hasard
+                            // Résoudre les blocs de choix {A::B::C} dans le texte
                             // (deterministe par seed pour reproductibilite du workflow).
                             const chosen = pickAlternative(e.text || "", seed, idx);
                             payload.elements.push({ type: "raw", text: chosen });

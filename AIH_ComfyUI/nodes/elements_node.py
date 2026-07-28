@@ -11,6 +11,12 @@ Mode "intelligent" LLM :
   - 🧠 ON sur une liste manuelle → filtrage LLM par contexte
   - Appel POST /api/keywords/llm-process (preset_id, instruction, input_text)
   - Traitement séquentiel avec accumulation de contexte
+
+Format des listes manuelles :
+  - {bleu::rouge::vert} → un bloc de choix, random dedans
+  - femme de {25::30::35::40} ans → template avec bloc inline
+  - {blond::brun} cheveux {long::court} → multiples blocs indépendants
+  - Texte hors {} = littéral, retourné tel quel
 """
 
 import json
@@ -32,21 +38,89 @@ def _hash32(s):
 _LLM_CONCEPT_RE = re.compile(r'\|\|([^:]+)(?::(\d+))?')
 
 
-def _pick_alternative(raw_text, seed, element_index):
-    """Si raw_text contient des alternatives separees par '::', en choisit une.
+# Regex pour trouver les blocs {choix1::choix2::...}
+_BRACE_BLOCK_RE = re.compile(r'\{([^}]+)\}')
 
-    Deterministe par seed pour garantir la reproductibilite du workflow.
-    Si seed == 0, choix aleatoire non-deterministe.
+
+def _extract_brace_blocks(text):
+    """Extrait tous les blocs {a::b::c} du texte.
+
+    Retourne une liste de tuples (match_obj, [choix1, choix2, ...]).
+    Si aucun bloc {} n'est trouvé, retourne une liste vide.
     """
-    if not raw_text:
+    blocks = []
+    for m in _BRACE_BLOCK_RE.finditer(text):
+        content = m.group(1)
+        choices = [c.strip() for c in content.split("::") if c.strip()]
+        blocks.append((m, choices))
+    return blocks
+
+
+def _resolve_braces(text, seed, element_index):
+    """Résout tous les blocs {a::b::c} dans le texte.
+
+    Pour chaque bloc, choisit une option (déterministe par seed si seed > 0,
+    sinon aléatoire) et remplace le bloc par le choix dans le texte.
+    Le texte hors {} est retourné littéral.
+    Si aucun bloc {} trouvé, retourne le texte tel quel.
+    """
+    if not text:
         return ""
-    alts = [part.strip() for part in raw_text.split("::") if part.strip()]
-    if len(alts) < 2:
-        return raw_text
-    if seed <= 0:
-        return random.choice(alts)
-    h = _hash32(f"{seed}|{element_index}|{raw_text}")
-    return alts[h % len(alts)]
+
+    blocks = _extract_brace_blocks(text)
+    if not blocks:
+        return text
+
+    result = text
+    for m, choices in blocks:
+        if not choices:
+            continue
+        if len(choices) == 1:
+            chosen = choices[0]
+        elif seed <= 0:
+            chosen = random.choice(choices)
+        else:
+            h = _hash32(f"{seed}|{element_index}|{m.group(0)}")
+            chosen = choices[h % len(choices)]
+        result = result.replace(m.group(0), chosen, 1)
+
+    return result
+
+
+def _resolve_braces_with_filtered(text, seed, element_index, filtered_choices):
+    """Résout les blocs {} en utilisant uniquement les choix filtrés par le LLM.
+
+    Pour chaque bloc, intersecte ses choix avec filtered_choices.
+    Si l'intersection est non vide, pick dedans. Sinon, fallback random
+    dans les choix originaux du bloc.
+    """
+    if not text:
+        return ""
+
+    blocks = _extract_brace_blocks(text)
+    if not blocks:
+        return text
+
+    filtered_set = set(c.strip() for c in filtered_choices)
+    result = text
+    for m, choices in blocks:
+        if not choices:
+            continue
+        # Intersection des choix du bloc avec les choix filtrés
+        valid = [c for c in choices if c in filtered_set]
+        if not valid:
+            # Fallback: utiliser tous les choix originaux du bloc
+            valid = choices
+        if len(valid) == 1:
+            chosen = valid[0]
+        elif seed <= 0:
+            chosen = random.choice(valid)
+        else:
+            h = _hash32(f"{seed}|{element_index}|{m.group(0)}")
+            chosen = valid[h % len(valid)]
+        result = result.replace(m.group(0), chosen, 1)
+
+    return result
 
 
 def _pick_from_list(items, seed, element_index, raw_text):
@@ -146,7 +220,7 @@ class AIHElementsNode:
         # Filtrer les entrees marquees visible=False (masquees depuis l'UI)
         elements = [el for el in elements if el.get("visible") is not False]
 
-        # Resoudre les alternatives "::" et les listes LLM "||" dans les textes raw/texte.
+        # Resoudre les blocs {a::b::c} et les listes LLM "||" dans les textes raw/texte.
         # Traitement séquentiel : le contexte accumule les mots-clés choisis dans les
         # listes précédentes pour les appels LLM avec 🧠 ON.
         context = []  # liste des mots-clés choisis (pour le contexte LLM)
@@ -211,19 +285,25 @@ class AIHElementsNode:
                     indices_to_skip.add(i)
                 continue
 
-            # --- Liste manuelle (a::b::c) ou valeur simple ---
-            alts = [part.strip() for part in raw_text.split("::") if part.strip()]
-            is_multi = len(alts) >= 2
+            # --- Liste manuelle avec blocs {a::b::c} ou texte littéral ---
+            blocks = _extract_brace_blocks(raw_text)
+            has_braces = len(blocks) >= 1
 
-            if is_multi and brain_on and preset_id != 0:
-                # 🧠 ON + liste manuelle → filtrage LLM par contexte
+            if has_braces and brain_on and preset_id != 0:
+                # 🧠 ON + liste manuelle avec {} → filtrage LLM par contexte
+                # Concaténer tous les choix de tous les blocs
+                all_choices = []
+                for _, choices in blocks:
+                    all_choices.extend(choices)
+
                 instruction = (
                     "Filtre cette liste pour garder uniquement les éléments "
                     "cohérents avec le contexte. Retourne uniquement une liste "
                     "séparée par des virgules."
                 )
                 input_text = (
-                    f"Contexte: [{', '.join(context)}]\nListe: [{', '.join(alts)}]"
+                    f"Contexte: [{', '.join(context)}]\n"
+                    f"Liste: [{', '.join(all_choices)}]"
                 )
 
                 output = _call_llm_process(
@@ -232,9 +312,10 @@ class AIHElementsNode:
                 if output:
                     filtered = _parse_llm_list(output)
                     if filtered:
-                        chosen = _pick_from_list(filtered, seed, i, raw_text)
-                        el["text"] = chosen
-                        context.append(chosen)
+                        el["text"] = _resolve_braces_with_filtered(
+                            raw_text, seed, i, filtered
+                        )
+                        context.append(el["text"])
                         continue
                     else:
                         logging.warning(
@@ -246,12 +327,13 @@ class AIHElementsNode:
                         "[AIH Elements] LLM filter call failed, "
                         "falling back to random"
                     )
-                # Fallback: random dans la liste complète d'origine
-                el["text"] = _pick_alternative(raw_text, seed, i)
+                # Fallback: random dans les blocs d'origine
+                el["text"] = _resolve_braces(raw_text, seed, i)
                 context.append(el["text"])
             else:
                 # Comportement standard (déterministe par seed)
-                el["text"] = _pick_alternative(raw_text, seed, i)
+                # Sans {} → texte littéral retourné tel quel
+                el["text"] = _resolve_braces(raw_text, seed, i)
                 if el["text"]:
                     context.append(el["text"])
 
