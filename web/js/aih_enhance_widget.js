@@ -57,6 +57,7 @@
                 // ---- Fixer la taille du textarea natif base_prompt ----
                 const FIXED_TA_HEIGHT = 120;
                 const basePromptWidget = node.widgets?.find(w => w.name === "base_prompt");
+                var _aihRealTAHeight = FIXED_TA_HEIGHT + 10; // fallback 130
                 if (basePromptWidget) {
                     const fixBasePrompt = () => {
                         if (basePromptWidget.inputEl) {
@@ -64,12 +65,19 @@
                             basePromptWidget.inputEl.style.minHeight = FIXED_TA_HEIGHT + "px";
                             basePromptWidget.inputEl.style.maxHeight = FIXED_TA_HEIGHT + "px";
                             basePromptWidget.inputEl.style.resize = "none";
+                            basePromptWidget.inputEl.style.boxSizing = "border-box";
                         }
                     };
                     fixBasePrompt();
-                    requestAnimationFrame(fixBasePrompt);
+                    var oh = basePromptWidget.inputEl && basePromptWidget.inputEl.offsetHeight;
+                    if (oh && oh > 0) _aihRealTAHeight = oh;
+                    requestAnimationFrame(function() {
+                        fixBasePrompt();
+                        var oh2 = basePromptWidget.inputEl && basePromptWidget.inputEl.offsetHeight;
+                        if (oh2 && oh2 > 0) _aihRealTAHeight = oh2;
+                    });
                     basePromptWidget.computeSize = function() {
-                        return [0, FIXED_TA_HEIGHT];
+                        return [0, _aihRealTAHeight];
                     };
                 }
 
@@ -206,10 +214,10 @@
                 const resultTextarea = document.createElement("textarea");
                 Object.assign(resultTextarea.style, {
                     width: "100%",
-                    height: "120px", minHeight: "80px", maxHeight: "260px",
+                    flex: "1", minHeight: "80px",
                     borderRadius: "4px", border: "1px solid #555",
                     padding: "4px", background: "#1a1a1e", color: "#fff",
-                    fontSize: "11px", resize: "vertical", boxSizing: "border-box",
+                    fontSize: "11px", resize: "none", boxSizing: "border-box",
                 });
                 resultTextarea.placeholder = "Résultat de l'enhance...";
                 resultTextarea.readOnly = true;
@@ -242,7 +250,7 @@
                             otherHeight += h;
                         }
                     }
-                    const chrome = 50; // titre node + padding
+                    const chrome = 70; // titre node + padding
                     return Math.max(node.size[1] - otherHeight - chrome, DOM_WIDGET_HEIGHT);
                 }
                 // computeSize must return a FIXED height — using node.size[1]

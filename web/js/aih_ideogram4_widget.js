@@ -50,6 +50,7 @@
                 // ---- Fixer la taille du textarea natif description ----
                 const FIXED_TA_HEIGHT = 120;
                 const descriptionWidget = node.widgets?.find(w => w.name === "description");
+                var _aihRealTAHeight = FIXED_TA_HEIGHT + 10; // fallback 130
                 if (descriptionWidget) {
                     const fixDescription = () => {
                         if (descriptionWidget.inputEl) {
@@ -57,12 +58,19 @@
                             descriptionWidget.inputEl.style.minHeight = FIXED_TA_HEIGHT + "px";
                             descriptionWidget.inputEl.style.maxHeight = FIXED_TA_HEIGHT + "px";
                             descriptionWidget.inputEl.style.resize = "none";
+                            descriptionWidget.inputEl.style.boxSizing = "border-box";
                         }
                     };
                     fixDescription();
-                    requestAnimationFrame(fixDescription);
+                    var oh = descriptionWidget.inputEl && descriptionWidget.inputEl.offsetHeight;
+                    if (oh && oh > 0) _aihRealTAHeight = oh;
+                    requestAnimationFrame(function() {
+                        fixDescription();
+                        var oh2 = descriptionWidget.inputEl && descriptionWidget.inputEl.offsetHeight;
+                        if (oh2 && oh2 > 0) _aihRealTAHeight = oh2;
+                    });
                     descriptionWidget.computeSize = function() {
-                        return [0, FIXED_TA_HEIGHT];
+                        return [0, _aihRealTAHeight];
                     };
                 }
 
@@ -224,10 +232,10 @@
                 const resultTextarea = document.createElement("textarea");
                 Object.assign(resultTextarea.style, {
                     width: "100%",
-                    height: "160px", minHeight: "120px", maxHeight: "260px",
+                    flex: "1", minHeight: "120px",
                     borderRadius: "4px", border: "1px solid #555",
                     padding: "4px", background: "#1a1a1e", color: "#fff",
-                    fontSize: "11px", resize: "vertical", boxSizing: "border-box",
+                    fontSize: "11px", resize: "none", boxSizing: "border-box",
                 });
                 resultTextarea.placeholder = "JSON caption Ideogram 4...";
                 resultTextarea.readOnly = true;
@@ -274,18 +282,18 @@
                 const FIXED_DOM_HEIGHT = 200; // valeur fixe retournée à LiteGraph
                 domWidget.computeSize = () => [node.size[0] - 20, FIXED_DOM_HEIGHT];
 
-                // Hauteur des widgets natifs (description 120px + autres ~26px chacun)
+                // Hauteur des widgets natifs (description + autres ~26px chacun)
                 function fixedWidgetsHeight() {
                     let h = 0;
                     for (const w of node.widgets) {
                         if (w === domWidget) continue;
                         if (w.hidden) continue;
-                        if (w === descriptionWidget) { h += 120; continue; }
+                        if (w === descriptionWidget) { h += _aihRealTAHeight; continue; }
                         h += 26;
                     }
                     return h;
                 }
-                const CHROME = 50; // titre node + padding
+                const CHROME = 70; // titre node + padding
                 function applyContainerHeight() {
                     const hh = Math.max(node.size[1] - fixedWidgetsHeight() - CHROME, 120);
                     container.style.height = hh + "px";

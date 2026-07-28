@@ -51,6 +51,7 @@
                 // ---- Fixer la taille du textarea natif description ----
                 const FIXED_TA_HEIGHT = 120;
                 const descriptionWidget = node.widgets?.find(w => w.name === "description");
+                var _aihRealTAHeight = FIXED_TA_HEIGHT + 10; // fallback 130
                 if (descriptionWidget) {
                     const fixDescription = () => {
                         if (descriptionWidget.inputEl) {
@@ -58,12 +59,19 @@
                             descriptionWidget.inputEl.style.minHeight = FIXED_TA_HEIGHT + "px";
                             descriptionWidget.inputEl.style.maxHeight = FIXED_TA_HEIGHT + "px";
                             descriptionWidget.inputEl.style.resize = "none";
+                            descriptionWidget.inputEl.style.boxSizing = "border-box";
                         }
                     };
                     fixDescription();
-                    requestAnimationFrame(fixDescription);
+                    var oh = descriptionWidget.inputEl && descriptionWidget.inputEl.offsetHeight;
+                    if (oh && oh > 0) _aihRealTAHeight = oh;
+                    requestAnimationFrame(function() {
+                        fixDescription();
+                        var oh2 = descriptionWidget.inputEl && descriptionWidget.inputEl.offsetHeight;
+                        if (oh2 && oh2 > 0) _aihRealTAHeight = oh2;
+                    });
                     descriptionWidget.computeSize = function() {
-                        return [0, FIXED_TA_HEIGHT];
+                        return [0, _aihRealTAHeight];
                     };
                 }
 
@@ -265,12 +273,12 @@
                     for (const w of node.widgets) {
                         if (w === widget) continue;
                         if (w.hidden) continue;
-                        if (w === descriptionWidget) { h += 120; continue; }
+                        if (w === descriptionWidget) { h += _aihRealTAHeight; continue; }
                         h += 26;
                     }
                     return h;
                 }
-                const CHROME = 50;
+                const CHROME = 70;
                 function applyContainerHeight() {
                     const hh = Math.max(node.size[1] - fixedWidgetsHeight() - CHROME, 100);
                     container.style.height = hh + "px";
