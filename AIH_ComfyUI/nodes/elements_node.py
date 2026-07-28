@@ -189,13 +189,14 @@ class AIHElementsNode:
                 # JSON sérialisé par le JS : elements + random_count
                 # Masqué dans l'UI ComfyUI
                 "_elements_json": ("STRING", {"default": "{}", "multiline": True}),
+                "elements_input": ("STRING", {"default": "", "forceInput": True}),  # champ texte simple une ligne, accepte connexion
             }
         }
 
     RETURN_TYPES = ("STRING",)
     RETURN_NAMES = ("elements",)
 
-    def generate(self, seed, _elements_json="{}"):
+    def generate(self, seed, _elements_json="{}", elements_input=""):
         from . import _credentials
         try:
             elems_cfg = json.loads(_elements_json) if _elements_json else {}
@@ -223,7 +224,11 @@ class AIHElementsNode:
         # Resoudre les blocs {a::b::c} et les listes LLM "||" dans les textes raw/texte.
         # Traitement séquentiel : le contexte accumule les mots-clés choisis dans les
         # listes précédentes pour les appels LLM avec 🧠 ON.
-        context = []  # liste des mots-clés choisis (pour le contexte LLM)
+        # Contexte initial pour le LLM (chaînage avec une autre node EP)
+        context = []
+        if elements_input and elements_input.strip():
+            context.append(elements_input.strip())
+
         indices_to_skip = set()  # indices d'éléments LLM à skip (liste vide)
 
         for i, el in enumerate(elements):
