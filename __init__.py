@@ -36,6 +36,30 @@ _base = os.path.dirname(os.path.abspath(__file__))
 if _base not in sys.path:
     sys.path.insert(0, _base)
 
+# ── Helpers pour le stockage local dans user/default/aih/ ──────────
+
+def _migrate_to_aih_subfolder(old_path, new_path):
+    """Déplace un fichier vers le sous-dossier aih/ s'il existe à l'ancien emplacement."""
+    import os as _os
+    import shutil as _shutil
+    if _os.path.isfile(old_path) and not _os.path.isfile(new_path):
+        _os.makedirs(_os.path.dirname(new_path), exist_ok=True)
+        _shutil.move(old_path, new_path)
+        logging.info(f"[AIH] Migrated {old_path} → {new_path}")
+
+def _get_aih_user_dir():
+    """Retourne le dossier user/default/aih/ de ComfyUI."""
+    try:
+        import folder_paths
+        user_dir = folder_paths.get_user_directory()
+    except Exception:
+        user_dir = os.path.join(os.path.dirname(_base), "user")
+    return os.path.join(user_dir, "default", "aih")
+
+def _get_presets_path():
+    """Retourne le chemin du fichier de presets de l'Elements Picker."""
+    return os.path.join(_get_aih_user_dir(), "aih_elements_presets.json")
+
 def _load_module(filepath, name):
     """Charge un fichier Python comme module par son chemin absolu.
 
@@ -139,6 +163,16 @@ _credentials_mod = _load_module(
     "_credentials"
 )
 
+# Migrer les credentials vers le sous-dossier aih/
+try:
+    _aih_dir = _get_aih_user_dir()
+    os.makedirs(_aih_dir, exist_ok=True)
+    _old_creds = os.path.join(os.path.dirname(_aih_dir), "aih_credentials.json")
+    _new_creds = os.path.join(_aih_dir, "credentials.json")
+    _migrate_to_aih_subfolder(_old_creds, _new_creds)
+except Exception as _e:
+    logging.warning(f"[AIH] Credentials migration failed: {_e}")
+
 # Charger les modules workflow sharing
 _custom_nodes_mgr_mod = _load_module(
     os.path.join(_nodes_dir, "custom_nodes_manager.py"),
@@ -230,7 +264,7 @@ if _routes is not None and _update_manager_mod is not None:
 
     # ── Routes credentials (lecture / ecriture du fichier local) ───
     # Le menu AIH → Compte appelle ces routes pour lire/ecrire
-    # ComfyUI/user/default/aih_credentials.json (api_key + server_url).
+    # ComfyUI/user/default/aih/credentials.json (api_key + server_url).
     # Les nodes Python lisent ce fichier via le helper _credentials.
 
     @_routes.get("/aih/credentials")
@@ -321,7 +355,7 @@ if _routes is not None and _update_manager_mod is not None:
         import os as _os
         import json as _json
         try:
-            presets_path = _os.path.join(_os.path.dirname(_base), "user", "default", "aih_elements_presets.json")
+            presets_path = _get_presets_path()
             if _os.path.isfile(presets_path):
                 with open(presets_path, "r", encoding="utf-8") as f:
                     data = _json.load(f)
@@ -343,7 +377,7 @@ if _routes is not None and _update_manager_mod is not None:
             if not name:
                 return _aio_web.json_response({"status": "error", "message": "Name required"}, status=400)
 
-            presets_path = _os.path.join(_os.path.dirname(_base), "user", "default", "aih_elements_presets.json")
+            presets_path = _get_presets_path()
             _os.makedirs(_os.path.dirname(presets_path), exist_ok=True)
 
             # Lire les presets existants
@@ -390,7 +424,7 @@ if _routes is not None and _update_manager_mod is not None:
             if not name:
                 return _aio_web.json_response({"status": "error", "message": "Name required"}, status=400)
 
-            presets_path = _os.path.join(_os.path.dirname(_base), "user", "default", "aih_elements_presets.json")
+            presets_path = _get_presets_path()
             if not _os.path.isfile(presets_path):
                 return _aio_web.json_response({"status": "ok", "deleted": False})
 

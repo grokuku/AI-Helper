@@ -7,11 +7,12 @@ les parametres de Blobby dans le dossier utilisateur.
 ⚠️  L'import du module 'server' est fait DANS les handlers (pas au niveau module)
     pour eviter les ralentissements au demarrage de ComfyUI.
 
-Stockage : ComfyUI/user/default/aih_blobby.json
+Stockage : ComfyUI/user/default/aih/blobby.json
 """
 
 import os
 import json
+import shutil
 import logging
 
 try:
@@ -20,7 +21,18 @@ try:
 except Exception:
     USER_DIR = os.path.expanduser("~")
 
-BLOBBY_FILE = os.path.join(USER_DIR, "default", "aih_blobby.json")
+# Nouvel emplacement : user/default/aih/blobby.json
+BLOBBY_FILE = os.path.join(USER_DIR, "default", "aih", "blobby.json")
+
+# Migration depuis l'ancien emplacement : user/default/aih_blobby.json
+_old_blobby = os.path.join(USER_DIR, "default", "aih_blobby.json")
+if os.path.isfile(_old_blobby) and not os.path.isfile(BLOBBY_FILE):
+    try:
+        os.makedirs(os.path.dirname(BLOBBY_FILE), exist_ok=True)
+        shutil.move(_old_blobby, BLOBBY_FILE)
+        logging.info(f"[Blobby] Migrated {_old_blobby} → {BLOBBY_FILE}")
+    except Exception as e:
+        logging.warning(f"[Blobby] Migration failed: {e}")
 
 def _ensure_dir():
     d = os.path.dirname(BLOBBY_FILE)

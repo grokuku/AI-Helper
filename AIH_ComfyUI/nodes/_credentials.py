@@ -6,8 +6,8 @@ des nodes (source de bugs d'index et de fuites dans les workflows exportes).
 Elles sont stockees dans un fichier local que les nodes Python lisent
 directement via ce helper.
 
-Emplacement du fichier : <ComfyUI>/user/default/aih_credentials.json
-(ou fallback : <ComfyUI>/user/aih_credentials.json si pas de sous-dossier default/)
+Emplacement du fichier : <ComfyUI>/user/default/aih/credentials.json
+(ou fallback : <ComfyUI>/user/aih/credentials.json si pas de sous-dossier default/)
 
 Format JSON :
 {
@@ -30,6 +30,15 @@ _CREDENTIALS_CACHE = None
 _CREDENTIALS_PATH = None
 
 
+def _migrate_to_aih_subfolder(old_path, new_path):
+    """Déplace un fichier vers le sous-dossier aih/ s'il existe à l'ancien emplacement."""
+    import shutil as _shutil
+    if os.path.isfile(old_path) and not os.path.isfile(new_path):
+        os.makedirs(os.path.dirname(new_path), exist_ok=True)
+        _shutil.move(old_path, new_path)
+        logging.info(f"[AIH] Migrated {old_path} → {new_path}")
+
+
 def get_credentials_path():
     """
     Retourne le chemin du fichier de credentials.
@@ -43,20 +52,24 @@ def get_credentials_path():
     try:
         import folder_paths
         user_dir = folder_paths.get_user_directory()
-        candidates.append(os.path.join(user_dir, "default", "aih_credentials.json"))
-        candidates.append(os.path.join(user_dir, "aih_credentials.json"))
+        # Nouvel emplacement : user/default/aih/credentials.json
+        new_path = os.path.join(user_dir, "default", "aih", "credentials.json")
+        # Migration depuis l'ancien emplacement : user/default/aih_credentials.json
+        old_path = os.path.join(user_dir, "default", "aih_credentials.json")
+        _migrate_to_aih_subfolder(old_path, new_path)
+        candidates.append(new_path)
+        # Fallback : user/aih/credentials.json (sans sous-dossier default/)
+        candidates.append(os.path.join(user_dir, "aih", "credentials.json"))
     except Exception:
         pass
 
     # Fallback : chercher dans le dossier parent de AIH_ComfyUI (= ComfyUI/)
     try:
         here = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        # ici = AIH_Tools/, parent = custom_nodes/AIH_Tools/, parent = custom_nodes/
-        # on remonte jusqu'a trouver le dossier "user" typique
         cur = here
         for _ in range(6):
             cur = os.path.dirname(cur)
-            cand = os.path.join(cur, "user", "default", "aih_credentials.json")
+            cand = os.path.join(cur, "user", "default", "aih", "credentials.json")
             if os.path.isdir(os.path.dirname(cand)):
                 candidates.append(cand)
                 break
@@ -64,7 +77,8 @@ def get_credentials_path():
         pass
 
     # Fallback final : home
-    candidates.append(os.path.expanduser("~/.config/comfyui/aih_credentials.json"))
+    candidates.append(os.path.expanduser("~/.config/comfyui/aih/credentials.json"))
+    candidates.append(os.path.expanduser("~/.aih/credentials.json"))
 
     for p in candidates:
         if os.path.isfile(p):
@@ -75,7 +89,7 @@ def get_credentials_path():
     if candidates:
         _CREDENTIALS_PATH = candidates[0]
     else:
-        _CREDENTIALS_PATH = os.path.expanduser("~/.aih_credentials.json")
+        _CREDENTIALS_PATH = os.path.expanduser("~/.aih/credentials.json")
     return _CREDENTIALS_PATH
 
 
