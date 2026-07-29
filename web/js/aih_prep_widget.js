@@ -204,6 +204,12 @@
                         const items = await apiGet("prompts/templates");
                         typeSelect.innerHTML = `<option value="0">-- Template --</option>`;
                         if (!Array.isArray(items)) return;
+                        // Trier par ordre alphabétique
+                        items.sort(function(a, b) {
+                            var nameA = (a.name || a.title || a.text || a).toString().toLowerCase();
+                            var nameB = (b.name || b.title || b.text || b).toString().toLowerCase();
+                            return nameA.localeCompare(nameB);
+                        });
                         items.forEach(item => {
                             const o = document.createElement("option");
                             o.value = item.id;

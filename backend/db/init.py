@@ -84,6 +84,17 @@ def _create_tables(conn):
             FOREIGN KEY (keyword_id) REFERENCES keywords(id) ON DELETE CASCADE
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS elements_presets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            data TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, name)
+        )
+    """)
 
     # === Nouvelles tables (Phase 1 — Prompt Generator/Enhancer) ===
     conn.execute("""

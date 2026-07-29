@@ -214,16 +214,83 @@ function hideWidget(node, name) {
                     delete epPresetSaveBtn.dataset.active;
                 }
 
-                // ---- EP preset list (local ComfyUI routes) ----
+                // ---- EP preset list (distant backend via apiCall) ----
                 let _epPresetNames = [];
+
+                /**
+                 * Migration automatique des presets locaux (ancien fichier
+                 * ComfyUI/user/default/aih/aih_elements_presets.json) vers le
+                 * backend distant.  Ne s'exécute qu'une seule fois grâce à un
+                 * flag localStorage.
+                 */
+                async function migrateLocalPresets() {
+                    if (localStorage.getItem("AIH_elements_presets_migrated") === "1") return;
+                    try {
+                        // Vérifier si l'ancienne route locale répond (= fichier local existe)
+                        var resp = await fetch("/aih/elements/presets");
+                        if (!resp.ok) {
+                            // Route absente → rien à migrer, marquer comme fait
+                            localStorage.setItem("AIH_elements_presets_migrated", "1");
+                            return;
+                        }
+                        var data = await resp.json();
+                        var localPresets = (data && data.presets) ? data.presets : [];
+                        if (!Array.isArray(localPresets) || localPresets.length === 0) {
+                            // Fichier vide ou inexistant → marquer comme fait
+                            localStorage.setItem("AIH_elements_presets_migrated", "1");
+                            return;
+                        }
+
+                        console.log("[AIH Elements] Migrating " + localPresets.length + " local preset(s) to backend…");
+                        var migrated = 0;
+                        for (var i = 0; i < localPresets.length; i++) {
+                            var p = localPresets[i];
+                            try {
+                                await apiCall("POST", "elements-presets", {
+                                    name: p.name,
+                                    data: p.data
+                                });
+                                migrated++;
+                                console.log("[AIH Elements] Migrated preset: " + p.name);
+                            } catch (e) {
+                                console.error("[AIH Elements] Failed to migrate preset " + (p.name || "#" + i) + ":", e);
+                            }
+                        }
+
+                        // Nettoyer le fichier local (vider les presets)
+                        try {
+                            await fetch("/aih/elements/presets", {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ action: "cleanup" })
+                            });
+                        } catch (e) {
+                            /* non bloquant */
+                        }
+
+                        localStorage.setItem("AIH_elements_presets_migrated", "1");
+                        console.log("[AIH Elements] Local presets migration complete (" + migrated + "/" + localPresets.length + " migrated).");
+                    } catch (e) {
+                        // Route locale n'existe pas / erreur réseau → pas de migration
+                        // On marque quand même pour ne pas retenter à chaque clic
+                        localStorage.setItem("AIH_elements_presets_migrated", "1");
+                    }
+                }
 
                 async function populateEpPresets() {
                     try {
-                        const resp = await fetch("/aih/elements/presets");
-                        const data = await resp.json();
-                        // L'endpoint retourne {"status":"ok","presets":[...]}
-                        const presets = Array.isArray(data) ? data : data.presets;
+                        // ── Migration des presets locaux (une seule fois) ──
+                        await migrateLocalPresets();
+
+                        // apiCall retourne déjà le JSON parsé (un tableau)
+                        const presets = await apiCall("GET", "elements-presets");
                         if (!Array.isArray(presets)) return;
+                        // Trier par ordre alphabétique
+                        presets.sort(function(a, b) {
+                            var nameA = (a.name || a.title || a.text || a).toString().toLowerCase();
+                            var nameB = (b.name || b.title || b.text || b).toString().toLowerCase();
+                            return nameA.localeCompare(nameB);
+                        });
                         _epPresetNames = presets.map(p => p.name);
                         const oldVal = epPresetSelect.value;
                         epPresetSelect.innerHTML = '<option value="">-- EP Preset --</option>';
@@ -303,20 +370,17 @@ function hideWidget(node, name) {
                     }
                 }
 
-                epPresetSelect.onchange = () => {
+                epPresetSelect.onchange = async () => {
                     const name = epPresetSelect.value;
                     if (!name) return;
-                    fetch("/aih/elements/presets")
-                        .then(r => r.json())
-                        .then(data => {
-                            // L'endpoint retourne {"status":"ok","presets":[...]}
-                            const presets = Array.isArray(data) ? data : data.presets;
-                            if (!Array.isArray(presets)) return;
-                            const preset = presets.find(p => p.name === name);
-                            if (!preset || !preset.data) return;
-                            loadEpPreset(preset.data);
-                        })
-                        .catch(err => console.error("[AIH] EP preset load failed:", err));
+                    try {
+                        const presets = await apiCall("GET", "elements-presets");
+                        const preset = presets.find(p => p.name === name);
+                        if (!preset || !preset.data) return;
+                        loadEpPreset(preset.data);
+                    } catch (err) {
+                        console.error("[AIH] EP preset load failed:", err);
+                    }
                 };
 
                 epPresetSaveBtn.onclick = () => {
@@ -372,11 +436,7 @@ function hideWidget(node, name) {
                         const ej = node.widgets?.find(w => w.name === "_elements_json");
                         const data = ej ? ej.value : "";
                         try {
-                            await fetch("/aih/elements/presets", {
-                                method: "POST",
-                                headers: { "Content-Type": "application/json" },
-                                body: JSON.stringify({ name, data }),
-                            });
+                            await apiCall("POST", "elements-presets", { name: name, data: data });
                             node._aihLoadedPresetName = name;
                             clearDirty();
                             await populateEpPresets();
@@ -392,11 +452,7 @@ function hideWidget(node, name) {
                         if (!name || !_epPresetNames.includes(name)) return;
                         if (!confirm('Delete preset "' + name + '"?')) return;
                         try {
-                            await fetch("/aih/elements/presets/delete", {
-                                method: "POST",
-                                headers: { "Content-Type": "application/json" },
-                                body: JSON.stringify({ name }),
-                            });
+                            await apiCall("DELETE", "elements-presets/" + encodeURIComponent(name));
                             _epPresetNames = _epPresetNames.filter(n => n !== name);
                             await populateEpPresets();
                             if (node._aihLoadedPresetName === name) {
@@ -431,6 +487,12 @@ function hideWidget(node, name) {
                         const oldVal = presetSelect.value;
                         const pendingId = presetSelect.dataset.pendingId;
                         presetSelect.innerHTML = '<option value="0">-- Preset IA --</option>';
+                        // Trier par ordre alphabétique
+                        items.sort(function(a, b) {
+                            var nameA = (a.name || a.title || a.text || a).toString().toLowerCase();
+                            var nameB = (b.name || b.title || b.text || b).toString().toLowerCase();
+                            return nameA.localeCompare(nameB);
+                        });
                         items.forEach(item => {
                             const o = document.createElement("option");
                             o.value = item.id;

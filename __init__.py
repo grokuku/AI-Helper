@@ -366,12 +366,21 @@ if _routes is not None and _update_manager_mod is not None:
 
     @_routes.post("/aih/elements/presets")
     async def _aih_save_elements_preset(request):
-        """Sauvegarde ou met à jour un preset."""
+        """Sauvegarde ou met à jour un preset, ou action cleanup."""
         import os as _os
         import json as _json
         from datetime import datetime as _dt
         try:
             body = await request.json()
+
+            # ── Action cleanup : vide le fichier local (après migration distante) ──
+            if body.get("action") == "cleanup":
+                presets_path = _get_presets_path()
+                if _os.path.isfile(presets_path):
+                    with open(presets_path, "w", encoding="utf-8") as f:
+                        _json.dump({"presets": []}, f)
+                return _aio_web.json_response({"status": "ok", "cleaned": True})
+
             name = body.get("name", "").strip()
             preset_data = body.get("data", {})
             if not name:

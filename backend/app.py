@@ -69,6 +69,7 @@ from routes.keywords import *
 from routes.import_export import *
 from routes.filters import *
 from routes.presets import *
+from routes.elements_presets import *
 from routes.styles import *
 from routes.templates import *
 from routes.enhance import *

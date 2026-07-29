@@ -111,6 +111,12 @@
                         if (apiPath === "presets") {
                             try { node._aihPresets = items; } catch {}
                         }
+                        // Trier par ordre alphabétique
+                        items.sort(function(a, b) {
+                            var nameA = (a.name || a.title || a.text || a).toString().toLowerCase();
+                            var nameB = (b.name || b.title || b.text || b).toString().toLowerCase();
+                            return nameA.localeCompare(nameB);
+                        });
                         items.forEach(item => {
                             const o = document.createElement("option");
                             o.value = item[valKey || "id"];

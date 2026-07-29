@@ -340,6 +340,12 @@ function debounce(fn, delay) {
                         const data = await apiCall("GET", "sections");
                         const sections = Array.isArray(data) ? data : (data.sections || data.data || []);
                         sectionSel.innerHTML = '<option value="">Section...</option>';
+                        // Trier par ordre alphabétique
+                        sections.sort(function(a, b) {
+                            var nameA = (typeof a === "string" ? a : (a.section_title || a.title || a.name || String(a.section_id ?? a.id ?? ""))).toString().toLowerCase();
+                            var nameB = (typeof b === "string" ? b : (b.section_title || b.title || b.name || String(b.section_id ?? b.id ?? ""))).toString().toLowerCase();
+                            return nameA.localeCompare(nameB);
+                        });
                         sections.forEach(function (s) {
                             const name = typeof s === "string" ? s : (s.section_title || s.title || s.name || String(s.section_id ?? s.id ?? ""));
                             const val = typeof s === "string" ? s : (s.section_id ?? s.id ?? s.name ?? s.section_title ?? s.title ?? "");
@@ -358,6 +364,12 @@ function debounce(fn, delay) {
                         const data = await apiCall("GET", `subsections?section=${encodeURIComponent(section)}`);
                         const subs = Array.isArray(data) ? data : (data.subsections || data.data || []);
                         subsectionSel.innerHTML = '<option value="">Sous-section...</option>';
+                        // Trier par ordre alphabétique
+                        subs.sort(function(a, b) {
+                            var nameA = (typeof a === "string" ? a : (a.subsection_title || a.title || a.name || String(a.subsection_id ?? a.id ?? ""))).toString().toLowerCase();
+                            var nameB = (typeof b === "string" ? b : (b.subsection_title || b.title || b.name || String(b.subsection_id ?? b.id ?? ""))).toString().toLowerCase();
+                            return nameA.localeCompare(nameB);
+                        });
                         subs.forEach(function (s) {
                             const name = typeof s === "string" ? s : (s.subsection_title || s.title || s.name || String(s.subsection_id ?? s.id ?? ""));
                             const val = typeof s === "string" ? s : (s.subsection_id ?? s.id ?? s.name ?? s.subsection_title ?? s.title ?? "");

@@ -126,6 +126,13 @@
                 select.appendChild(randOpt);
             }
 
+            // Trier par ordre alphabétique
+            list.sort(function(a, b) {
+                var nameA = (a[nameField] || a[idField] || a).toString().toLowerCase();
+                var nameB = (b[nameField] || b[idField] || b).toString().toLowerCase();
+                return nameA.localeCompare(nameB);
+            });
+
             // Items
             list.forEach(function(item) {
                 var o = document.createElement('option');
