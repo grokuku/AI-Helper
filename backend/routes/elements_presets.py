@@ -59,6 +59,14 @@ def save_elements_preset():
     name = (data.get('name') or '').strip()
     preset_data = data.get('data', {})
 
+    # Si preset_data est une chaîne JSON (ex: valeur brute d'un widget ComfyUI),
+    # la décoder pour éviter un double-encodage par json.dumps().
+    if isinstance(preset_data, str):
+        try:
+            preset_data = json.loads(preset_data)
+        except (json.JSONDecodeError, TypeError):
+            pass  # Garder la chaîne telle quelle si ce n'est pas du JSON valide
+
     if not name:
         return jsonify({'error': 'Name required'}), 400
 

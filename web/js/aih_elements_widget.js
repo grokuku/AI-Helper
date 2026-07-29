@@ -243,9 +243,13 @@ function hideWidget(node, name) {
 
                         console.log("[AIH Elements] Migrating " + localPresets.length + " local preset(s) to backend…");
                         var migrated = 0;
+                        var failed = 0;
                         for (var i = 0; i < localPresets.length; i++) {
                             var p = localPresets[i];
                             try {
+                                // p.data peut être une chaîne JSON (valeur brute du widget)
+                                // ou un objet.  On l'envoie telle quelle : le backend
+                                // gère maintenant les deux cas (parsing automatique).
                                 await apiCall("POST", "elements-presets", {
                                     name: p.name,
                                     data: p.data
@@ -253,27 +257,39 @@ function hideWidget(node, name) {
                                 migrated++;
                                 console.log("[AIH Elements] Migrated preset: " + p.name);
                             } catch (e) {
+                                failed++;
                                 console.error("[AIH Elements] Failed to migrate preset " + (p.name || "#" + i) + ":", e);
                             }
                         }
 
-                        // Nettoyer le fichier local (vider les presets)
-                        try {
-                            await fetch("/aih/elements/presets", {
-                                method: "POST",
-                                headers: { "Content-Type": "application/json" },
-                                body: JSON.stringify({ action: "cleanup" })
-                            });
-                        } catch (e) {
-                            /* non bloquant */
+                        // ── Ne nettoyer le fichier local QUE si tous les presets
+                        //    ont été migrés avec succès.  Sinon on risque de perdre
+                        //    les presets qui n'ont pas pu être envoyés au backend.
+                        if (failed === 0) {
+                            try {
+                                await fetch("/aih/elements/presets", {
+                                    method: "POST",
+                                    headers: { "Content-Type": "application/json" },
+                                    body: JSON.stringify({ action: "cleanup" })
+                                });
+                            } catch (e) {
+                                /* non bloquant */
+                            }
+                            localStorage.setItem("AIH_elements_presets_migrated", "1");
+                            console.log("[AIH Elements] Local presets migration complete (" + migrated + "/" + localPresets.length + " migrated).");
+                        } else {
+                            // Au moins un preset a échoué : on NE supprime PAS le
+                            // fichier local et on NE marque PAS la migration comme
+                            // terminée, pour permettre une nouvelle tentative au
+                            // prochain chargement.
+                            console.warn("[AIH Elements] Migration incomplete (" + migrated + "/" + localPresets.length + " succeeded, " + failed + " failed). Local file preserved, will retry next time.");
                         }
-
-                        localStorage.setItem("AIH_elements_presets_migrated", "1");
-                        console.log("[AIH Elements] Local presets migration complete (" + migrated + "/" + localPresets.length + " migrated).");
                     } catch (e) {
-                        // Route locale n'existe pas / erreur réseau → pas de migration
-                        // On marque quand même pour ne pas retenter à chaque clic
-                        localStorage.setItem("AIH_elements_presets_migrated", "1");
+                        // Erreur inattendue (route locale inexistante, réseau, etc.)
+                        // Ne PAS marquer comme migré : on réessaiera au prochain
+                        // chargement.  Si la route locale n'existe vraiment pas,
+                        // le fetch échouera à nouveau rapidement (non bloquant).
+                        console.warn("[AIH Elements] Migration deferred (will retry):", e);
                     }
                 }
 
@@ -434,9 +450,16 @@ function hideWidget(node, name) {
                         const name = input.value.trim();
                         if (!name) return;
                         const ej = node.widgets?.find(w => w.name === "_elements_json");
-                        const data = ej ? ej.value : "";
+                        // ej.value est une chaîne JSON (valeur brute du widget).
+                        // La parser en objet pour que le backend la stocke correctement
+                        // sans double-encodage.
+                        let presetData = {};
+                        if (ej && ej.value) {
+                            try { presetData = JSON.parse(ej.value); }
+                            catch (_) { presetData = ej.value; /* fallback: envoyer la chaîne */ }
+                        }
                         try {
-                            await apiCall("POST", "elements-presets", { name: name, data: data });
+                            await apiCall("POST", "elements-presets", { name: name, data: presetData });
                             node._aihLoadedPresetName = name;
                             clearDirty();
                             await populateEpPresets();
