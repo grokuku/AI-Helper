@@ -221,11 +221,13 @@ function hideWidget(node, name) {
                     try {
                         const resp = await fetch("/aih/elements/presets");
                         const data = await resp.json();
-                        if (!Array.isArray(data)) return;
-                        _epPresetNames = data.map(p => p.name);
+                        // L'endpoint retourne {"status":"ok","presets":[...]}
+                        const presets = Array.isArray(data) ? data : data.presets;
+                        if (!Array.isArray(presets)) return;
+                        _epPresetNames = presets.map(p => p.name);
                         const oldVal = epPresetSelect.value;
                         epPresetSelect.innerHTML = '<option value="">-- EP Preset --</option>';
-                        data.forEach(p => {
+                        presets.forEach(p => {
                             const o = document.createElement("option");
                             o.value = p.name;
                             o.textContent = p.name;
@@ -235,7 +237,7 @@ function hideWidget(node, name) {
                             epPresetSelect.value = oldVal;
                         }
                     } catch (err) {
-                        // Silencieux
+                        console.error("[AIH] populateEpPresets failed:", err);
                     }
                 }
 
@@ -307,11 +309,14 @@ function hideWidget(node, name) {
                     fetch("/aih/elements/presets")
                         .then(r => r.json())
                         .then(data => {
-                            const preset = data.find(p => p.name === name);
+                            // L'endpoint retourne {"status":"ok","presets":[...]}
+                            const presets = Array.isArray(data) ? data : data.presets;
+                            if (!Array.isArray(presets)) return;
+                            const preset = presets.find(p => p.name === name);
                             if (!preset || !preset.data) return;
                             loadEpPreset(preset.data);
                         })
-                        .catch(() => {});
+                        .catch(err => console.error("[AIH] EP preset load failed:", err));
                 };
 
                 epPresetSaveBtn.onclick = () => {
