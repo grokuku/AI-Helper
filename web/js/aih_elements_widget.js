@@ -98,6 +98,8 @@ function hideWidget(node, name) {
 
                 // Stockage local des éléments
                 if (!node._aihElements) node._aihElements = [];
+                node._aihDirty = false;
+                node._aihLoadedPresetName = null;
 
                 // ---- Sync les widgets sérialisés ----
                 function syncElementsWidget() {
@@ -170,9 +172,251 @@ function hideWidget(node, name) {
                 presetRow.appendChild(llmCountLabel);
                 presetRow.appendChild(llmCountInput);
 
-                presetSelect.onchange = () => { syncElementsWidget(); };
-                llmCountInput.onchange = () => { syncElementsWidget(); };
-                llmCountInput.oninput = () => { syncElementsWidget(); };
+                // ---- EP Preset row (save/load presets locaux) ----
+                const epPresetRow = document.createElement("div");
+                Object.assign(epPresetRow.style, {
+                    display: "flex", gap: "4px", alignItems: "center", marginBottom: "8px",
+                    flex: "0 0 auto",
+                });
+
+                const epPresetSelect = document.createElement("select");
+                epPresetSelect.innerHTML = '<option value="">-- EP Preset --</option>';
+                Object.assign(epPresetSelect.style, {
+                    flex: "1", padding: "3px 6px", borderRadius: "4px",
+                    border: "1px solid #555", background: "#3a3a3e",
+                    color: "#ccc", fontSize: "11px", cursor: "pointer",
+                });
+
+                const epPresetSaveBtn = document.createElement("button");
+                epPresetSaveBtn.textContent = "💾 Save";
+                Object.assign(epPresetSaveBtn.style, {
+                    padding: "3px 10px", borderRadius: "4px",
+                    border: "1px solid #555", background: "#3a3a3e",
+                    color: "#ccc", fontSize: "11px",
+                    flexShrink: "0", opacity: "0.4", cursor: "not-allowed",
+                });
+
+                epPresetRow.appendChild(epPresetSelect);
+                epPresetRow.appendChild(epPresetSaveBtn);
+
+                // ---- Dirty flag management ----
+                function markDirty() {
+                    node._aihDirty = true;
+                    epPresetSaveBtn.style.opacity = "1";
+                    epPresetSaveBtn.style.cursor = "pointer";
+                    epPresetSaveBtn.dataset.active = "1";
+                }
+
+                function clearDirty() {
+                    node._aihDirty = false;
+                    epPresetSaveBtn.style.opacity = "0.4";
+                    epPresetSaveBtn.style.cursor = "not-allowed";
+                    delete epPresetSaveBtn.dataset.active;
+                }
+
+                // ---- EP preset list (local ComfyUI routes) ----
+                let _epPresetNames = [];
+
+                async function populateEpPresets() {
+                    try {
+                        const resp = await fetch("/aih/elements/presets");
+                        const data = await resp.json();
+                        if (!Array.isArray(data)) return;
+                        _epPresetNames = data.map(p => p.name);
+                        const oldVal = epPresetSelect.value;
+                        epPresetSelect.innerHTML = '<option value="">-- EP Preset --</option>';
+                        data.forEach(p => {
+                            const o = document.createElement("option");
+                            o.value = p.name;
+                            o.textContent = p.name;
+                            epPresetSelect.appendChild(o);
+                        });
+                        if (oldVal && [...epPresetSelect.options].some(o => o.value === oldVal)) {
+                            epPresetSelect.value = oldVal;
+                        }
+                    } catch (err) {
+                        // Silencieux
+                    }
+                }
+
+                epPresetSelect.addEventListener("mousedown", () => populateEpPresets());
+
+                function loadEpPreset(presetDataRaw) {
+                    try {
+                        const data = typeof presetDataRaw === "string" ? JSON.parse(presetDataRaw) : presetDataRaw;
+                        // Appliquer les éléments
+                        if (data.elements && Array.isArray(data.elements)) {
+                            node._aihElements = data.elements.map(e => {
+                                const visible = e.visible !== false;
+                                if (e.type === "filter") {
+                                    return {
+                                        type: "filter", id: e.id, name: e.name || `Filtre #${e.id}`,
+                                        author: e.author || "?", is_public: !!e.is_public, visible,
+                                    };
+                                }
+                                if (e.type === "text" || e.type === "raw") {
+                                    return { type: "text", text: e.text || "", visible };
+                                }
+                                return { ...e, visible };
+                            });
+                        }
+                        // Restaurer random checkboxes
+                        if (data.random_sfw !== undefined) sfwCb.checked = !!data.random_sfw;
+                        if (data.random_nsfw !== undefined) nsfwCb.checked = !!data.random_nsfw;
+                        if (data.random_count > 0) {
+                            randCb.checked = true;
+                            randN.value = data.random_count;
+                        } else {
+                            randCb.checked = false;
+                        }
+                        // Restaurer preset_id (dropdown LLM)
+                        if (data.preset_id !== undefined) {
+                            const pid = String(data.preset_id);
+                            if (pid !== "0" && [...presetSelect.options].some(o => o.value === pid)) {
+                                presetSelect.value = pid;
+                            } else if (pid !== "0") {
+                                presetSelect.dataset.pendingId = pid;
+                            } else {
+                                presetSelect.value = "0";
+                            }
+                        }
+                        // Restaurer llm_default_count
+                        if (data.llm_default_count !== undefined) {
+                            llmCountInput.value = String(data.llm_default_count);
+                        }
+                        // Restaurer brain_toggles
+                        if (data.brain_toggles && Array.isArray(data.brain_toggles)) {
+                            data.brain_toggles.forEach((brain, i) => {
+                                if (node._aihElements[i]) {
+                                    node._aihElements[i].brain = !!brain;
+                                }
+                            });
+                        }
+                        renderList();
+                        syncElementsWidget();
+                        clearDirty();
+                        node._aihLoadedPresetName = epPresetSelect.value;
+                    } catch (err) {
+                        showToast("Erreur", "Impossible de charger le preset : " + err.message);
+                    }
+                }
+
+                epPresetSelect.onchange = () => {
+                    const name = epPresetSelect.value;
+                    if (!name) return;
+                    fetch("/aih/elements/presets")
+                        .then(r => r.json())
+                        .then(data => {
+                            const preset = data.find(p => p.name === name);
+                            if (!preset || !preset.data) return;
+                            loadEpPreset(preset.data);
+                        })
+                        .catch(() => {});
+                };
+
+                epPresetSaveBtn.onclick = () => {
+                    if (!node._aihDirty) return;
+                    syncElementsWidget(); // s'assurer que _elements_json est à jour
+                    const datalistOptions = _epPresetNames.map(n => '<option value="' + esc(n) + '">').join("");
+                    const presetName = node._aihLoadedPresetName || "";
+
+                    const html = '<div style="display:flex;flex-direction:column;gap:12px;padding:12px;">' +
+                        '<label style="font-size:12px;color:#aaa;">Preset name</label>' +
+                        '<input list="ep-preset-names" id="ep-preset-input" ' +
+                        'style="padding:6px 8px;border-radius:4px;border:1px solid #555;background:#1a1a1e;color:#fff;font-size:12px;" ' +
+                        'placeholder="My preset" value="' + esc(presetName) + '" />' +
+                        '<datalist id="ep-preset-names">' + datalistOptions + '</datalist>' +
+                        '<div style="display:flex;gap:8px;justify-content:flex-end;">' +
+                        '<button id="ep-preset-delete" style="padding:6px 12px;border-radius:4px;border:1px solid #f87171;background:transparent;color:#f87171;font-size:11px;cursor:pointer;">🗑 Delete</button>' +
+                        '<button id="ep-preset-cancel" style="padding:6px 12px;border-radius:4px;border:1px solid #555;background:#3a3a3e;color:#ccc;font-size:11px;cursor:pointer;">Cancel</button>' +
+                        '<button id="ep-preset-save" style="padding:6px 12px;border-radius:4px;border:none;background:#6366f1;color:white;font-size:11px;cursor:pointer;font-weight:600;">Save</button>' +
+                        '</div></div>';
+
+                    var m = aihOpenModalV2({
+                        title: "Save EP Preset",
+                        content: html,
+                        width: "360px",
+                        height: "auto",
+                        resizable: false,
+                        storageKey: null,
+                    });
+
+                    const input = m.modal.querySelector("#ep-preset-input");
+                    const saveBtn = m.modal.querySelector("#ep-preset-save");
+                    const cancelBtn = m.modal.querySelector("#ep-preset-cancel");
+                    const deleteBtn = m.modal.querySelector("#ep-preset-delete");
+
+                    function updateDeleteBtn() {
+                        const name = input.value.trim();
+                        if (name && _epPresetNames.includes(name)) {
+                            deleteBtn.style.display = "";
+                        } else {
+                            deleteBtn.style.display = "none";
+                        }
+                    }
+                    input.addEventListener("input", updateDeleteBtn);
+                    updateDeleteBtn();
+                    input.focus();
+                    input.select();
+
+                    cancelBtn.onclick = () => m.close();
+
+                    saveBtn.onclick = async () => {
+                        const name = input.value.trim();
+                        if (!name) return;
+                        const ej = node.widgets?.find(w => w.name === "_elements_json");
+                        const data = ej ? ej.value : "";
+                        try {
+                            await fetch("/aih/elements/presets", {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ name, data }),
+                            });
+                            node._aihLoadedPresetName = name;
+                            clearDirty();
+                            await populateEpPresets();
+                            epPresetSelect.value = name;
+                            m.close();
+                        } catch (err) {
+                            showToast("Erreur", "Save failed: " + err.message);
+                        }
+                    };
+
+                    deleteBtn.onclick = async () => {
+                        const name = input.value.trim();
+                        if (!name || !_epPresetNames.includes(name)) return;
+                        if (!confirm('Delete preset "' + name + '"?')) return;
+                        try {
+                            await fetch("/aih/elements/presets/delete", {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ name }),
+                            });
+                            _epPresetNames = _epPresetNames.filter(n => n !== name);
+                            await populateEpPresets();
+                            if (node._aihLoadedPresetName === name) {
+                                node._aihLoadedPresetName = null;
+                                epPresetSelect.value = "";
+                            }
+                            updateDeleteBtn();
+                            showToast("Info", "Preset deleted: " + name);
+                        } catch (err) {
+                            showToast("Erreur", "Delete failed: " + err.message);
+                        }
+                    };
+
+                    input.addEventListener("keydown", (e) => {
+                        if (e.key === "Enter") { e.preventDefault(); saveBtn.click(); }
+                        if (e.key === "Escape") { e.preventDefault(); m.close(); }
+                    });
+                };
+
+                // Peuplement initial
+                populateEpPresets();
+
+                presetSelect.onchange = () => { syncElementsWidget(); markDirty(); };
+                llmCountInput.onchange = () => { syncElementsWidget(); markDirty(); };
+                llmCountInput.oninput = () => { syncElementsWidget(); markDirty(); };
 
                 // ---- Peupler le dropdown preset depuis /api/presets ----
                 async function populatePresets() {
@@ -343,6 +587,7 @@ function hideWidget(node, name) {
                             } else {
                                 item.visible = false;
                             }
+                            markDirty();
                             renderList();
                             syncElementsWidget();
                         };
@@ -365,6 +610,7 @@ function hideWidget(node, name) {
                         brainBtn.title = brainOn ? "Mode intelligent ON" : "Mode intelligent OFF";
                         brainBtn.onclick = () => {
                             item.brain = !item.brain;
+                            markDirty();
                             renderList();
                             syncElementsWidget();
                         };
@@ -408,6 +654,7 @@ function hideWidget(node, name) {
                             textInput.oninput = () => {
                                 item.text = textInput.value;
                                 updateChoiceBadge();
+                                markDirty();
                                 syncElementsWidget();
                             };
                             row.appendChild(textInput);
@@ -442,6 +689,7 @@ function hideWidget(node, name) {
                         });
                         del.onclick = () => {
                             items.splice(idx, 1);
+                            markDirty();
                             renderList();
                             syncElementsWidget();
                         };
@@ -640,6 +888,7 @@ function hideWidget(node, name) {
                         listEl.appendChild(draggedEls.row);
                     }
                     dragState = null;
+                    if (currentIdx !== startIdx) markDirty();
                     syncElementsWidget();
                 }
 
@@ -660,6 +909,7 @@ function hideWidget(node, name) {
                                 author: filter.user_id === currentUserId ? "vous" : (filter.owner_name || filter.user_id?.substring(0,6) || "?"),
                                 is_public: !!filter.is_public,
                             });
+                            markDirty();
                             renderList();
                             syncElementsWidget();
                         });
@@ -671,6 +921,7 @@ function hideWidget(node, name) {
                 // ---- Add custom text ----
                 addTextBtn.onclick = () => {
                     node._aihElements.push({ type: "text", text: "" });
+                    markDirty();
                     renderList();
                     syncElementsWidget();
                     // Focus le dernier input texte
@@ -751,11 +1002,11 @@ function hideWidget(node, name) {
                         sfwCb.checked = true; // Forcer au moins SFW
                     }
                 }
-                sfwCb.onchange = () => { validateNsfwCheckboxes(); syncElementsWidget(); };
-                nsfwCb.onchange = () => { validateNsfwCheckboxes(); syncElementsWidget(); };
-                randCb.onchange = () => { syncElementsWidget(); };
-                randN.onchange = () => { syncElementsWidget(); };
-                randN.oninput = () => { syncElementsWidget(); };
+                sfwCb.onchange = () => { validateNsfwCheckboxes(); syncElementsWidget(); markDirty(); };
+                nsfwCb.onchange = () => { validateNsfwCheckboxes(); syncElementsWidget(); markDirty(); };
+                randCb.onchange = () => { syncElementsWidget(); markDirty(); };
+                randN.onchange = () => { syncElementsWidget(); markDirty(); };
+                randN.oninput = () => { syncElementsWidget(); markDirty(); };
 
                 // ---- Test generation button (hauteur fixe) ----
                 const genBtn = mkBtn("🔄  Test generation", true);
@@ -890,6 +1141,7 @@ function hideWidget(node, name) {
                 result.readOnly = true;
 
                 // ---- Assemble ----
+                container.appendChild(epPresetRow); // EP Preset (save/load, tout en haut)
                 container.appendChild(presetRow); // fixe (Preset IA + ||N, en haut)
                 container.appendChild(tb);        // fixe
                 container.appendChild(listEl);    // flex: grow

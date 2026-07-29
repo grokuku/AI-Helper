@@ -311,6 +311,104 @@ if _routes is not None and _update_manager_mod is not None:
     print("[AIH] Update routes registered: POST /aih/update, /aih/restart")
     print("[AIH] Credentials routes registered: GET/POST /aih/credentials")
 
+    # ── Routes Elements Presets (sauvegarde locale dans user/default/) ───
+    # Les presets de l'Elements Picker sont stockés dans un fichier JSON local
+    # pour ne pas saturer le workflow et ne pas être partagés avec d'autres.
+
+    @_routes.get("/aih/elements/presets")
+    async def _aih_get_elements_presets(request):
+        """Liste tous les presets sauvegardés."""
+        import os as _os
+        import json as _json
+        try:
+            presets_path = _os.path.join(_os.path.dirname(_base), "user", "default", "aih_elements_presets.json")
+            if _os.path.isfile(presets_path):
+                with open(presets_path, "r", encoding="utf-8") as f:
+                    data = _json.load(f)
+                return _aio_web.json_response({"status": "ok", "presets": data.get("presets", [])})
+            return _aio_web.json_response({"status": "ok", "presets": []})
+        except Exception as e:
+            return _aio_web.json_response({"status": "error", "message": str(e)}, status=500)
+
+    @_routes.post("/aih/elements/presets")
+    async def _aih_save_elements_preset(request):
+        """Sauvegarde ou met à jour un preset."""
+        import os as _os
+        import json as _json
+        from datetime import datetime as _dt
+        try:
+            body = await request.json()
+            name = body.get("name", "").strip()
+            preset_data = body.get("data", {})
+            if not name:
+                return _aio_web.json_response({"status": "error", "message": "Name required"}, status=400)
+
+            presets_path = _os.path.join(_os.path.dirname(_base), "user", "default", "aih_elements_presets.json")
+            _os.makedirs(_os.path.dirname(presets_path), exist_ok=True)
+
+            # Lire les presets existants
+            presets = []
+            if _os.path.isfile(presets_path):
+                with open(presets_path, "r", encoding="utf-8") as f:
+                    data = _json.load(f)
+                    presets = data.get("presets", [])
+
+            # Chercher si un preset avec ce nom existe déjà (update)
+            existing_idx = None
+            for i, p in enumerate(presets):
+                if p.get("name") == name:
+                    existing_idx = i
+                    break
+
+            preset_obj = {
+                "name": name,
+                "data": preset_data,
+                "updated_at": _dt.utcnow().isoformat() + "Z"
+            }
+
+            if existing_idx is not None:
+                presets[existing_idx] = preset_obj
+            else:
+                presets.append(preset_obj)
+
+            with open(presets_path, "w", encoding="utf-8") as f:
+                _json.dump({"presets": presets}, f, indent=2, ensure_ascii=False)
+
+            return _aio_web.json_response({"status": "ok", "name": name, "count": len(presets)})
+        except Exception as e:
+            import traceback
+            return _aio_web.json_response({"status": "error", "message": str(e), "log": traceback.format_exc()}, status=500)
+
+    @_routes.post("/aih/elements/presets/delete")
+    async def _aih_delete_elements_preset(request):
+        """Supprime un preset par son nom."""
+        import os as _os
+        import json as _json
+        try:
+            body = await request.json()
+            name = body.get("name", "").strip()
+            if not name:
+                return _aio_web.json_response({"status": "error", "message": "Name required"}, status=400)
+
+            presets_path = _os.path.join(_os.path.dirname(_base), "user", "default", "aih_elements_presets.json")
+            if not _os.path.isfile(presets_path):
+                return _aio_web.json_response({"status": "ok", "deleted": False})
+
+            with open(presets_path, "r", encoding="utf-8") as f:
+                data = _json.load(f)
+                presets = data.get("presets", [])
+
+            new_presets = [p for p in presets if p.get("name") != name]
+
+            with open(presets_path, "w", encoding="utf-8") as f:
+                _json.dump({"presets": new_presets}, f, indent=2, ensure_ascii=False)
+
+            return _aio_web.json_response({"status": "ok", "deleted": len(presets) != len(new_presets)})
+        except Exception as e:
+            return _aio_web.json_response({"status": "error", "message": str(e)}, status=500)
+
+    print("[AIH] Elements presets routes registered")
+
     # ── Route Blobby Exec (commandes git locales) ─────────────
     @_routes.post("/aih/blobby/exec")
     async def _aih_blobby_exec_route(request):
