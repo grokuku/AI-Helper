@@ -225,7 +225,7 @@
         btn.classList.add('border-indigo-500', 'text-indigo-600', 'dark:text-indigo-400');
         btn.classList.remove('border-transparent', 'text-slate-500', 'dark:text-slate-400');
       }
-      if (tab === 'users') loadAdminUsers();
+      if (tab === 'users') { loadAdminUsers(); loadWhitelist(); }
       if (tab === 'embedding') loadOllamaConfig();
       if (tab === 'global') loadSftpConfig();
       if (tab === 'backup') loadBackupConfig();
@@ -440,6 +440,69 @@
       } catch (err) {
         container.innerHTML = '<p class="text-sm text-rose-500">Erreur reseau : ' + (err.message || 'impossible') + '</p>';
       }
+    }
+
+    async function loadWhitelist() {
+      try {
+        var res = await fetch(API + '/admin/whitelist');
+        if (!res.ok) return;
+        var data = await res.json();
+        var list = document.getElementById('admin-whitelist-list');
+        list.innerHTML = '';
+        if (data.length === 0) {
+          list.innerHTML = '<p class="text-xs text-slate-400">Aucun UID dans la whitelist</p>';
+          return;
+        }
+        data.forEach(function(item) {
+          var div = document.createElement('div');
+          div.className = 'flex items-center justify-between px-2 py-1.5 rounded bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700';
+          var span = document.createElement('span');
+          span.className = 'text-sm font-mono text-slate-600 dark:text-slate-300';
+          span.textContent = item.discord_uid;
+          div.appendChild(span);
+          var delBtn = document.createElement('button');
+          delBtn.textContent = 'Supprimer';
+          delBtn.className = 'text-xs text-rose-500 hover:text-rose-400 transition';
+          delBtn.onclick = function() { deleteWhitelist(item.discord_uid); };
+          div.appendChild(delBtn);
+          list.appendChild(div);
+        });
+      } catch (err) {
+        console.error('loadWhitelist:', err);
+      }
+    }
+
+    async function addWhitelist() {
+      var uid = document.getElementById('admin-whitelist-uid').value.trim();
+      if (!uid) return;
+      try {
+        var res = await fetch(API + '/admin/whitelist', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({discord_uid: uid})
+        });
+        if (res.ok) {
+          document.getElementById('admin-whitelist-uid').value = '';
+          loadWhitelist();
+        } else {
+          var data = await res.json().catch(function(){ return {}; });
+          showModal('Erreur', (data.error || 'Échec de l\'ajout'), 'error');
+        }
+      } catch (err) {
+        showModal('Erreur', 'Erreur réseau : ' + (err.message || 'impossible'), 'error');
+      }
+    }
+
+    async function deleteWhitelist(uid) {
+      showConfirm('Whitelist', 'Retirer cet UID de la whitelist ?', async function(ok) {
+        if (!ok) return;
+        try {
+          var res = await fetch(API + '/admin/whitelist/' + encodeURIComponent(uid), {method: 'DELETE'});
+          if (res.ok) loadWhitelist();
+        } catch (err) {
+          showModal('Erreur', err.message || 'Action impossible', 'error');
+        }
+      });
     }
 
     async function changeRole(userId, role) {

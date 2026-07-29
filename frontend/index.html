@@ -492,6 +492,18 @@
           <!-- Tab: Users -->
           <div id="admin-tab-users" class="hidden p-4 space-y-5">
             <div>
+              <!-- Whitelist Discord -->
+              <div class="mb-4 p-3 rounded-lg bg-slate-50 dark:bg-slate-700/50 border border-slate-200 dark:border-slate-700">
+                <h4 class="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">Whitelist Discord</h4>
+                <p class="text-xs text-slate-500 mb-3">Ajoute l'UID Discord d'une personne pour l'autoriser à se connecter. Elle devra ensuite cliquer sur "Connexion Discord".</p>
+                <div class="flex gap-2 mb-3">
+                  <input type="text" id="admin-whitelist-uid" placeholder="UID Discord (18 chiffres)" class="flex-1 px-3 py-1.5 text-sm border border-slate-300 rounded-md dark:bg-slate-700 dark:border-slate-600 dark:text-slate-200" />
+                  <button onclick="addWhitelist()" class="px-3 py-1.5 text-sm font-medium bg-indigo-600 text-white rounded-md hover:bg-indigo-500 transition">Ajouter</button>
+                </div>
+                <div id="admin-whitelist-list" class="space-y-1">
+                  <!-- Rempli dynamiquement -->
+                </div>
+              </div>
               <h3 class="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">Utilisateurs</h3>
               <div class="space-y-2" id="admin-users-list">
                 <p class="text-sm text-slate-400">Chargement...</p>

@@ -13,7 +13,21 @@
  *   - PAS DE MOT DE PASSE : usage local uniquement. Bandeau d'avertissement
  *     toujours visible.
  */
-AIH.waitForApp(function(app) {
+// Les fichiers d'extension ComfyUI ne sont pas chargés dans un ordre
+// garanti : attendre que 03_aih_shared.js / 04_aih_widget_base.js aient
+// défini window.AIH.waitForApp avant de l'utiliser. Sans ce polling, si
+// 04_aih_widget_base.js n'est pas encore chargé, AIH.waitForApp est
+// undefined → TypeError → tout le fichier échoue silencieusement →
+// window.aihTerminal n'est jamais défini → le menu affiche
+// "widget pas encore chargé" à chaque clic, sans espoir de récupération.
+(function aihBoot() {
+    if (!window.AIH || !window.AIH.waitForApp) { setTimeout(aihBoot, 50); return; }
+
+// maxAttempts élevé (6000 × 100 ms = 10 min) : sur les machines lentes
+// ou au premier chargement, app/graph peut mettre plus de 10 s (le défaut
+// est 100 tentatives = 10 s) à apparaître. Si waitForApp abandonne avant,
+// le callback n'est jamais appelé et window.aihTerminal reste indéfini.
+window.AIH.waitForApp(function(app) {
 
     // ════════════════════════════════════════════════════════════════════
     //  Helpers
@@ -541,4 +555,6 @@ AIH.waitForApp(function(app) {
             console.log("[AIH Terminal] Panel ready. Access via AIH menu → 💻 Terminal.");
         },
     });
-});
+
+}, { maxAttempts: 6000, interval: 100 });
+})();
