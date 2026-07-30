@@ -1,31 +1,134 @@
 
+    // === État des sélections multi-select ===
+    var selectedSections = new Set();
+    var selectedSubsections = new Set();
+    var sectionNames = {};  // { id: "I. Title (total)" }
+    var subsectionNames = {};  // { id: "I.A — Title (total)" }
+
+    function getSectionParam() {
+      return Array.from(selectedSections).join(',');
+    }
+
+    function getSubsectionParam() {
+      return Array.from(selectedSubsections).join(',');
+    }
+
+    function toggleSectionDropdown() {
+      var dd = document.getElementById('section-dropdown');
+      if (dd) dd.classList.toggle('hidden');
+      // Fermer l'autre dropdown
+      var subDd = document.getElementById('subsection-dropdown');
+      if (subDd) subDd.classList.add('hidden');
+    }
+
+    function toggleSubsectionDropdown() {
+      var dd = document.getElementById('subsection-dropdown');
+      if (dd) dd.classList.toggle('hidden');
+      // Fermer l'autre dropdown
+      var secDd = document.getElementById('section-dropdown');
+      if (secDd) secDd.classList.add('hidden');
+    }
+
+    function toggleSection(id, name) {
+      if (selectedSections.has(id)) {
+        selectedSections.delete(id);
+      } else {
+        selectedSections.add(id);
+      }
+      // Mettre à jour la checkbox correspondante dans le dropdown
+      var cb = document.querySelector('#section-dropdown input[value="' + CSS.escape(id) + '"]');
+      if (cb) cb.checked = selectedSections.has(id);
+      updateSectionButton();
+      // Les sous-sections dépendent des sections : recharger
+      selectedSubsections.clear();
+      loadSubsections(getSectionParam()).then(function() {
+        updateSubsectionButton();
+        semanticCache = null;
+        loadKeywords();
+      });
+    }
+
+    function toggleSubsection(id, name) {
+      if (selectedSubsections.has(id)) {
+        selectedSubsections.delete(id);
+      } else {
+        selectedSubsections.add(id);
+      }
+      var cb = document.querySelector('#subsection-dropdown input[value="' + CSS.escape(id) + '"]');
+      if (cb) cb.checked = selectedSubsections.has(id);
+      updateSubsectionButton();
+      semanticCache = null;
+      loadKeywords();
+    }
+
+    function updateSectionButton() {
+      var label = document.getElementById('section-btn-label');
+      if (!label) return;
+      if (selectedSections.size === 0) {
+        label.textContent = 'Toutes sections';
+      } else if (selectedSections.size === 1) {
+        var id = Array.from(selectedSections)[0];
+        label.textContent = sectionNames[id] || id;
+      } else {
+        label.textContent = selectedSections.size + ' sections';
+      }
+    }
+
+    function updateSubsectionButton() {
+      var label = document.getElementById('subsection-btn-label');
+      if (!label) return;
+      if (selectedSubsections.size === 0) {
+        label.textContent = 'Toutes sous-sections';
+      } else if (selectedSubsections.size === 1) {
+        var id = Array.from(selectedSubsections)[0];
+        label.textContent = subsectionNames[id] || id;
+      } else {
+        label.textContent = selectedSubsections.size + ' sous-sections';
+      }
+    }
+
     async function loadSections() {
       try {
         const res = await fetch(API + '/sections');
         sectionsList = await res.json();
-        sectionSelect.innerHTML = '<option value="">Toutes sections</option>';
+        sectionNames = {};
+        var dd = document.getElementById('section-dropdown');
+        if (dd) dd.innerHTML = '';
         for (const sec of sectionsList) {
-          const opt = document.createElement('option');
-          opt.value = sec.section_id;
-          opt.textContent = sec.section_id + '. ' + sec.section_title + ' (' + sec.total + ')';
-          sectionSelect.appendChild(opt);
+          var displayName = sec.section_id + '. ' + sec.section_title + ' (' + sec.total + ')';
+          sectionNames[sec.section_id] = displayName;
+          if (dd) {
+            var item = document.createElement('label');
+            item.className = 'flex items-center gap-2 px-3 py-1.5 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 cursor-pointer';
+            item.innerHTML = '<input type="checkbox" value="' + escapeHtml(sec.section_id) + '" class="accent-indigo-500 rounded" onchange="toggleSection(\'' + sec.section_id.replace(/'/g, "\\'") + '\', \'' + displayName.replace(/'/g, "\\'") + '\')">'
+              + '<span class="truncate">' + escapeHtml(displayName) + '</span>';
+            dd.appendChild(item);
+          }
         }
       } catch { sectionsList = []; }
     }
 
-    async function loadSubsections(sectionId) {
+    async function loadSubsections(sectionParam) {
       try {
-        const url = sectionId ? (API + '/subsections?section=' + encodeURIComponent(sectionId)) : (API + '/subsections');
+        const url = sectionParam ? (API + '/subsections?section=' + encodeURIComponent(sectionParam)) : (API + '/subsections');
         const res = await fetch(url);
         const list = await res.json();
-        subsectionSelect.innerHTML = '<option value="">Toutes sous-sections</option>';
+        subsectionNames = {};
+        var dd = document.getElementById('subsection-dropdown');
+        if (dd) dd.innerHTML = '';
         for (const sub of list) {
-          const opt = document.createElement('option');
-          opt.value = sub.subsection_id;
-          opt.textContent = sub.subsection_id + ' — ' + sub.subsection_title + ' (' + sub.total + ')';
-          subsectionSelect.appendChild(opt);
+          var displayName = sub.subsection_id + ' — ' + sub.subsection_title + ' (' + sub.total + ')';
+          subsectionNames[sub.subsection_id] = displayName;
+          if (dd) {
+            var item = document.createElement('label');
+            item.className = 'flex items-center gap-2 px-3 py-1.5 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 cursor-pointer';
+            item.innerHTML = '<input type="checkbox" value="' + escapeHtml(sub.subsection_id) + '" class="accent-indigo-500 rounded" onchange="toggleSubsection(\'' + sub.subsection_id.replace(/'/g, "\\'") + '\', \'' + displayName.replace(/'/g, "\\'") + '\')">'
+              + '<span class="truncate">' + escapeHtml(displayName) + '</span>';
+            dd.appendChild(item);
+          }
         }
-      } catch {}
+        return list;
+      } catch { return []; }
     }
 
     async function loadKeywords() {
@@ -36,8 +139,8 @@
       const negQ = searchNegInput.value.trim();
       const semQ = semanticInput.value.trim();
       const nsfw = getNsfwFilter();
-      const section = sectionSelect.value;
-      const subsection = subsectionSelect.value;
+      const section = getSectionParam();
+      const subsection = getSubsectionParam();
       const confidence = parseFloat(document.getElementById('filter-confidence').value) / 100 || 0;
 
       let semResults = null;

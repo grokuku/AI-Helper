@@ -46,6 +46,7 @@ def generate_prompt():
 
         if elem.get('type') == 'filter' and elem.get('id'):
             kind = 'filter'
+            hint = elem.get('hint', '').strip()
             finfo = cur.execute(
                 "SELECT name, (SELECT COUNT(*) FROM filter_cache WHERE filter_id = ?) as cnt FROM saved_filters WHERE id = ?",
                 (elem['id'], elem['id'])
@@ -100,8 +101,12 @@ def generate_prompt():
             cur.execute("SELECT keyword FROM keywords WHERE id = ?", (kid,))
             row = cur.fetchone()
             if row:
-                keywords.append(row['keyword'])
-                debug.append({'keyword': row['keyword'], 'source': kind, 'score': round(score, 3)})
+                kw = row['keyword']
+                if hint:
+                    keywords.append(f"{hint}: {kw}")
+                else:
+                    keywords.append(kw)
+                debug.append({'keyword': kw, 'source': kind, 'score': round(score, 3)})
 
     # Random elements : piocher depuis des sections non encore utilisées
     if random_count > 0:

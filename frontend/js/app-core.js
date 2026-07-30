@@ -10,8 +10,8 @@
     const searchInput = $('search-input');
     const searchNegInput = $('search-neg-input');
     const semanticInput = $('search-semantic-input');
-    const sectionSelect = $('section-select');
-    const subsectionSelect = $('subsection-select');
+    const sectionSelect = $('section-multiselect');
+    const subsectionSelect = $('subsection-multiselect');
     const emptyState = $('empty-state');
     const resultsArea = $('results-area');
     const filtersBar = $('filters-bar');
@@ -128,12 +128,21 @@
       searchInput?.addEventListener('input', () => { clearTimeout(textTimer); textTimer = setTimeout(applyFilters, 300); });
       semanticInput?.addEventListener('input', () => { clearTimeout(semanticTimer); semanticTimer = setTimeout(applyFilters, 400); });
       searchNegInput?.addEventListener('input', () => { clearTimeout(textTimer); textTimer = setTimeout(applyFilters, 300); });
-      sectionSelect?.addEventListener('change', function(){
-        semanticCache = null;
-        loadSubsections(this.value);
-        applyFilters();
+      // Dropdowns custom (multi-select) — les event listeners sont gérés
+      // dans les fonctions toggleSection/toggleSubsection (app-keywords.js).
+      // Fermer les dropdowns quand on clique en dehors.
+      document.addEventListener('click', function(e) {
+        var secMs = document.getElementById('section-multiselect');
+        var subMs = document.getElementById('subsection-multiselect');
+        if (secMs && !secMs.contains(e.target)) {
+          var dd = document.getElementById('section-dropdown');
+          if (dd) dd.classList.add('hidden');
+        }
+        if (subMs && !subMs.contains(e.target)) {
+          var dd2 = document.getElementById('subsection-dropdown');
+          if (dd2) dd2.classList.add('hidden');
+        }
       });
-      subsectionSelect?.addEventListener('change', function(){ semanticCache = null; applyFilters(); });
       document.querySelectorAll('input[name="nsfw-filter"]').forEach(el => el.addEventListener('change', function(){ semanticCache = null; applyFilters(); }));
     searchNegInput?.addEventListener('change', function(){ semanticCache = null; });
       var confSlider = document.getElementById('filter-confidence');
@@ -173,9 +182,14 @@
       document.getElementById('search-input').value = '';
       document.getElementById('search-neg-input').value = '';
       document.getElementById('search-semantic-input').value = '';
-      document.getElementById('section-select').value = '';
-      document.getElementById('subsection-select').value = '';
-      document.getElementById('subsection-select').innerHTML = '<option value="">Toutes sous-sections</option>';
+      selectedSections.clear();
+      selectedSubsections.clear();
+      updateSectionButton();
+      updateSubsectionButton();
+      // Réinitialiser le dropdown des sous-sections
+      var subDd = document.getElementById('subsection-dropdown');
+      if (subDd) subDd.innerHTML = '';
+      loadSubsections();
       document.querySelectorAll('input[name="nsfw-filter"]').forEach(function(r){ r.checked = r.value === ''; });
       document.getElementById('filter-confidence').value = 0;
       document.getElementById('filter-confidence-num').value = 0;

@@ -21,8 +21,8 @@
 
     function getFilterConfig() {
       return {
-        section: document.getElementById('section-select').value,
-        subsection: document.getElementById('subsection-select').value,
+        section: getSectionParam(),
+        subsection: getSubsectionParam(),
         search_text: document.getElementById('search-input').value,
         search_neg: document.getElementById('search-neg-input').value,
         semantic_text: document.getElementById('search-semantic-input').value,
@@ -34,8 +34,9 @@
 
     function applyFilterConfig(config) {
       var c = config || {};
-      document.getElementById('section-select').value = c.section || '';
-      document.getElementById('subsection-select').value = c.subsection || '';
+      // Restaurer les sélections multi-select
+      selectedSections = new Set((c.section || '').split(',').filter(function(v){ return v.trim() !== ''; }));
+      selectedSubsections = new Set((c.subsection || '').split(',').filter(function(v){ return v.trim() !== ''; }));
       document.getElementById('search-input').value = c.search_text || '';
       document.getElementById('search-neg-input').value = c.search_neg || '';
       document.getElementById('search-semantic-input').value = c.semantic_text || '';
@@ -48,10 +49,15 @@
       if (c.hidden_kw_ids && Array.isArray(c.hidden_kw_ids)) {
         c.hidden_kw_ids.forEach(function(id){ hiddenKWs[id] = true; });
       }
-      // Charger les sous-sections si une section est sélectionnée
-      if (c.section) {
-        loadSubsections(c.section);
-      }
+      // Mettre à jour les boutons et recharger les sous-sections
+      updateSectionButton();
+      // Charger les sous-sections pour les sections sélectionnées, puis restaurer la sélection
+      loadSubsections(getSectionParam()).then(function() {
+        // Re-appliquer la sélection de sous-sections maintenant que le dropdown est peuplé
+        var subCheckboxes = document.querySelectorAll('#subsection-dropdown input[type="checkbox"]');
+        subCheckboxes.forEach(function(cb) { cb.checked = selectedSubsections.has(cb.value); });
+        updateSubsectionButton();
+      });
       applyFilters(true);
     }
 

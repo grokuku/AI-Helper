@@ -215,11 +215,23 @@ def _rebuild_filter_cache(cur, filter_id, config, user_id=None):
     hidden_ids = config.get('hidden_kw_ids', [])
 
     if section:
-        conditions.append("k.section_id = ?")
-        params.append(section)
+        section_ids = [s.strip() for s in section.split(',') if s.strip()]
+        if len(section_ids) == 1:
+            conditions.append("k.section_id = ?")
+            params.append(section_ids[0])
+        else:
+            placeholders = ','.join('?' for _ in section_ids)
+            conditions.append(f"k.section_id IN ({placeholders})")
+            params.extend(section_ids)
     if subsection:
-        conditions.append("k.subsection_id = ?")
-        params.append(subsection)
+        subsection_ids = [s.strip() for s in subsection.split(',') if s.strip()]
+        if len(subsection_ids) == 1:
+            conditions.append("k.subsection_id = ?")
+            params.append(subsection_ids[0])
+        else:
+            placeholders = ','.join('?' for _ in subsection_ids)
+            conditions.append(f"k.subsection_id IN ({placeholders})")
+            params.extend(subsection_ids)
     if nsfw == '0':
         conditions.append("k.nsfw = 0")
     elif nsfw == '1':
@@ -246,11 +258,23 @@ def _rebuild_filter_cache(cur, filter_id, config, user_id=None):
             sem_conds = [sem_privacy_where]
             sem_params = sem_privacy_params[:]
             if section:
-                sem_conds.append("k.section_id = ?")
-                sem_params.append(section)
+                section_ids = [s.strip() for s in section.split(',') if s.strip()]
+                if len(section_ids) == 1:
+                    sem_conds.append("k.section_id = ?")
+                    sem_params.append(section_ids[0])
+                else:
+                    ph_sec = ','.join('?' for _ in section_ids)
+                    sem_conds.append(f"k.section_id IN ({ph_sec})")
+                    sem_params.extend(section_ids)
             if subsection:
-                sem_conds.append("k.subsection_id = ?")
-                sem_params.append(subsection)
+                subsection_ids = [s.strip() for s in subsection.split(',') if s.strip()]
+                if len(subsection_ids) == 1:
+                    sem_conds.append("k.subsection_id = ?")
+                    sem_params.append(subsection_ids[0])
+                else:
+                    ph_sub = ','.join('?' for _ in subsection_ids)
+                    sem_conds.append(f"k.subsection_id IN ({ph_sub})")
+                    sem_params.extend(subsection_ids)
             if nsfw == '0':
                 sem_conds.append("k.nsfw = 0")
             elif nsfw == '1':

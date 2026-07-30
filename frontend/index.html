@@ -150,12 +150,28 @@
                     <!-- Colonne gauche : section / sous-section / radios + confiance -->
                     <div class="flex flex-col gap-2 flex-1 min-w-0">
                       <div class="flex flex-wrap items-center gap-2">
-                        <select id="section-select" class="px-2 py-1.5 text-sm border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-slate-700 dark:border-slate-600 dark:text-slate-200">
-                          <option value="">Toutes sections</option>
-                        </select>
-                        <select id="subsection-select" class="px-2 py-1.5 text-sm border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-slate-700 dark:border-slate-600 dark:text-slate-200">
-                          <option value="">Toutes sous-sections</option>
-                        </select>
+                        <!-- Multi-select : sections -->
+                        <div class="relative" id="section-multiselect">
+                          <button type="button" id="section-btn" onclick="toggleSectionDropdown()"
+                                  class="w-full px-2 py-1.5 text-sm border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-slate-700 dark:border-slate-600 dark:text-slate-200 text-left flex items-center justify-between gap-1 min-w-[8rem]">
+                            <span id="section-btn-label" class="truncate">Toutes sections</span>
+                            <svg class="w-3.5 h-3.5 text-slate-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+                          </button>
+                          <div id="section-dropdown" class="hidden absolute z-20 mt-1 w-full max-h-60 overflow-y-auto bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded-md shadow-lg">
+                            <!-- Checkboxes générées dynamiquement -->
+                          </div>
+                        </div>
+                        <!-- Multi-select : sous-sections -->
+                        <div class="relative" id="subsection-multiselect">
+                          <button type="button" id="subsection-btn" onclick="toggleSubsectionDropdown()"
+                                  class="w-full px-2 py-1.5 text-sm border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-slate-700 dark:border-slate-600 dark:text-slate-200 text-left flex items-center justify-between gap-1 min-w-[8rem]">
+                            <span id="subsection-btn-label" class="truncate">Toutes sous-sections</span>
+                            <svg class="w-3.5 h-3.5 text-slate-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+                          </button>
+                          <div id="subsection-dropdown" class="hidden absolute z-20 mt-1 w-full max-h-60 overflow-y-auto bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded-md shadow-lg">
+                            <!-- Checkboxes générées dynamiquement -->
+                          </div>
+                        </div>
                         <label class="inline-flex items-center gap-1.5 px-2 py-1 text-sm select-none cursor-pointer rounded border border-slate-200 dark:border-slate-600">
                           <input type="radio" name="nsfw-filter" value="" checked class="accent-indigo-600">
                           <span class="text-slate-600 dark:text-slate-400">Tout</span>

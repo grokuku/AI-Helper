@@ -863,8 +863,12 @@ def _resolve_ep_keywords(conn, user_id, ep_elements):
         for elem in ep_elements:
             if elem.get('type') == 'filter' and elem.get('id'):
                 kw = _resolve_ep_filter_keyword(cur, elem)
+                hint = elem.get('hint', '').strip()
                 if kw:
-                    ordered_ep_results.append(kw)
+                    if hint:
+                        ordered_ep_results.append(f"{hint}: {kw}")
+                    else:
+                        ordered_ep_results.append(kw)
             elif elem.get('type') == 'text' and elem.get('text'):
                 # Utiliser le texte original comme resolution
                 ordered_ep_results.append(elem['text'].strip())

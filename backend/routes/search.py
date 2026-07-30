@@ -49,11 +49,23 @@ def semantic_search():
     elif nsfw == '1':
         conditions.append("k.nsfw = 1")
     if section:
-        conditions.append("k.section_id = ?")
-        params.append(section)
+        section_ids = [s.strip() for s in section.split(',') if s.strip()]
+        if len(section_ids) == 1:
+            conditions.append("k.section_id = ?")
+            params.append(section_ids[0])
+        else:
+            placeholders = ','.join('?' for _ in section_ids)
+            conditions.append(f"k.section_id IN ({placeholders})")
+            params.extend(section_ids)
     if subsection:
-        conditions.append("k.subsection_id = ?")
-        params.append(subsection)
+        subsection_ids = [s.strip() for s in subsection.split(',') if s.strip()]
+        if len(subsection_ids) == 1:
+            conditions.append("k.subsection_id = ?")
+            params.append(subsection_ids[0])
+        else:
+            placeholders = ','.join('?' for _ in subsection_ids)
+            conditions.append(f"k.subsection_id IN ({placeholders})")
+            params.extend(subsection_ids)
 
     where_clause = " AND ".join(conditions)
 

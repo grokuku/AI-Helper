@@ -109,7 +109,7 @@ function hideWidget(node, name) {
                         elements: node._aihElements.map(e => {
                             const base = { visible: e.visible !== false };
                             if (e.type === "filter") {
-                                return { ...base, type: "filter", id: e.id, name: e.name || "", author: e.author || "", is_public: !!e.is_public };
+                                return { ...base, type: "filter", id: e.id, name: e.name || "", author: e.author || "", is_public: !!e.is_public, hint: e.hint || "" };
                             }
                             if (e.type === "text") {
                                 // "raw" est le format attendu par le backend /api/generate
@@ -336,7 +336,7 @@ function hideWidget(node, name) {
                                 if (e.type === "filter") {
                                     return {
                                         type: "filter", id: e.id, name: e.name || `Filtre #${e.id}`,
-                                        author: e.author || "?", is_public: !!e.is_public, visible,
+                                        author: e.author || "?", is_public: !!e.is_public, hint: e.hint || "", visible,
                                     };
                                 }
                                 if (e.type === "text" || e.type === "raw") {
@@ -753,9 +753,22 @@ function hideWidget(node, name) {
                         } else {
                             // Filtre : nom + meta
                             const label = document.createElement("span");
-                            label.style.cssText = "flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+                            label.style.cssText = "flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
                             label.textContent = item.name || `Filtre #${item.id}`;
                             row.appendChild(label);
+
+                            // Hint input optionnel (à côté du nom du filtre)
+                            var hintInput = document.createElement("input");
+                            hintInput.type = "text";
+                            hintInput.placeholder = "hint (optional)";
+                            hintInput.value = item.hint || "";
+                            hintInput.style.cssText = "flex:1; min-width:60px; background:#1a1a1e; border:1px solid #444; color:#ccc; border-radius:3px; padding:2px 6px; font-size:11px;";
+                            hintInput.oninput = function() {
+                                item.hint = this.value;
+                                markDirty();
+                                syncElementsWidget();
+                            };
+                            row.appendChild(hintInput);
 
                             if (item.author) {
                                 const meta = document.createElement("span");
@@ -1164,50 +1177,144 @@ function hideWidget(node, name) {
                 }
 
                 // ---- triggerGenerate ----
-                function triggerGenerate(n) {
+                // Reproduit le flux du Python generate() : traite les éléments
+                // séquentiellement, résout ||concept et 🧠 via appels LLM réels,
+                // puis envoie le tout à /api/generate.
+                async function triggerGenerate(n) {
                     const allElements = n._aihElements || [];
-                    const elements = allElements.filter(e => e.visible !== false);
+                    const visibleElements = allElements.filter(e => e.visible !== false);
 
-                    if (elements.length === 0 && !randCb.checked) {
+                    if (visibleElements.length === 0 && !randCb.checked) {
                         result.value = "Ajoutez au moins un élément visible ou activez Add random.";
                         return;
                     }
 
+                    // 1. Préparer les éléments (copie pour ne pas modifier l'original)
+                    var elements = visibleElements.map(e => ({ ...e }));
+                    var presetId = parseInt(presetSelect.value) || 0;
+                    var llmDefaultCount = parseInt(llmCountInput.value) || 10;
+                    var brainToggles = allElements.map(e => !!e.brain);
+                    var context = [];
+
+                    // Indiquer que la génération est en cours
+                    var originalBtnText = genBtn.textContent;
+                    genBtn.textContent = "⏳ Génération en cours...";
+                    genBtn.disabled = true;
+                    result.value = "Génération en cours...";
+
+                    // 2. Traiter chaque élément séquentiellement
+                    for (var i = 0; i < elements.length; i++) {
+                        var el = elements[i];
+                        var brainOn = brainToggles[i] || false;
+                        var rawText = el.text || "";
+
+                        // Détecter ||concept:N
+                        var conceptMatch = rawText.match(/^\|\|([^:]+)(?::(\d+))?/);
+                        if (conceptMatch && presetId > 0) {
+                            var concept = conceptMatch[1].trim();
+                            var count = conceptMatch[2] ? parseInt(conceptMatch[2]) : llmDefaultCount;
+                            var instruction = brainOn && context.length > 0
+                                ? "Génère " + count + " " + concept + " cohérents avec le contexte. Retourne uniquement une liste séparée par des virgules."
+                                : "Génère " + count + " " + concept + ". Retourne uniquement une liste séparée par des virgules.";
+                            var inputText = brainOn && context.length > 0 ? "Contexte: [" + context.join(", ") + "]" : "";
+
+                            try {
+                                var resp = await apiCall("POST", "keywords/llm-process", {
+                                    preset_id: presetId,
+                                    instruction: instruction,
+                                    input_text: inputText
+                                });
+                                var llmList = (resp.output || "").split(/[,\n]/).map(function(s) { return s.trim(); }).filter(Boolean);
+                                if (llmList.length > 0) {
+                                    el.text = llmList[Math.floor(Math.random() * llmList.length)];
+                                    context.push(el.text);
+                                }
+                            } catch (e) { console.error("LLM generate failed:", e); }
+                            continue;
+                        }
+
+                        // Détecter les blocs {a::b::c} avec brain ON
+                        if (brainOn && presetId > 0 && el.type !== "filter") {
+                            var blocks = rawText.match(/\{([^}]+)\}/g);
+                            if (blocks && blocks.length > 0) {
+                                var allChoices = [];
+                                blocks.forEach(function(b) {
+                                    var choices = b.replace(/[{}]/g, "").split("::").map(function(s) { return s.trim(); }).filter(Boolean);
+                                    allChoices = allChoices.concat(choices);
+                                });
+                                if (allChoices.length > 0 && context.length > 0) {
+                                    try {
+                                        var resp2 = await apiCall("POST", "keywords/llm-process", {
+                                            preset_id: presetId,
+                                            instruction: "Filtre cette liste pour garder uniquement les éléments cohérents avec le contexte. Retourne uniquement une liste séparée par des virgules.",
+                                            input_text: "Contexte: [" + context.join(", ") + "]\nListe: [" + allChoices.join(", ") + "]"
+                                        });
+                                        var filtered = (resp2.output || "").split(/[,\n]/).map(function(s) { return s.trim(); }).filter(Boolean);
+                                        if (filtered.length > 0) {
+                                            // Résoudre les blocs avec les choix filtrés
+                                            var resolved = rawText.replace(/\{([^}]+)\}/g, function(match) {
+                                                var choices = match.replace(/[{}]/g, "").split("::").map(function(s) { return s.trim(); });
+                                                var valid = choices.filter(function(c) { return filtered.indexOf(c) >= 0; });
+                                                if (valid.length > 0) return valid[Math.floor(Math.random() * valid.length)];
+                                                return choices[Math.floor(Math.random() * choices.length)];
+                                            });
+                                            el.text = resolved;
+                                            context.push(resolved);
+                                            continue;
+                                        }
+                                    } catch (e) { console.error("LLM filter failed:", e); }
+                                }
+                            }
+                        }
+
+                        // Résolution normale des blocs {} (sans LLM)
+                        if (el.type !== "filter" && rawText.indexOf("{") >= 0) {
+                            el.text = rawText.replace(/\{([^}]+)\}/g, function(match) {
+                                var choices = match.replace(/[{}]/g, "").split("::").map(function(s) { return s.trim(); }).filter(Boolean);
+                                return choices.length > 0 ? choices[Math.floor(Math.random() * choices.length)] : match;
+                            });
+                        }
+
+                        // Ajouter au contexte
+                        if (el.type === "filter") {
+                            // Le filtre sera résolu par le backend, ajouter juste le nom au contexte
+                            context.push(el.name || "");
+                        } else if (el.text) {
+                            context.push(el.text);
+                        }
+                    }
+
+                    // 3. Envoyer à /api/generate
                     // Lire le seed depuis le widget ComfyUI
                     const sw = n.widgets?.find(w => w.name === "seed");
                     const seed = sw ? parseInt(sw.value) || 0 : 0;
 
-                    // Construire le payload
-                    const payload = { elements: [] };
+                    var payload = {
+                        elements: elements.map(function(e) {
+                            if (e.type === "filter") return { type: "filter", id: e.id, name: e.name, hint: e.hint || "" };
+                            if (e.type === "text") return { type: "raw", text: e.text };
+                            return e;
+                        }),
+                    };
                     if (seed > 0) payload.seed = seed;
-
-                    elements.forEach((e, idx) => {
-                        if (e.type === "filter") {
-                            payload.elements.push({ type: "filter", id: e.id });
-                        } else if (e.type === "text") {
-                            // Résoudre les blocs de choix {A::B::C} dans le texte
-                            // (deterministe par seed pour reproductibilite du workflow).
-                            const chosen = pickAlternative(e.text || "", seed, idx);
-                            payload.elements.push({ type: "raw", text: chosen });
-                        }
-                    });
-
                     if (randCb.checked) {
                         payload.random_count = parseInt(randN.value) || 3;
                         payload.random_sfw = sfwCb.checked;
                         payload.random_nsfw = nsfwCb.checked;
                     }
 
-                    result.value = "Génération en cours...";
-
-                    apiCall("POST", "generate", payload).then(data => {
-                        const prompt = data.prompt || "";
-                        if (node._resultArea) node._resultArea.value = prompt;
+                    try {
+                        var data = await apiCall("POST", "generate", payload);
+                        var prompt = data.prompt || data.output || "";
+                        if (n._resultArea) n._resultArea.value = prompt;
                         syncElementsWidget();
                         syncApiConfigWidget();
-                    }).catch(err => {
-                        if (node._resultArea) node._resultArea.value = "Erreur : " + err.message;
-                    });
+                    } catch (err) {
+                        if (n._resultArea) n._resultArea.value = "Erreur : " + err.message;
+                    } finally {
+                        genBtn.textContent = originalBtnText;
+                        genBtn.disabled = false;
+                    }
                 }
 
                 // ---- Result area (hauteur fixe, calée en bas, pas de resize) ----
@@ -1287,6 +1394,7 @@ function hideWidget(node, name) {
                                         name: e.name || `Filtre #${e.id}`,
                                         author: e.author || "?",
                                         is_public: !!e.is_public,
+                                        hint: e.hint || "",
                                         visible,
                                     };
                                 }

@@ -115,11 +115,23 @@ def list_or_create_keywords():
         params.extend([like_neg, like_neg, like_neg, like_neg])
 
     if section:
-        conditions.append("k.section_id = ?")
-        params.append(section)
+        section_ids = [s.strip() for s in section.split(',') if s.strip()]
+        if len(section_ids) == 1:
+            conditions.append("k.section_id = ?")
+            params.append(section_ids[0])
+        else:
+            placeholders = ','.join('?' for _ in section_ids)
+            conditions.append(f"k.section_id IN ({placeholders})")
+            params.extend(section_ids)
     if subsection:
-        conditions.append("k.subsection_id = ?")
-        params.append(subsection)
+        subsection_ids = [s.strip() for s in subsection.split(',') if s.strip()]
+        if len(subsection_ids) == 1:
+            conditions.append("k.subsection_id = ?")
+            params.append(subsection_ids[0])
+        else:
+            placeholders = ','.join('?' for _ in subsection_ids)
+            conditions.append(f"k.subsection_id IN ({placeholders})")
+            params.extend(subsection_ids)
 
     if nsfw_raw in ('0', '1'):
         conditions.append("k.nsfw = ?")
@@ -840,8 +852,14 @@ def list_subsections():
     params = privacy_params.copy()
 
     if section_id:
-        where_parts.append("section_id = ?")
-        params.append(section_id)
+        section_ids = [s.strip() for s in section_id.split(',') if s.strip()]
+        if len(section_ids) == 1:
+            where_parts.append("section_id = ?")
+            params.append(section_ids[0])
+        else:
+            placeholders = ','.join('?' for _ in section_ids)
+            where_parts.append(f"section_id IN ({placeholders})")
+            params.extend(section_ids)
 
     cur.execute(f"""
         SELECT k.subsection_id, k.subsection_title, COUNT(*) as total
