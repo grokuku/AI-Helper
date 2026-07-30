@@ -34,8 +34,53 @@ def _hash32(s):
     return h
 
 
-# Regex pour détecter la syntaxe ||concept ou ||concept:N (ancre en début de texte)
-_LLM_CONCEPT_RE = re.compile(r'\|\|([^:]+)(?::(\d+))?')
+def _parse_concept_syntax(text, default_count=10):
+    """Parse ||concept[:count][;hint[:count]] syntax.
+    Returns (concept, count, hint) or None if not a concept syntax.
+
+    Supported forms:
+        ||color                  → concept="color", count=default, hint=None
+        ||color:20               → concept="color", count=20,    hint=None
+        ||color;hair color       → concept="color", count=default, hint="hair color"
+        ||color:20;hair color    → concept="color", count=20,    hint="hair color"
+        ||color;hair color:20    → concept="color", count=20,    hint="hair color"
+    """
+    if not text or not text.startswith('||'):
+        return None
+    body = text[2:].strip()
+    if not body:
+        return None
+
+    # Split by first ; to separate concept part from hint part
+    if ';' in body:
+        concept_part, hint_part = body.split(';', 1)
+    else:
+        concept_part, hint_part = body, None
+
+    # Parse concept_part: concept[:count]
+    concept = concept_part.strip()
+    count = None
+    if ':' in concept_part:
+        parts = concept_part.rsplit(':', 1)
+        if parts[1].strip().isdigit():
+            concept = parts[0].strip()
+            count = int(parts[1].strip())
+
+    # Parse hint_part: hint[:count]
+    hint = None
+    if hint_part:
+        hint = hint_part.strip()
+        if ':' in hint_part:
+            parts = hint_part.rsplit(':', 1)
+            if parts[1].strip().isdigit():
+                hint = parts[0].strip()
+                if count is None:
+                    count = int(parts[1].strip())
+
+    if count is None:
+        count = default_count
+
+    return (concept, count, hint)
 
 
 # Regex pour trouver les blocs {choix1::choix2::...}
@@ -245,13 +290,11 @@ class AIHElementsNode:
                 else False
             )
 
-            # --- Détection syntaxe ||concept:N (liste générée par LLM) ---
-            llm_match = _LLM_CONCEPT_RE.match(raw_text.strip())
+            # --- Détection syntaxe ||concept[:count][;hint[:count]] ---
+            parsed = _parse_concept_syntax(raw_text.strip(), llm_default_count)
 
-            if llm_match:
-                concept = llm_match.group(1).strip()
-                count_str = llm_match.group(2)
-                count = int(count_str) if count_str else llm_default_count
+            if parsed:
+                concept, count, hint = parsed
 
                 # preset_id == 0 → pas de LLM disponible, skip cette liste
                 if preset_id == 0:
@@ -280,9 +323,13 @@ class AIHElementsNode:
                 if output:
                     items = _parse_llm_list(output)
                     if items:
-                        chosen = _pick_from_list(items, seed, i, raw_text)
-                        el["text"] = chosen
-                        context.append(chosen)
+                        chosen_keyword = _pick_from_list(items, seed, i, raw_text)
+                        if hint:
+                            chosen_text = f"{hint}: {chosen_keyword}"
+                        else:
+                            chosen_text = chosen_keyword
+                        el["text"] = chosen_text
+                        context.append(chosen_text)
                     else:
                         indices_to_skip.add(i)
                 else:

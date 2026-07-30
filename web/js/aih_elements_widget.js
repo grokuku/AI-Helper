@@ -61,6 +61,54 @@ function hideWidget(node, name) {
     return null;
 }
 
+// Parse la syntaxe ||concept[:count][;hint[:count]] utilisée dans le
+// test button de l'Elements Picker.  Retourne {concept, count, hint} ou null.
+function _parseConceptSyntax(text, defaultCount) {
+    if (!text || !text.startsWith('||')) return null;
+    var body = text.substring(2).trim();
+    if (!body) return null;
+
+    // Split par premier ;
+    var semiIdx = body.indexOf(';');
+    var conceptPart, hintPart;
+    if (semiIdx >= 0) {
+        conceptPart = body.substring(0, semiIdx);
+        hintPart = body.substring(semiIdx + 1);
+    } else {
+        conceptPart = body;
+        hintPart = null;
+    }
+
+    // Parse concept[:count]
+    var concept = conceptPart.trim();
+    var count = null;
+    var colonIdx = conceptPart.lastIndexOf(':');
+    if (colonIdx >= 0) {
+        var afterColon = conceptPart.substring(colonIdx + 1).trim();
+        if (/^\d+$/.test(afterColon)) {
+            concept = conceptPart.substring(0, colonIdx).trim();
+            count = parseInt(afterColon);
+        }
+    }
+
+    // Parse hint[:count]
+    var hint = null;
+    if (hintPart) {
+        hint = hintPart.trim();
+        var hintColonIdx = hintPart.lastIndexOf(':');
+        if (hintColonIdx >= 0) {
+            var afterHintColon = hintPart.substring(hintColonIdx + 1).trim();
+            if (/^\d+$/.test(afterHintColon)) {
+                hint = hintPart.substring(0, hintColonIdx).trim();
+                if (count === null) count = parseInt(afterHintColon);
+            }
+        }
+    }
+
+    if (count === null) count = defaultCount;
+    return { concept: concept, count: count, hint: hint };
+}
+
 // Polling auto-contenu pour attendre window.app (évite la dépendance
 // à AIH.waitForApp qui peut charger après ce fichier)
 (function aihBoot() {
@@ -1208,11 +1256,12 @@ function hideWidget(node, name) {
                         var brainOn = brainToggles[i] || false;
                         var rawText = el.text || "";
 
-                        // Détecter ||concept:N
-                        var conceptMatch = rawText.match(/^\|\|([^:]+)(?::(\d+))?/);
-                        if (conceptMatch && presetId > 0) {
-                            var concept = conceptMatch[1].trim();
-                            var count = conceptMatch[2] ? parseInt(conceptMatch[2]) : llmDefaultCount;
+                        // Détecter ||concept[:count][;hint[:count]]
+                        var parsed = _parseConceptSyntax(rawText, llmDefaultCount);
+                        if (parsed && presetId > 0) {
+                            var concept = parsed.concept;
+                            var count = parsed.count;
+                            var hint = parsed.hint;
                             var instruction = brainOn && context.length > 0
                                 ? "Génère " + count + " " + concept + " cohérents avec le contexte. Retourne uniquement une liste séparée par des virgules."
                                 : "Génère " + count + " " + concept + ". Retourne uniquement une liste séparée par des virgules.";
@@ -1226,8 +1275,12 @@ function hideWidget(node, name) {
                                 });
                                 var llmList = (resp.output || "").split(/[,\n]/).map(function(s) { return s.trim(); }).filter(Boolean);
                                 if (llmList.length > 0) {
-                                    el.text = llmList[Math.floor(Math.random() * llmList.length)];
-                                    context.push(el.text);
+                                    var chosen = llmList[Math.floor(Math.random() * llmList.length)];
+                                    if (hint) {
+                                        chosen = hint + ": " + chosen;
+                                    }
+                                    el.text = chosen;
+                                    context.push(chosen);
                                 }
                             } catch (e) { console.error("LLM generate failed:", e); }
                             continue;
