@@ -236,17 +236,15 @@ class AIHElementsNode:
                 # JSON sérialisé par le JS : elements + random_count
                 # Masqué dans l'UI ComfyUI
                 "_elements_json": ("STRING", {"default": "{}", "multiline": True}),
-                # TEST TEMPORAIRE : elements_input retiré de INPUT_TYPES pour valider
-                # la théorie "le NOMBRE d'entrées forceInput casse la frontend Vue".
-                # La signature generate() garde elements_input="" (rétro-compat workflow).
-                "external_llm": ("STRING", {"default": "", "forceInput": True}),  # config LLM externe (LM Studio/OpenAI), accepte connexion
+                "elements_input": ("STRING", {"default": ""}),        # champ texte simple (PAS forceInput, PAS multiline)
+                "llm_config": ("STRING", {"default": "", "forceInput": True}),  # seule entrée forceInput, nom d'origine
             }
         }
 
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("elements",)
+    RETURN_TYPES = ("STRING", "STRING")
+    RETURN_NAMES = ("elements", "llm_config")
 
-    def generate(self, seed, _elements_json="{}", elements_input="", external_llm=None):
+    def generate(self, seed, _elements_json="{}", elements_input="", llm_config=None):
         from . import _credentials
         try:
             elems_cfg = json.loads(_elements_json) if _elements_json else {}
@@ -254,7 +252,7 @@ class AIHElementsNode:
             msg = "Erreur : config JSON invalide"
             return {
                 "ui": {"elements": [msg]},
-                "result": (msg,)
+                "result": (msg, llm_config)
             }
 
         # api_key et api_url lus depuis le fichier de credentials
@@ -302,8 +300,8 @@ class AIHElementsNode:
                 concept, count, hint = parsed
 
                 # preset_id == 0 → pas de LLM backend disponible
-                # (sauf si external_llm externe fournie)
-                if preset_id == 0 and not external_llm:
+                # (sauf si llm_config externe fournie)
+                if preset_id == 0 and not llm_config:
                     indices_to_skip.add(i)
                     continue
 
@@ -323,9 +321,9 @@ class AIHElementsNode:
                     )
                     input_text = ""
 
-                if external_llm:
+                if llm_config:
                     # Config LLM externe (LM Studio ou OpenAI)
-                    output = _llm_helper.call_llm(external_llm, instruction, input_text, seed=seed)
+                    output = _llm_helper.call_llm(llm_config, instruction, input_text, seed=seed)
                     items = _parse_llm_list(output) if output else []
                 else:
                     # Backend existant (comportement actuel)
@@ -350,7 +348,7 @@ class AIHElementsNode:
             blocks = _extract_brace_blocks(raw_text)
             has_braces = len(blocks) >= 1
 
-            if has_braces and brain_on and (preset_id != 0 or external_llm):
+            if has_braces and brain_on and (preset_id != 0 or llm_config):
                 # 🧠 ON + liste manuelle avec {} → filtrage LLM par contexte
                 # Concaténer tous les choix de tous les blocs
                 all_choices = []
@@ -367,9 +365,9 @@ class AIHElementsNode:
                     f"Liste: [{', '.join(all_choices)}]"
                 )
 
-                if external_llm:
+                if llm_config:
                     # Config LLM externe (LM Studio ou OpenAI)
-                    output = _llm_helper.call_llm(external_llm, instruction, input_text, seed=seed)
+                    output = _llm_helper.call_llm(llm_config, instruction, input_text, seed=seed)
                     filtered = _parse_llm_list(output) if output else []
                 else:
                     # Backend existant (comportement actuel)
@@ -422,7 +420,7 @@ class AIHElementsNode:
         if not elements and random_count <= 0:
             return {
                 "ui": {"elements": ["⚠️ Aucun filtre sélectionné. Ajoutez des filtres dans la liste."]},
-                "result": ("⚠️ Aucun filtre sélectionné. Ajoutez des filtres dans la liste.",)
+                "result": ("⚠️ Aucun filtre sélectionné. Ajoutez des filtres dans la liste.", llm_config)
             }
 
         # Construire le payload pour /api/generate
@@ -446,13 +444,13 @@ class AIHElementsNode:
             prompt = data.get("prompt", "")
             return {
                 "ui": {"elements": [prompt]},
-                "result": (prompt,)
+                "result": (prompt, llm_config)
             }
         except ImportError:
             msg = "Erreur : module 'requests' manquant. pip install requests"
             return {
                 "ui": {"elements": [msg]},
-                "result": (msg,)
+                "result": (msg, llm_config)
             }
         except Exception as e:
             msg = str(e)
@@ -464,5 +462,5 @@ class AIHElementsNode:
                 msg = f"Erreur API : {msg}"
             return {
                 "ui": {"elements": [msg]},
-                "result": (msg,)
+                "result": (msg, llm_config)
             }
