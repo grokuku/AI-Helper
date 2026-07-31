@@ -31,7 +31,7 @@ class AIHOpenAISettingsNode:
             }
         }
 
-    RETURN_TYPES = ("AIH_LLM_CONFIG",)
+    RETURN_TYPES = ("STRING",)
     RETURN_NAMES = ("llm_config",)
 
     def generate_config(self, base_url, api_key, model, max_tokens, temperature):

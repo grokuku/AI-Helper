@@ -23,7 +23,7 @@ class AIHLMStudioSettingsNode:
             }
         }
 
-    RETURN_TYPES = ("AIH_LLM_CONFIG",)
+    RETURN_TYPES = ("STRING",)
     RETURN_NAMES = ("llm_config",)
 
     def generate_config(self, model_identifier, auto_unload, unload_delay, max_tokens, temperature):

@@ -38,11 +38,11 @@ class AIHEnhanceNode:
             "optional": {
                 # JSON sérialisé des éléments (connecté à la sortie elements_json du Elements Picker)
                 "elements": ("STRING", {"forceInput": True, "multiline": True, "default": "[]"}),
-                "llm_config": ("AIH_LLM_CONFIG", {"forceInput": True}),
+                "llm_config": ("STRING", {"forceInput": True}),
             }
         }
 
-    RETURN_TYPES = ("STRING", "STRING", "AIH_LLM_CONFIG")
+    RETURN_TYPES = ("STRING", "STRING", "STRING")
     RETURN_NAMES = ("prompt", "negative_prompt", "llm_config")
 
     def enhance(self, seed=0, base_prompt="", template_id=0,

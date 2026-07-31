@@ -237,11 +237,11 @@ class AIHElementsNode:
                 # Masqué dans l'UI ComfyUI
                 "_elements_json": ("STRING", {"default": "{}", "multiline": True}),
                 "elements_input": ("STRING", {"default": "", "forceInput": True}),  # champ texte simple une ligne, accepte connexion
-                "llm_config": ("AIH_LLM_CONFIG", {"forceInput": True}),
+                "llm_config": ("STRING", {"forceInput": True}),
             }
         }
 
-    RETURN_TYPES = ("STRING", "AIH_LLM_CONFIG")
+    RETURN_TYPES = ("STRING", "STRING")
     RETURN_NAMES = ("elements", "llm_config")
 
     def generate(self, seed, _elements_json="{}", elements_input="", llm_config=None):

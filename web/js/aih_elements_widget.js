@@ -48,16 +48,14 @@ async function apiCall(method, path, body) {
 }
 
 // Cacher un widget ComfyUI : reste dans node.widgets (sérialisé) mais invisible dans l'UI.
+// IMPORTANT : ne PAS changer widget.type en "hidden" car ComfyUI le
+// désérialiserait à vide. On utilise uniquement widget.hidden = true
+// et on réduit sa hauteur à 0.
 function hideWidget(node, name) {
     const w = node.widgets?.find(x => x.name === name);
     if (w) {
-        // NE PAS mettre hidden=true — la nouvelle frontend Vue exclut les
-        // widgets hidden de widgets_values au chargement (données perdues)
-        w.computeSize = () => [0, -4];  // 0 place visuelle (compressé)
-        // Cacher le DOM visuellement
-        if (w.element) w.element.style.display = "none";
-        if (w.inputEl) w.inputEl.style.display = "none";
-        if (w.parentEl) w.parentEl.style.display = "none";
+        w.hidden = true;
+        w.computeSize = () => [0, -4]; // hauteur négative = ligne compressée
         return w;
     }
     return null;
@@ -126,34 +124,6 @@ function _parseConceptSyntax(text, defaultCount) {
         async beforeRegisterNodeDef(nodeType, nodeData) {
             if (nodeData.name !== "AIHElementsNode") return; // TODO: this guard could be part of AIH.registerWidget config
 
-            // Intercepter onConfigure (nouvelle API frontend Vue) pour restaurer
-            // _elements_json.  La nouvelle frontend Vue de ComfyUI appelle
-            // onConfigure avec les données brutes du workflow.
-            const origOnConfigure = nodeType.prototype.onConfigure;
-            nodeType.prototype.onConfigure = function(data) {
-                const result = origOnConfigure ? origOnConfigure.call(this, data) : undefined;
-
-                // Restaurer _elements_json depuis les données brutes du workflow
-                if (data && data.widgets_values) {
-                    for (var i = 0; i < data.widgets_values.length; i++) {
-                        var val = data.widgets_values[i];
-                        if (typeof val === 'string' && val.indexOf('"elements"') >= 0) {
-                            var ej = this.widgets?.find(w => w.name === "_elements_json");
-                            if (ej) {
-                                ej.value = val;
-                                // Déclencher la restauration immédiatement
-                                if (this._aihRestore) {
-                                    setTimeout(() => this._aihRestore(), 0);
-                                }
-                            }
-                            break;
-                        }
-                    }
-                }
-
-                return result;
-            };
-
             const onNodeCreated = nodeType.prototype.onNodeCreated;
             nodeType.prototype.onNodeCreated = function () {
                 const r = onNodeCreated?.apply(this, arguments);
@@ -163,10 +133,6 @@ function _parseConceptSyntax(text, defaultCount) {
                 // (plus de _api_config : api_key/url sont lus cote Python depuis
                 // le fichier de credentials)
                 hideWidget(node, "_elements_json");
-                // PAS de serializeValue : la doc officielle ComfyUI dit que
-                // LGraphNode.serialize() sérialise les widgets en lisant
-                // widget.value SAUF si widget.serialize === false. Comme on ne
-                // met PAS serialize=false, le widget EST sérialisé nativement.
 
                 // ---- Supprimer la socket d'entrée de _elements_json ----
                 {
@@ -1468,12 +1434,10 @@ function _parseConceptSyntax(text, defaultCount) {
 
                 function restoreFromWidgets(n) {
                     const ej = n.widgets?.find(w => w.name === "_elements_json");
-                    if (!ej || !ej.value || ej.value === "{}" || ej.value === "") {
-                        return false;
-                    }
+                    if (!ej || !ej.value || ej.value === "{}" || ej.value === "") return false;
                     try {
                         const data = JSON.parse(ej.value);
-                        if (data.elements && Array.isArray(data.elements) && data.elements.length > 0) {
+                        if (data.elements && Array.isArray(data.elements) && data.elements.length > 0 && n._aihElements.length === 0) {
                             n._aihElements = data.elements.map(e => {
                                 const visible = e.visible !== false;
                                 if (e.type === "filter") {
@@ -1544,9 +1508,7 @@ function _parseConceptSyntax(text, defaultCount) {
                 // Fallback : tente de restaurer périodiquement (pour F5 et cas où les hooks ne marchent pas)
                 let restoreAttempts = 0;
                 function delayedRestore() {
-                    if (restoreFromWidgets(node)) {
-                        return;
-                    }
+                    if (restoreFromWidgets(node)) return;
                     restoreAttempts++;
                     if (restoreAttempts < 20) {
                         setTimeout(delayedRestore, 300);
@@ -1599,18 +1561,9 @@ function _parseConceptSyntax(text, defaultCount) {
                     }
                 };
 
-                // Sync initial — ne pas écraser les données chargées du workflow
-                var _ej = node.widgets?.find(w => w.name === "_elements_json");
-                var _hasSaved = _ej && _ej.value && _ej.value !== "{}" && _ej.value !== "";
-                if (!_hasSaved) {
-                    // Nouveau node sans données : initialiser
-                    if (_ej && (!_ej.value || _ej.value === "" || _ej.value === "{}")) {
-                        _ej.value = "{}";
-                    }
-                    if (node._aihElements && node._aihElements.length > 0) {
-                        syncElementsWidget();
-                    }
-                }
+                // Sync initial
+                syncElementsWidget();
+                syncApiConfigWidget();
 
                 return r;
             };
@@ -1619,9 +1572,7 @@ function _parseConceptSyntax(text, defaultCount) {
         // Hook appelé APRÈS que ComfyUI a restauré les widgets depuis le workflow
         async loadedGraphNode(node) {
             if (node._aihRestore) {
-                setTimeout(() => {
-                    node._aihRestore();
-                }, 0);
+                setTimeout(() => node._aihRestore(), 0);
             }
         },
 

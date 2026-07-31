@@ -43,11 +43,11 @@ class AIHIdeogram4Node:
                 "validation_template_id": ("INT", {"default": 0, "min": 0}),
             },
             "optional": {
-                "llm_config": ("AIH_LLM_CONFIG", {"forceInput": True}),
+                "llm_config": ("STRING", {"forceInput": True}),
             },
         }
 
-    RETURN_TYPES = ("STRING", "INT", "INT", "IMAGE", "STRING", "AIH_LLM_CONFIG")
+    RETURN_TYPES = ("STRING", "INT", "INT", "IMAGE", "STRING", "STRING")
     RETURN_NAMES = ("prompt", "width", "height", "preview", "debug", "llm_config")
 
     def build_caption(self, seed=0, width=1024, height=1024,
