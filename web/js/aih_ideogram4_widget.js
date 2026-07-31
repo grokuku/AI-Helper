@@ -26,14 +26,10 @@
                 const hideWidget = (n, name) => {
                     const w = n.widgets?.find(x => x.name === name);
                     if (w) {
-                        // Ne PAS utiliser hidden = true (empêche la sérialisation dans ComfyUI récent)
-                        // Forcer serializeValue pour garantir la sauvegarde dans le workflow
-                        w.serializeValue = function() { return this.value; };
-                        w.computeSize = () => [0, 0]; // 0 place visuellement, pas de hauteur négative
-                        // Ne pas masquer les éléments DOM (display:none peut empêcher la sérialisation)
+                        w.hidden = true;
+                        w.computeSize = () => [0, -4];
                         return w;
                     }
-                    return null;
                 };
 
                 hideWidget(node, "preset_id");

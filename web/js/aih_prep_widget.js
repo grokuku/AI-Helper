@@ -37,15 +37,11 @@
                         let _aihRestored = false;
 
                 // ---- Cacher les widgets natifs pilotes par le DOM ----
-                // Ne PAS utiliser w.hidden = true (empêche la sérialisation dans ComfyUI récent).
-                // On cache visuellement via display:none sur les éléments DOM.
                 const hideWidget = (n, name) => {
                     const w = n.widgets?.find(x => x.name === name);
                     if (w) {
-                        // Forcer serializeValue pour garantir la sauvegarde dans le workflow
-                        w.serializeValue = function() { return this.value; };
-                        w.computeSize = () => [0, 0]; // 0 place visuellement, pas de hauteur négative
-                        // Ne pas masquer les éléments DOM (display:none peut empêcher la sérialisation)
+                        w.hidden = true;
+                        w.computeSize = () => [0, -4];
                     }
                 };
                 ["template_id", "style_id", "style_shortlist"].forEach(n => hideWidget(node, n));

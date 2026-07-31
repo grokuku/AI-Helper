@@ -48,17 +48,13 @@ async function apiCall(method, path, body) {
 }
 
 // Cacher un widget ComfyUI : reste dans node.widgets (sérialisé) mais invisible dans l'UI.
-// IMPORTANT : ne PAS utiliser w.hidden = true (ComfyUI ne sérialise PAS les widgets
-// hidden=true). On cache visuellement via computeSize à [0, -4] qui compresse le
-// widget sans occuper d'espace visuel. PAS de display:none, PAS de hidden=true,
-// PAS de serializeValue, PAS de serializable=true.
 function hideWidget(node, name) {
     const w = node.widgets?.find(x => x.name === name);
     if (w) {
-        w.computeSize = () => [0, -4]; // -4 nécessaire pour compresser le widget visuellement
+        w.hidden = true;
+        w.computeSize = () => [0, -4];
         return w;
     }
-    return null;
 }
 
 // Parse la syntaxe ||concept[:count][;hint[:count]] utilisée dans le
@@ -1442,10 +1438,6 @@ function _parseConceptSyntax(text, defaultCount) {
                     try {
                         const data = JSON.parse(ej.value);
                         if (data.elements && Array.isArray(data.elements) && data.elements.length > 0) {
-                            // Écrase systématiquement au lieu de vérifier
-                            // n._aihElements.length === 0 : si _aihElements a
-                            // été peuplé entre-temps (race condition), on
-                            // veut quand même restaurer depuis le workflow.
                             n._aihElements = data.elements.map(e => {
                                 const visible = e.visible !== false;
                                 if (e.type === "filter") {
@@ -1466,8 +1458,6 @@ function _parseConceptSyntax(text, defaultCount) {
                                 return { ...e, visible };
                             });
                             renderList();
-                        } else {
-                            return false;  // Pas d'éléments à restaurer → continuer le polling
                         }
                         if (data.random_sfw !== undefined) sfwCb.checked = !!data.random_sfw;
                         if (data.random_nsfw !== undefined) nsfwCb.checked = !!data.random_nsfw;
@@ -1571,31 +1561,8 @@ function _parseConceptSyntax(text, defaultCount) {
                     }
                 };
 
-                // ========================================
-                // PERSISTANCE : sauver/restaurer la valeur du widget
-                // ========================================
-                // ComfyUI charge les valeurs des widgets APRÈS onNodeCreated.
-                // Mais syncElementsWidget() écrase _elements_json.value, donc on
-                // SAUVE la valeur chargée par ComfyUI AVANT que sync ne l'écrase,
-                // puis on la RESTAURE après pour que restoreFromWidgets() puisse
-                // relire les données du workflow.
-                var savedEjValue = null;
-                var ej = node.widgets?.find(w => w.name === "_elements_json");
-                if (ej && ej.value && ej.value !== "{}" && ej.value !== "") {
-                    savedEjValue = ej.value;
-                }
-
-                // Sync initial (seulement si pas de données sauvegardées)
-                if (!savedEjValue && node._aihElements && node._aihElements.length > 0) {
-                    syncElementsWidget();
-                }
-
-                // Restaurer immédiatement si on avait des données sauvegardées
-                if (savedEjValue) {
-                    ej.value = savedEjValue;  // Remettre la valeur sauvegardée
-                    restoreFromWidgets(node);  // Restaurer les éléments
-                }
-                syncApiConfigWidget();
+                // Sync initial
+                syncElementsWidget();
 
                 return r;
             };

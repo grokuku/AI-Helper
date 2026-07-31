@@ -60,18 +60,14 @@ async function apiCall(method, path, body) {
 
 // ========================
 // Cacher un widget ComfyUI
-// IMPORTANT : ne PAS utiliser w.hidden = true car ComfyUI récent ne sérialise PAS
-// les widgets hidden=true. On cache visuellement via computeSize à 0 et display:none.
 // ========================
 function hideWidget(node, name) {
     const w = node.widgets?.find(x => x.name === name);
     if (w) {
-        // Ne PAS utiliser hidden = true (empêche la sérialisation dans ComfyUI récent)
-        w.computeSize = () => [0, 0]; // 0 place visuellement, pas de hauteur négative
-        // Ne pas masquer les éléments DOM (display:none peut empêcher la sérialisation)
+        w.hidden = true;
+        w.computeSize = () => [0, -4];
         return w;
     }
-    return null;
 }
 
 // ========================
@@ -168,12 +164,7 @@ function debounce(fn, delay) {
 
                 // ---- Masquer le widget sérialisé _keywords_config ----
                 {
-                    const w = hideWidget(node, "_keywords_config");
-                    if (w) {
-                        // Forcer serializeValue pour garantir la sauvegarde dans le workflow
-                        w.serializeValue = function() { return this.value || "{}"; };
-                        w.options = w.options || {};
-                    }
+                    hideWidget(node, "_keywords_config");
                 }
 
                 // ---- Masquer le widget seed (forçage de réexécution) ----
@@ -186,9 +177,8 @@ function debounce(fn, delay) {
                     // à côté de tout widget nommé "seed" — on le cache aussi.
                     var cag = node.widgets?.find(w => w.name === "control_after_generate");
                     if (cag) {
-                        // Ne PAS utiliser hidden = true (empêche la sérialisation dans ComfyUI récent)
-                        cag.computeSize = () => [0, 0];
-                        // Ne pas masquer les éléments DOM (display:none peut empêcher la sérialisation)
+                        cag.hidden = true;
+                        cag.computeSize = () => [0, -4];
                     }
                 }
 
