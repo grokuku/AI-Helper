@@ -48,14 +48,14 @@ async function apiCall(method, path, body) {
 }
 
 // Cacher un widget ComfyUI : reste dans node.widgets (sérialisé) mais invisible dans l'UI.
-// IMPORTANT : ne PAS utiliser w.hidden = true car ComfyUI récent ne sérialise PAS
-// les widgets hidden=true, même si serializable=true. On cache visuellement via
-// computeSize à 0 et display:none sur les éléments DOM.
+// IMPORTANT : ne PAS utiliser w.hidden = true (ComfyUI ne sérialise PAS les widgets
+// hidden=true). On cache visuellement via computeSize à [0, -4] qui compresse le
+// widget sans occuper d'espace visuel. PAS de display:none, PAS de hidden=true,
+// PAS de serializeValue, PAS de serializable=true.
 function hideWidget(node, name) {
     const w = node.widgets?.find(x => x.name === name);
     if (w) {
-        w.computeSize = () => [0, 0]; // 0 place visuellement, pas de hauteur négative
-        // Ne pas masquer les éléments DOM (display:none peut empêcher la sérialisation)
+        w.computeSize = () => [0, -4]; // -4 nécessaire pour compresser le widget visuellement
         return w;
     }
     return null;
@@ -133,16 +133,10 @@ function _parseConceptSyntax(text, defaultCount) {
                 // (plus de _api_config : api_key/url sont lus cote Python depuis
                 // le fichier de credentials)
                 hideWidget(node, "_elements_json");
-                // Forcer serializeValue : certaines versions du frontend
-                // ComfyUI ne sérialisent pas les widgets cachés par défaut, ce
-                // qui fait perdre tous les réglages au refresh de la page.
-                var ejWidget = node.widgets.find(w => w.name === "_elements_json");
-                if (ejWidget) {
-                    // Forcer la sérialisation même si le widget est visuellement caché
-                    ejWidget.serializeValue = function() { return this.value || "{}"; };
-                    ejWidget.options = ejWidget.options || {};
-                    // Ne PAS mettre options.serialize = false
-                }
+                // PAS de serializeValue : la doc officielle ComfyUI dit que
+                // LGraphNode.serialize() sérialise les widgets en lisant
+                // widget.value SAUF si widget.serialize === false. Comme on ne
+                // met PAS serialize=false, le widget EST sérialisé nativement.
 
                 // ---- Supprimer la socket d'entrée de _elements_json ----
                 {
@@ -1577,9 +1571,29 @@ function _parseConceptSyntax(text, defaultCount) {
                     }
                 };
 
-                // Sync initial — seulement si on a des éléments (sinon on écrase les données sauvegardées)
-                if (node._aihElements && node._aihElements.length > 0) {
+                // ========================================
+                // PERSISTANCE : sauver/restaurer la valeur du widget
+                // ========================================
+                // ComfyUI charge les valeurs des widgets APRÈS onNodeCreated.
+                // Mais syncElementsWidget() écrase _elements_json.value, donc on
+                // SAUVE la valeur chargée par ComfyUI AVANT que sync ne l'écrase,
+                // puis on la RESTAURE après pour que restoreFromWidgets() puisse
+                // relire les données du workflow.
+                var savedEjValue = null;
+                var ej = node.widgets?.find(w => w.name === "_elements_json");
+                if (ej && ej.value && ej.value !== "{}" && ej.value !== "") {
+                    savedEjValue = ej.value;
+                }
+
+                // Sync initial (seulement si pas de données sauvegardées)
+                if (!savedEjValue && node._aihElements && node._aihElements.length > 0) {
                     syncElementsWidget();
+                }
+
+                // Restaurer immédiatement si on avait des données sauvegardées
+                if (savedEjValue) {
+                    ej.value = savedEjValue;  // Remettre la valeur sauvegardée
+                    restoreFromWidgets(node);  // Restaurer les éléments
                 }
                 syncApiConfigWidget();
 
