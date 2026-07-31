@@ -48,14 +48,18 @@ async function apiCall(method, path, body) {
 }
 
 // Cacher un widget ComfyUI : reste dans node.widgets (sérialisé) mais invisible dans l'UI.
-// IMPORTANT : ne PAS changer widget.type en "hidden" car ComfyUI le
-// désérialiserait à vide. On utilise uniquement widget.hidden = true
-// et on réduit sa hauteur à 0.
+// IMPORTANT : ne PAS activer le flag hidden du widget — la nouvelle frontend Vue
+// exclut les widgets hidden de widgets_values au chargement (données perdues).
+// On réduit uniquement sa hauteur à 0 et on masque ses éléments DOM.
 function hideWidget(node, name) {
     const w = node.widgets?.find(x => x.name === name);
     if (w) {
-        w.hidden = true;
-        w.computeSize = () => [0, -4]; // hauteur négative = ligne compressée
+        // NE PAS mettre hidden=true — la nouvelle frontend Vue exclut
+        // les widgets hidden de widgets_values au chargement (données perdues)
+        w.computeSize = () => [0, -4];  // 0 place visuelle (compressé)
+        if (w.element) w.element.style.display = "none";
+        if (w.inputEl) w.inputEl.style.display = "none";
+        if (w.parentEl) w.parentEl.style.display = "none";
         return w;
     }
     return null;
@@ -133,6 +137,7 @@ function _parseConceptSyntax(text, defaultCount) {
                 // (plus de _api_config : api_key/url sont lus cote Python depuis
                 // le fichier de credentials)
                 hideWidget(node, "_elements_json");
+                hideWidget(node, "elements_input");  // ← NOUVEAU : cacher le widget texte
 
                 // ---- Supprimer la socket d'entrée de _elements_json ----
                 {
