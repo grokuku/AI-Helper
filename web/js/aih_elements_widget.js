@@ -128,17 +128,24 @@ function _parseConceptSyntax(text, defaultCount) {
                 const result = origOnConfigure ? origOnConfigure.call(this, data) : undefined;
 
                 // DIAG TEMPORAIRE — à retirer après résolution
-                console.log("[AIH DIAG] onConfigure keys:", data ? Object.keys(data) : "no data");
+                console.log("[AIH DIAG] ALL keys:", Object.keys(data || {}).join(", "));
                 if (data) {
-                    console.log("[AIH DIAG] widgets_values:", JSON.stringify(data.widgets_values));
-                    if (data.widgets_values) {
-                        data.widgets_values.forEach(function(v, i) {
-                            console.log("[AIH DIAG] widgets_values[" + i + "] =", typeof v === "string" ? v.substring(0, 120) : v);
-                        });
-                    }
-                    // Vérifier si les données sont ailleurs
-                    console.log("[AIH DIAG] data.properties:", JSON.stringify(data.properties || {}));
-                    console.log("[AIH DIAG] data.inputs:", JSON.stringify(data.inputs || []).substring(0, 300));
+                    // Afficher chaque clé (sauf les grosses) pour voir où sont les données
+                    Object.keys(data).forEach(function(k) {
+                        var v = data[k];
+                        if (typeof v === "string") {
+                            console.log("[AIH DIAG] key " + k + " (string):", v.substring(0, 80));
+                        } else if (Array.isArray(v)) {
+                            console.log("[AIH DIAG] key " + k + " (array len " + v.length + "):", JSON.stringify(v).substring(0, 150));
+                        } else if (v && typeof v === "object") {
+                            console.log("[AIH DIAG] key " + k + " (object):", JSON.stringify(v).substring(0, 150));
+                        } else {
+                            console.log("[AIH DIAG] key " + k + " =", v);
+                        }
+                    });
+                    // Vérifier si _elements_json est rempli APRÈS origOnConfigure
+                    var ejAfter = this.widgets?.find(w => w.name === "_elements_json");
+                    console.log("[AIH DIAG] AFTER orig, _elements_json.value =", ejAfter ? ejAfter.value.substring(0, 80) : "no widget");
                 }
 
                 // Restaurer _elements_json depuis les données brutes du workflow
