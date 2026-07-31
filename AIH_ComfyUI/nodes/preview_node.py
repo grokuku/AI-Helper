@@ -27,16 +27,13 @@ class AIHPreviewNode:
         return {
             "required": {
                 "image": ("IMAGE",),  # tensor natif ComfyUI [B,H,W,C], values 0-1
-            },
-            "optional": {
-                "llm_config": ("STRING", {"forceInput": True}),  # passthrough pour chaînage
             }
         }
 
-    RETURN_TYPES = ("IMAGE", "STRING")
-    RETURN_NAMES = ("image", "llm_config")
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("image",)
 
-    def preview(self, image, llm_config=None):
+    def preview(self, image):
         # --- 1. Convertir le tensor IMAGE [B,H,W,C] en image PIL ---
         try:
             import torch
@@ -58,7 +55,7 @@ class AIHPreviewNode:
         except Exception as e:
             logging.warning(f"[AIH Preview] Failed to convert tensor to PIL: {e}")
             # Ne pas crasher — retourner l'image telle quelle
-            return {"result": (image, llm_config)}
+            return {"result": (image,)}
 
         # --- 2. Convertir en PNG bytes ---
         try:
@@ -67,7 +64,7 @@ class AIHPreviewNode:
             png_bytes = buf.getvalue()
         except Exception as e:
             logging.warning(f"[AIH Preview] Failed to encode PNG: {e}")
-            return {"result": (image, llm_config)}
+            return {"result": (image,)}
 
         # --- 3. Récupérer les credentials ---
         api_url = _credentials.get_api_url()
@@ -75,7 +72,7 @@ class AIHPreviewNode:
 
         if not api_url:
             logging.warning("[AIH Preview] No api_url configured — skipping preview upload.")
-            return {"result": (image, llm_config)}
+            return {"result": (image,)}
 
         # --- 4. POST multipart/form-data vers /api/preview ---
         try:
@@ -105,5 +102,5 @@ class AIHPreviewNode:
         except Exception as e:
             logging.warning(f"[AIH Preview] Network error during upload: {e}")
 
-        # --- 5. Retourner l'image et le llm_config (pass-through) ---
-        return {"result": (image, llm_config)}
+        # --- 5. Retourner l'image (pass-through) ---
+        return {"result": (image,)}

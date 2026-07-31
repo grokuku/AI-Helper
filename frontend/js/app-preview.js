@@ -138,7 +138,6 @@
     }
 
     function previewRender(images) {
-      previewState.lastImages = images;
       $('preview-loading').classList.add('hidden');
       $('preview-error').classList.add('hidden');
 
@@ -146,13 +145,16 @@
       if (countEl) countEl.textContent = images.length + ' image' + (images.length > 1 ? 's' : '');
 
       if (!images.length) {
+        previewState.lastImages = images;        // mémoriser même si empty
         previewShowEmpty();
         return;
       }
 
       // Optimisation : si la liste n'a pas changé, on ne re-render pas
       // (évite de re-fetch toutes les images en blob à chaque poll)
-      if (!previewImagesChanged(images)) return;
+      if (!previewImagesChanged(images)) return;  // compare avec l'ANCIENNE liste
+
+      previewState.lastImages = images;          // DÉPLACÉ ICI (après comparaison)
 
       // Révoquer les anciens objectURLs
       previewRevokeUrls();
