@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Simple "eye" icon representing preview -->
+    <group
+        android:scaleX="0.5"
+        android:scaleY="0.5"
+        android:translateX="27"
+        android:translateY="27">
+        <path
+            android:fillColor="#268BD2"
+            android:pathData="M54,30 C30,30 12,54 12,54 C12,54 30,78 54,78 C78,78 96,54 96,54 C96,54 78,30 54,30 Z" />
+        <path
+            android:fillColor="#002B36"
+            android:pathData="M54,40 C47,40 42,46 42,54 C42,62 47,68 54,68 C61,68 66,62 66,54 C66,46 61,40 54,40 Z" />
+        <path
+            android:fillColor="#2AA198"
+            android:pathData="M54,47 C51,47 48,50 48,54 C48,58 51,61 54,61 C57,61 60,58 60,54 C60,50 57,47 54,47 Z" />
+    </group>
+</vector>
