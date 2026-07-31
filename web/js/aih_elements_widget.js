@@ -1405,11 +1405,18 @@ function _parseConceptSyntax(text, defaultCount) {
 
                 // Intégrer dans le layout ComfyUI via addDOMWidget
                 const domWidget = node.addDOMWidget("elements_ui", "custom", container, {
+                    serialize: false,
+                    hideOnZoom: false,
                     getValue: () => "",
                     setValue: (v) => {},
                 });
                 domWidget.options = domWidget.options || {};
-                domWidget.options.height = 300;
+                // computeSize dynamique : retourne la hauteur réelle du container
+                // au lieu d'une valeur fixe (300).  Empêche le DOM widget de
+                // déborder sous la node et de capturer les clics/drag du workflow.
+                domWidget.computeSize = function(width) {
+                    return [width, container.offsetHeight || 300];
+                };
 
                 // ---- Taille minimum de la node ----
                 const MIN_WIDTH = 360;
