@@ -15,6 +15,7 @@ import json
 import logging
 
 from . import _credentials
+from . import _llm_helper
 
 
 class AIHEnhanceNode:
@@ -37,15 +38,16 @@ class AIHEnhanceNode:
             "optional": {
                 # JSON sérialisé des éléments (connecté à la sortie elements_json du Elements Picker)
                 "elements": ("STRING", {"forceInput": True, "multiline": True, "default": "[]"}),
+                "llm_config": ("AIH_LLM_CONFIG", {"forceInput": True}),
             }
         }
 
-    RETURN_TYPES = ("STRING", "STRING")
-    RETURN_NAMES = ("prompt", "negative_prompt")
+    RETURN_TYPES = ("STRING", "STRING", "AIH_LLM_CONFIG")
+    RETURN_NAMES = ("prompt", "negative_prompt", "llm_config")
 
     def enhance(self, seed=0, base_prompt="", template_id=0,
                 preset_id=0, style_id=0, style_shortlist="[]",
-                special_instructions="", elements="[]"):
+                special_instructions="", elements="[]", llm_config=None):
         # api_key et api_url lus depuis le fichier de credentials
         api_url = _credentials.get_api_url()
         api_key = _credentials.get_api_key()
@@ -125,6 +127,22 @@ class AIHEnhanceNode:
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
 
+        # --- Mode LLM local (llm_config) ---
+        if llm_config:
+            system_prompt = (
+                "You are an expert prompt engineer for image generation. "
+                "Enhance and expand the user's prompt with vivid details, "
+                "lighting, composition, and style. Return only the enhanced prompt."
+            )
+            user_prompt = combined_text or base_prompt
+            enhanced = _llm_helper.call_llm(llm_config, system_prompt, user_prompt, seed=seed)
+            if enhanced:
+                return {
+                    "ui": {"prompt": [enhanced], "negative_prompt": [""]},
+                    "result": (enhanced, "", llm_config)
+                }
+            # Fallback sur le backend si le LLM local échoue
+
         # Mode cloud (defaut) : appel streaming vers /api/enhance
         try:
             import requests
@@ -148,17 +166,17 @@ class AIHEnhanceNode:
                 elif status == "error":
                     return {
                         "ui": {"prompt": [f"Erreur: {chunk.get('error', '')[:200]}"], "negative_prompt": [""]},
-                        "result": (f"Erreur: {chunk.get('error', '')[:200]}", "")
+                        "result": (f"Erreur: {chunk.get('error', '')[:200]}", "", llm_config)
                     }
             return {
                 "ui": {"prompt": [prompt], "negative_prompt": [neg_prompt]},
-                "result": (prompt, neg_prompt)
+                "result": (prompt, neg_prompt, llm_config)
             }
         except ImportError:
             msg = "Erreur: module 'requests' manquant. pip install requests"
             return {
                 "ui": {"prompt": [msg], "negative_prompt": [""]},
-                "result": (msg, "")
+                "result": (msg, "", llm_config)
             }
         except Exception as e:
             msg = str(e)
@@ -170,5 +188,5 @@ class AIHEnhanceNode:
                 msg = f"Erreur API : {msg}"
             return {
                 "ui": {"prompt": [msg], "negative_prompt": [""]},
-                "result": (msg, "")
+                "result": (msg, "", llm_config)
             }

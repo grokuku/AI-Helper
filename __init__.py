@@ -163,6 +163,22 @@ _credentials_mod = _load_module(
     "_credentials"
 )
 
+# Charger _llm_helper (helper partagé pour appels LLM unifiés)
+_llm_helper_mod = _load_module(
+    os.path.join(_nodes_dir, "_llm_helper.py"),
+    "_llm_helper"
+)
+
+# Charger les nodes de configuration LLM
+_lmstudio_settings_mod = _load_module(
+    os.path.join(_nodes_dir, "lmstudio_settings_node.py"),
+    "AIHLMStudioSettingsNode"
+)
+_openai_settings_mod = _load_module(
+    os.path.join(_nodes_dir, "openai_settings_node.py"),
+    "AIHOpenAISettingsNode"
+)
+
 # Migrer les credentials vers le sous-dossier aih/
 try:
     _aih_dir = _get_aih_user_dir()
@@ -226,6 +242,16 @@ if _keywords_mod and hasattr(_keywords_mod, "AIHKeywordsNode"):
     cls = _keywords_mod.AIHKeywordsNode
     NODE_CLASS_MAPPINGS["AIHKeywordsNode"] = cls
     NODE_DISPLAY_NAME_MAPPINGS["AIHKeywordsNode"] = "AIH Keywords"
+
+if _lmstudio_settings_mod and hasattr(_lmstudio_settings_mod, "AIHLMStudioSettingsNode"):
+    cls = _lmstudio_settings_mod.AIHLMStudioSettingsNode
+    NODE_CLASS_MAPPINGS["AIHLMStudioSettingsNode"] = cls
+    NODE_DISPLAY_NAME_MAPPINGS["AIHLMStudioSettingsNode"] = "AIH LMStudio Settings"
+
+if _openai_settings_mod and hasattr(_openai_settings_mod, "AIHOpenAISettingsNode"):
+    cls = _openai_settings_mod.AIHOpenAISettingsNode
+    NODE_CLASS_MAPPINGS["AIHOpenAISettingsNode"] = cls
+    NODE_DISPLAY_NAME_MAPPINGS["AIHOpenAISettingsNode"] = "AIH OpenAI Settings"
 
 # ── Routes HTTP (update + restart) ──────────────────────────────────
 # Ces routes sont appelees par le menu ComfyUI (aih_menu.js) pour

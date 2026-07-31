@@ -16,6 +16,7 @@ import json
 import logging
 
 from . import _credentials
+from . import _llm_helper
 
 
 class AIHIdeogram4Node:
@@ -41,16 +42,19 @@ class AIHIdeogram4Node:
                 "template_id": ("INT", {"default": 0, "min": 0}),
                 "validation_template_id": ("INT", {"default": 0, "min": 0}),
             },
+            "optional": {
+                "llm_config": ("AIH_LLM_CONFIG", {"forceInput": True}),
+            },
         }
 
-    RETURN_TYPES = ("STRING", "INT", "INT", "IMAGE", "STRING")
-    RETURN_NAMES = ("prompt", "width", "height", "preview", "debug")
+    RETURN_TYPES = ("STRING", "INT", "INT", "IMAGE", "STRING", "AIH_LLM_CONFIG")
+    RETURN_NAMES = ("prompt", "width", "height", "preview", "debug", "llm_config")
 
     def build_caption(self, seed=0, width=1024, height=1024,
                       description="", element_1="", element_2="",
                       element_3="", element_4="",
                       preset_id=0, style_id=0, style_shortlist="[]",
-                      template_id=0, validation_template_id=0):
+                      template_id=0, validation_template_id=0, llm_config=None):
         import logging
         # Defensive : ComfyUI peut envoyer une string vide pour un INT
         try:
@@ -112,6 +116,25 @@ class AIHIdeogram4Node:
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
 
+        # --- Mode LLM local (llm_config) ---
+        if llm_config:
+            system_prompt = (
+                "You are an expert prompt engineer for Ideogram 4 image generation. "
+                "Build a detailed caption JSON with compositional deconstruction, "
+                "elements with bounding boxes, and background. Return only valid JSON."
+            )
+            user_prompt = description.strip()
+            if ep_elements:
+                user_prompt += "\n\nElements: " + ", ".join(e["text"] for e in ep_elements)
+            enhanced = _llm_helper.call_llm(llm_config, system_prompt, user_prompt, seed=seed)
+            if enhanced:
+                preview_tensor = _render_preview(enhanced, width, height)
+                return {
+                    "ui": {"prompt": [enhanced]},
+                    "result": (enhanced, width, height, preview_tensor, "", llm_config)
+                }
+            # Fallback sur le backend si le LLM local échoue
+
         # Mode cloud (defaut) : streaming vers /api/enhance
         try:
             import requests
@@ -150,7 +173,7 @@ class AIHIdeogram4Node:
 
         return {
             "ui": {"prompt": [prompt]},
-            "result": (prompt, width, height, preview_tensor, debug_md)
+            "result": (prompt, width, height, preview_tensor, debug_md, llm_config)
         }
 
     def _build_caption_local_loop(self, api_url, api_key, preset_base_url, payload):

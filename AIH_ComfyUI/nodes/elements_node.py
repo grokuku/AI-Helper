@@ -24,6 +24,8 @@ import logging
 import random
 import re
 
+from . import _llm_helper
+
 
 def _hash32(s):
     """FNV-1a 32-bit hash, identique a la fonction hash32() du widget JS."""
@@ -235,13 +237,14 @@ class AIHElementsNode:
                 # Masqué dans l'UI ComfyUI
                 "_elements_json": ("STRING", {"default": "{}", "multiline": True}),
                 "elements_input": ("STRING", {"default": "", "forceInput": True}),  # champ texte simple une ligne, accepte connexion
+                "llm_config": ("AIH_LLM_CONFIG", {"forceInput": True}),
             }
         }
 
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("elements",)
+    RETURN_TYPES = ("STRING", "AIH_LLM_CONFIG")
+    RETURN_NAMES = ("elements", "llm_config")
 
-    def generate(self, seed, _elements_json="{}", elements_input=""):
+    def generate(self, seed, _elements_json="{}", elements_input="", llm_config=None):
         from . import _credentials
         try:
             elems_cfg = json.loads(_elements_json) if _elements_json else {}
@@ -249,7 +252,7 @@ class AIHElementsNode:
             msg = "Erreur : config JSON invalide"
             return {
                 "ui": {"elements": [msg]},
-                "result": (msg,)
+                "result": (msg, llm_config)
             }
 
         # api_key et api_url lus depuis le fichier de credentials
@@ -296,8 +299,9 @@ class AIHElementsNode:
             if parsed:
                 concept, count, hint = parsed
 
-                # preset_id == 0 → pas de LLM disponible, skip cette liste
-                if preset_id == 0:
+                # preset_id == 0 → pas de LLM backend disponible
+                # (sauf si llm_config externe fournie)
+                if preset_id == 0 and not llm_config:
                     indices_to_skip.add(i)
                     continue
 
@@ -317,21 +321,24 @@ class AIHElementsNode:
                     )
                     input_text = ""
 
-                output = _call_llm_process(
-                    api_url, api_key, preset_id, instruction, input_text
-                )
-                if output:
-                    items = _parse_llm_list(output)
-                    if items:
-                        chosen_keyword = _pick_from_list(items, seed, i, raw_text)
-                        if hint:
-                            chosen_text = f"{hint}: {chosen_keyword}"
-                        else:
-                            chosen_text = chosen_keyword
-                        el["text"] = chosen_text
-                        context.append(chosen_text)
+                if llm_config:
+                    # Config LLM externe (LM Studio ou OpenAI)
+                    output = _llm_helper.call_llm(llm_config, instruction, input_text, seed=seed)
+                    items = _parse_llm_list(output) if output else []
+                else:
+                    # Backend existant (comportement actuel)
+                    output = _call_llm_process(
+                        api_url, api_key, preset_id, instruction, input_text
+                    )
+                    items = _parse_llm_list(output) if output else []
+                if items:
+                    chosen_keyword = _pick_from_list(items, seed, i, raw_text)
+                    if hint:
+                        chosen_text = f"{hint}: {chosen_keyword}"
                     else:
-                        indices_to_skip.add(i)
+                        chosen_text = chosen_keyword
+                    el["text"] = chosen_text
+                    context.append(chosen_text)
                 else:
                     # Fallback LLM ||: skip (liste vide)
                     indices_to_skip.add(i)
@@ -341,7 +348,7 @@ class AIHElementsNode:
             blocks = _extract_brace_blocks(raw_text)
             has_braces = len(blocks) >= 1
 
-            if has_braces and brain_on and preset_id != 0:
+            if has_braces and brain_on and (preset_id != 0 or llm_config):
                 # 🧠 ON + liste manuelle avec {} → filtrage LLM par contexte
                 # Concaténer tous les choix de tous les blocs
                 all_choices = []
@@ -358,25 +365,25 @@ class AIHElementsNode:
                     f"Liste: [{', '.join(all_choices)}]"
                 )
 
-                output = _call_llm_process(
-                    api_url, api_key, preset_id, instruction, input_text
-                )
-                if output:
-                    filtered = _parse_llm_list(output)
-                    if filtered:
-                        el["text"] = _resolve_braces_with_filtered(
-                            raw_text, seed, i, filtered
-                        )
-                        context.append(el["text"])
-                        continue
-                    else:
-                        logging.warning(
-                            "[AIH Elements] LLM filter returned empty list, "
-                            "falling back to random"
-                        )
+                if llm_config:
+                    # Config LLM externe (LM Studio ou OpenAI)
+                    output = _llm_helper.call_llm(llm_config, instruction, input_text, seed=seed)
+                    filtered = _parse_llm_list(output) if output else []
+                else:
+                    # Backend existant (comportement actuel)
+                    output = _call_llm_process(
+                        api_url, api_key, preset_id, instruction, input_text
+                    )
+                    filtered = _parse_llm_list(output) if output else []
+                if filtered:
+                    el["text"] = _resolve_braces_with_filtered(
+                        raw_text, seed, i, filtered
+                    )
+                    context.append(el["text"])
+                    continue
                 else:
                     logging.warning(
-                        "[AIH Elements] LLM filter call failed, "
+                        "[AIH Elements] LLM filter returned empty or failed, "
                         "falling back to random"
                     )
                 # Fallback: random dans les blocs d'origine
@@ -413,7 +420,7 @@ class AIHElementsNode:
         if not elements and random_count <= 0:
             return {
                 "ui": {"elements": ["⚠️ Aucun filtre sélectionné. Ajoutez des filtres dans la liste."]},
-                "result": ("⚠️ Aucun filtre sélectionné. Ajoutez des filtres dans la liste.",)
+                "result": ("⚠️ Aucun filtre sélectionné. Ajoutez des filtres dans la liste.", llm_config)
             }
 
         # Construire le payload pour /api/generate
@@ -437,13 +444,13 @@ class AIHElementsNode:
             prompt = data.get("prompt", "")
             return {
                 "ui": {"elements": [prompt]},
-                "result": (prompt,)
+                "result": (prompt, llm_config)
             }
         except ImportError:
             msg = "Erreur : module 'requests' manquant. pip install requests"
             return {
                 "ui": {"elements": [msg]},
-                "result": (msg,)
+                "result": (msg, llm_config)
             }
         except Exception as e:
             msg = str(e)
@@ -455,5 +462,5 @@ class AIHElementsNode:
                 msg = f"Erreur API : {msg}"
             return {
                 "ui": {"elements": [msg]},
-                "result": (msg,)
+                "result": (msg, llm_config)
             }
