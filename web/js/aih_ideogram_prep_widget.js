@@ -35,8 +35,12 @@
                 const hideWidget = (n, name) => {
                     const w = n.widgets?.find(x => x.name === name);
                     if (w) {
-                        w.hidden = true;
-                        w.computeSize = () => [0, -4];
+                        // NE PAS mettre hidden=true — la nouvelle frontend Vue exclut
+                        // les widgets hidden de widgets_values au chargement (données perdues)
+                        w.computeSize = () => [0, -4];  // 0 place visuelle (compressé)
+                        if (w.element) w.element.style.display = "none";
+                        if (w.inputEl) w.inputEl.style.display = "none";
+                        if (w.parentEl) w.parentEl.style.display = "none";
                     }
                 };
                 ["style_id", "template_id", "style_shortlist"].forEach(n => hideWidget(node, n));
@@ -278,9 +282,11 @@
                         if (w.computeSize) {
                             try {
                                 const s = w.computeSize();
-                                if (Array.isArray(s) && s[1]) wh = s[1];
+                                if (Array.isArray(s) && s[1] !== undefined) wh = s[1];
                             } catch {}
                         }
+                        // Widgets compressés (computeSize [0,-4], sans hidden=true) : 0 px
+                        if (wh <= 0) continue;
                         h += wh;
                     }
                     return h;

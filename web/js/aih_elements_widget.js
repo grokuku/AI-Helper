@@ -51,10 +51,16 @@ async function apiCall(method, path, body) {
 function hideWidget(node, name) {
     const w = node.widgets?.find(x => x.name === name);
     if (w) {
-        w.hidden = true;
-        w.computeSize = () => [0, -4];
+        // NE PAS mettre hidden=true — la nouvelle frontend Vue exclut les
+        // widgets hidden de widgets_values au chargement (données perdues)
+        w.computeSize = () => [0, -4];  // 0 place visuelle (compressé)
+        // Cacher le DOM visuellement
+        if (w.element) w.element.style.display = "none";
+        if (w.inputEl) w.inputEl.style.display = "none";
+        if (w.parentEl) w.parentEl.style.display = "none";
         return w;
     }
+    return null;
 }
 
 // Parse la syntaxe ||concept[:count][;hint[:count]] utilisée dans le
@@ -126,27 +132,6 @@ function _parseConceptSyntax(text, defaultCount) {
             const origOnConfigure = nodeType.prototype.onConfigure;
             nodeType.prototype.onConfigure = function(data) {
                 const result = origOnConfigure ? origOnConfigure.call(this, data) : undefined;
-
-                // DIAG TEMPORAIRE — à retirer après résolution
-                console.log("[AIH DIAG] ALL keys:", Object.keys(data || {}).join(", "));
-                if (data) {
-                    // Afficher chaque clé (sauf les grosses) pour voir où sont les données
-                    Object.keys(data).forEach(function(k) {
-                        var v = data[k];
-                        if (typeof v === "string") {
-                            console.log("[AIH DIAG] key " + k + " (string):", v.substring(0, 80));
-                        } else if (Array.isArray(v)) {
-                            console.log("[AIH DIAG] key " + k + " (array len " + v.length + "):", JSON.stringify(v).substring(0, 150));
-                        } else if (v && typeof v === "object") {
-                            console.log("[AIH DIAG] key " + k + " (object):", JSON.stringify(v).substring(0, 150));
-                        } else {
-                            console.log("[AIH DIAG] key " + k + " =", v);
-                        }
-                    });
-                    // Vérifier si _elements_json est rempli APRÈS origOnConfigure
-                    var ejAfter = this.widgets?.find(w => w.name === "_elements_json");
-                    console.log("[AIH DIAG] AFTER orig, _elements_json.value =", ejAfter ? ejAfter.value.substring(0, 80) : "no widget");
-                }
 
                 // Restaurer _elements_json depuis les données brutes du workflow
                 if (data && data.widgets_values) {
