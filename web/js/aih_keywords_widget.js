@@ -67,10 +67,8 @@ function hideWidget(node, name) {
     const w = node.widgets?.find(x => x.name === name);
     if (w) {
         // Ne PAS utiliser hidden = true (empêche la sérialisation dans ComfyUI récent)
-        w.computeSize = () => [0, -4];
-        if (w.element) w.element.style.display = "none";
-        if (w.inputEl) w.inputEl.style.display = "none";
-        if (w.widget) w.widget.style.display = "none"; // some ComfyUI versions
+        w.computeSize = () => [0, 0]; // 0 place visuellement, pas de hauteur négative
+        // Ne pas masquer les éléments DOM (display:none peut empêcher la sérialisation)
         return w;
     }
     return null;
@@ -171,7 +169,11 @@ function debounce(fn, delay) {
                 // ---- Masquer le widget sérialisé _keywords_config ----
                 {
                     const w = hideWidget(node, "_keywords_config");
-                    if (w) w.serializable = true;
+                    if (w) {
+                        // Forcer serializeValue pour garantir la sauvegarde dans le workflow
+                        w.serializeValue = function() { return this.value || "{}"; };
+                        w.options = w.options || {};
+                    }
                 }
 
                 // ---- Masquer le widget seed (forçage de réexécution) ----
@@ -185,10 +187,8 @@ function debounce(fn, delay) {
                     var cag = node.widgets?.find(w => w.name === "control_after_generate");
                     if (cag) {
                         // Ne PAS utiliser hidden = true (empêche la sérialisation dans ComfyUI récent)
-                        if (cag.computeSize) cag.computeSize = () => [0, -4];
-                        if (cag.element) cag.element.style.display = "none";
-                        if (cag.inputEl) cag.inputEl.style.display = "none";
-                        if (cag.widget) cag.widget.style.display = "none";
+                        cag.computeSize = () => [0, 0];
+                        // Ne pas masquer les éléments DOM (display:none peut empêcher la sérialisation)
                     }
                 }
 
@@ -945,8 +945,10 @@ function debounce(fn, delay) {
                 node._keywordsList = keywordsList;
                 node._domWidget = domWidget;
 
-                // Sync initial
-                syncKeywordsConfig();
+                // Sync initial — seulement si on a des mots-clés (sinon on écrase les données sauvegardées)
+                if (node._aihKeywords && node._aihKeywords.length > 0) {
+                    syncKeywordsConfig();
+                }
 
                 return r;
             };

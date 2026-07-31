@@ -54,11 +54,8 @@ async function apiCall(method, path, body) {
 function hideWidget(node, name) {
     const w = node.widgets?.find(x => x.name === name);
     if (w) {
-        // Ne PAS utiliser hidden = true (empêche la sérialisation dans ComfyUI récent)
-        w.computeSize = () => [0, -4]; // hauteur négative = ligne compressée
-        if (w.element) w.element.style.display = "none";
-        if (w.inputEl) w.inputEl.style.display = "none";
-        if (w.widget) w.widget.style.display = "none"; // some ComfyUI versions
+        w.computeSize = () => [0, 0]; // 0 place visuellement, pas de hauteur négative
+        // Ne pas masquer les éléments DOM (display:none peut empêcher la sérialisation)
         return w;
     }
     return null;
@@ -136,11 +133,16 @@ function _parseConceptSyntax(text, defaultCount) {
                 // (plus de _api_config : api_key/url sont lus cote Python depuis
                 // le fichier de credentials)
                 hideWidget(node, "_elements_json");
-                // Forcer serializable = true : certaines versions du frontend
+                // Forcer serializeValue : certaines versions du frontend
                 // ComfyUI ne sérialisent pas les widgets cachés par défaut, ce
                 // qui fait perdre tous les réglages au refresh de la page.
                 var ejWidget = node.widgets.find(w => w.name === "_elements_json");
-                if (ejWidget) ejWidget.serializable = true;
+                if (ejWidget) {
+                    // Forcer la sérialisation même si le widget est visuellement caché
+                    ejWidget.serializeValue = function() { return this.value || "{}"; };
+                    ejWidget.options = ejWidget.options || {};
+                    // Ne PAS mettre options.serialize = false
+                }
 
                 // ---- Supprimer la socket d'entrée de _elements_json ----
                 {
@@ -1470,6 +1472,8 @@ function _parseConceptSyntax(text, defaultCount) {
                                 return { ...e, visible };
                             });
                             renderList();
+                        } else {
+                            return false;  // Pas d'éléments à restaurer → continuer le polling
                         }
                         if (data.random_sfw !== undefined) sfwCb.checked = !!data.random_sfw;
                         if (data.random_nsfw !== undefined) nsfwCb.checked = !!data.random_nsfw;
@@ -1573,8 +1577,10 @@ function _parseConceptSyntax(text, defaultCount) {
                     }
                 };
 
-                // Sync initial
-                syncElementsWidget();
+                // Sync initial — seulement si on a des éléments (sinon on écrase les données sauvegardées)
+                if (node._aihElements && node._aihElements.length > 0) {
+                    syncElementsWidget();
+                }
                 syncApiConfigWidget();
 
                 return r;

@@ -42,10 +42,10 @@
                 const hideWidget = (n, name) => {
                     const w = n.widgets?.find(x => x.name === name);
                     if (w) {
-                        if (w.element) w.element.style.display = "none";
-                        if (w.inputEl) w.inputEl.style.display = "none";
-                        if (w.parentEl) w.parentEl.style.display = "none";
-                        if (w.widget) w.widget.style.display = "none"; // some ComfyUI versions
+                        // Forcer serializeValue pour garantir la sauvegarde dans le workflow
+                        w.serializeValue = function() { return this.value; };
+                        w.computeSize = () => [0, 0]; // 0 place visuellement, pas de hauteur négative
+                        // Ne pas masquer les éléments DOM (display:none peut empêcher la sérialisation)
                     }
                 };
                 ["template_id", "style_id", "style_shortlist"].forEach(n => hideWidget(node, n));
