@@ -122,18 +122,6 @@ _ideogram4_mod = _load_module(
     os.path.join(_nodes_dir, "ideogram4_node.py"),
     "AIHIdeogram4Node"
 )
-_ideogram_prep_mod = _load_module(
-    os.path.join(_nodes_dir, "ideogram_prep_node.py"),
-    "AIHIdeogramPrepNode"
-)
-_ideogram_parse_mod = _load_module(
-    os.path.join(_nodes_dir, "ideogram_parse_node.py"),
-    "AIHIdeogramParseNode"
-)
-_prep_mod = _load_module(
-    os.path.join(_nodes_dir, "prep_node.py"),
-    "AIHPromptPrepNode"
-)
 _diag_mod = _load_module(
     os.path.join(_nodes_dir, "diagnostic_node.py"),
     "AIHDiagnosticNode"
@@ -217,21 +205,6 @@ if _ideogram4_mod and hasattr(_ideogram4_mod, "AIHIdeogram4Node"):
     cls = _ideogram4_mod.AIHIdeogram4Node
     NODE_CLASS_MAPPINGS["AIHIdeogram4Node"] = cls
     NODE_DISPLAY_NAME_MAPPINGS["AIHIdeogram4Node"] = "AIH Ideogram 4 Builder"
-
-if _ideogram_prep_mod and hasattr(_ideogram_prep_mod, "AIHIdeogramPrepNode"):
-    cls = _ideogram_prep_mod.AIHIdeogramPrepNode
-    NODE_CLASS_MAPPINGS["AIHIdeogramPrepNode"] = cls
-    NODE_DISPLAY_NAME_MAPPINGS["AIHIdeogramPrepNode"] = "AIH Ideogram Prep"
-
-if _ideogram_parse_mod and hasattr(_ideogram_parse_mod, "AIHIdeogramParseNode"):
-    cls = _ideogram_parse_mod.AIHIdeogramParseNode
-    NODE_CLASS_MAPPINGS["AIHIdeogramParseNode"] = cls
-    NODE_DISPLAY_NAME_MAPPINGS["AIHIdeogramParseNode"] = "AIH Ideogram Parse"
-
-if _prep_mod and hasattr(_prep_mod, "AIHPromptPrepNode"):
-    cls = _prep_mod.AIHPromptPrepNode
-    NODE_CLASS_MAPPINGS["AIHPromptPrepNode"] = cls
-    NODE_DISPLAY_NAME_MAPPINGS["AIHPromptPrepNode"] = "AIH Prompt Prep"
 
 if _diag_mod and hasattr(_diag_mod, "AIHDiagnosticNode"):
     cls = _diag_mod.AIHDiagnosticNode

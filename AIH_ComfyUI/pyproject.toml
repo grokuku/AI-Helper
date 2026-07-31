@@ -18,7 +18,6 @@ nodes = [
     "nodes.enhance_node.AIHEnhanceNode",
     "nodes.ideogram4_node.AIHIdeogram4Node",
     "nodes.ideogram_prep_node.AIHIdeogramPrepNode",
-    "nodes.ideogram_parse_node.AIHIdeogramParseNode",
     "nodes.prep_node.AIHPromptPrepNode",
 ]
 

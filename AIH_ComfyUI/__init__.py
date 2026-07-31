@@ -14,19 +14,12 @@
 from .nodes.elements_node import AIHElementsNode
 from .nodes.enhance_node import AIHEnhanceNode
 from .nodes.ideogram4_node import AIHIdeogram4Node
-from .nodes.ideogram_prep_node import AIHIdeogramPrepNode
-from .nodes.ideogram_parse_node import AIHIdeogramParseNode
-from .nodes.prep_node import AIHPromptPrepNode
-
 from .nodes.diagnostic_node import AIHDiagnosticNode
 
 NODE_CLASS_MAPPINGS = {
     "AIHElementsNode": AIHElementsNode,
     "AIHEnhanceNode": AIHEnhanceNode,
     "AIHIdeogram4Node": AIHIdeogram4Node,
-    "AIHIdeogramPrepNode": AIHIdeogramPrepNode,
-    "AIHIdeogramParseNode": AIHIdeogramParseNode,
-    "AIHPromptPrepNode": AIHPromptPrepNode,
     "AIHDiagnosticNode": AIHDiagnosticNode,
 }
 
@@ -34,9 +27,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "AIHElementsNode": "AIH Elements Picker",
     "AIHEnhanceNode": "AIH Prompt Enhancer",
     "AIHIdeogram4Node": "AIH Ideogram 4 Builder",
-    "AIHIdeogramPrepNode": "AIH Ideogram Prep",
-    "AIHIdeogramParseNode": "AIH Ideogram Parse",
-    "AIHPromptPrepNode": "AIH Prompt Prep",
     "AIHDiagnosticNode": "AIH Diagnostic",
 }
 

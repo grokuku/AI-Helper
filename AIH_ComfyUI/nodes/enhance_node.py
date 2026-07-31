@@ -36,9 +36,9 @@ class AIHEnhanceNode:
                 "special_instructions": ("STRING", {"default": ""}),
             },
             "optional": {
+                "llm_config": ("STRING", {"forceInput": True}),
                 # JSON sérialisé des éléments (connecté à la sortie elements_json du Elements Picker)
                 "elements": ("STRING", {"forceInput": True, "multiline": True, "default": "[]"}),
-                "llm_config": ("STRING", {"forceInput": True}),
             }
         }
 

@@ -365,7 +365,7 @@
                 templateSelect.addEventListener("mousedown", () => refreshIfStale(templateSelect, "prompts/templates", "tmpl", "-- Template --"));
                 presetSelect.addEventListener("mousedown", () => refreshIfStale(presetSelect, "presets", "presets", "-- Preset IA --"));
 
-                // ---- Resize : pas de ResizeObserver (voir aih_prep_widget.js) ----
+                // ---- Resize : pas de ResizeObserver (evite le feedback loop) ----
                 const onResize = node.onResize;
                 node.onResize = function (size) {
                     const r = onResize?.apply(this, arguments);
