@@ -935,9 +935,17 @@ function debounce(fn, delay) {
                 node._keywordsList = keywordsList;
                 node._domWidget = domWidget;
 
-                // Sync initial — seulement si on a des mots-clés (sinon on écrase les données sauvegardées)
-                if (node._aihKeywords && node._aihKeywords.length > 0) {
-                    syncKeywordsConfig();
+                // Sync initial — ne pas écraser les données chargées par configure()
+                var _kc = node.widgets?.find(w => w.name === "_keywords_config");
+                var _hasSaved = _kc && _kc.value && _kc.value !== "{}" && _kc.value !== "";
+                if (!_hasSaved) {
+                    // Nouveau node sans données : initialiser
+                    if (_kc && (!_kc.value || _kc.value === "" || _kc.value === "{}")) {
+                        _kc.value = "{}";
+                    }
+                    if (node._aihKeywords && node._aihKeywords.length > 0) {
+                        syncKeywordsConfig();
+                    }
                 }
 
                 return r;

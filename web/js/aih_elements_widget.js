@@ -1561,8 +1561,18 @@ function _parseConceptSyntax(text, defaultCount) {
                     }
                 };
 
-                // Sync initial
-                syncElementsWidget();
+                // Sync initial — ne pas écraser les données chargées par configure()
+                var _ej = node.widgets?.find(w => w.name === "_elements_json");
+                var _hasSaved = _ej && _ej.value && _ej.value !== "{}" && _ej.value !== "";
+                if (!_hasSaved) {
+                    // Nouveau node sans données : initialiser
+                    if (_ej && (!_ej.value || _ej.value === "" || _ej.value === "{}")) {
+                        _ej.value = "{}";
+                    }
+                    if (node._aihElements && node._aihElements.length > 0) {
+                        syncElementsWidget();
+                    }
+                }
 
                 return r;
             };
