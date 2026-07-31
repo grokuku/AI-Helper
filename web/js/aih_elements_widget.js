@@ -137,7 +137,6 @@ function _parseConceptSyntax(text, defaultCount) {
                 // (plus de _api_config : api_key/url sont lus cote Python depuis
                 // le fichier de credentials)
                 hideWidget(node, "_elements_json");
-                hideWidget(node, "elements_input");  // ← NOUVEAU : cacher le widget texte
 
                 // ---- Supprimer la socket d'entrée de _elements_json ----
                 {
