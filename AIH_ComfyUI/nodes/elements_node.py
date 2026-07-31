@@ -237,7 +237,6 @@ class AIHElementsNode:
                 # Masqué dans l'UI ComfyUI
                 "_elements_json": ("STRING", {"default": "{}", "multiline": True}),
                 "elements_input": ("STRING", {"default": "", "forceInput": True}),  # champ texte simple une ligne, accepte connexion
-                "llm_config": ("STRING", {"forceInput": True}),
             }
         }
 
