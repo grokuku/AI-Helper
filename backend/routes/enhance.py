@@ -966,20 +966,17 @@ def _format_named_elements(ep_elements):
     return f"ELEMENTS TO PLACE IN THE SCENE:\n{elems_str}"
 
 
-def _build_merged_text(text, ordered_ep_results, rand_text, style_text, special_instructions, width, height):
-    """Construit le prompt utilisateur fusionne a partir de tous les contenus.
+def _build_merged_text(text, ordered_ep_results, rand_text, style_text):
+    """Construit le prompt utilisateur fusionne.
 
-    Concatene dans l'ordre : texte, EP (dans l'ordre original des elements),
-    random, style, instructions speciales, dimensions image.
+    Concatene dans l'ordre : texte (base_prompt), EP (dans l'ordre original),
+    random, style (texte brut, sans prefixe).
 
     Args:
-        text (str): texte saisi.
+        text (str): texte saisi (base_prompt + elements deja fusionnes par le node).
         ordered_ep_results (list): liste ordonnee des resultats EP (filtres + textes).
         rand_text (str): mots-cles aleatoires.
-        style_text (str): texte du style a preserver.
-        special_instructions (str): instructions speciales.
-        width (int): largeur de l'image (0 si inconnue).
-        height (int): hauteur de l'image (0 si inconnue).
+        style_text (str): texte du style (brut, sans prefixe).
 
     Returns:
         str: merged_text si non vide, sinon (jsonify, status) si aucun contenu.
@@ -993,11 +990,7 @@ def _build_merged_text(text, ordered_ep_results, rand_text, style_text, special_
     if rand_text:
         merged_parts.append(rand_text)
     if style_text:
-        merged_parts.append("STYLE (must be preserved verbatim):\n" + style_text)
-    if special_instructions:
-        merged_parts.append("ADDITIONAL INSTRUCTIONS:\n" + special_instructions)
-    if width and height:
-        merged_parts.append(_format_image_dimensions(width, height))
+        merged_parts.append(style_text)
     merged_text = '\n\n'.join(merged_parts)
     if not merged_text.strip():
         return jsonify({'error': 'Aucun contenu a generer'}), 400
@@ -1032,14 +1025,23 @@ def _resolve_preset(conn, preset_id, user_id):
     return preset
 
 
-def _build_system_prompt(style_text, template_system_prompt, template_examples, special_instructions, template_id):
-    """Construit le prompt systeme a partir du template, du style et des regles.
+# Role fixe approuve — identique dans le node ComfyUI et le backend
+_FIXED_ROLE = (
+    "You are an expert prompt engineer for image generation.\n"
+    "Your task is to enhance and expand the user's prompt.\n"
+    "Preserve the style provided in the user message. Remove duplicates.\n"
+    "Follow the format rules provided.\n"
+    "Output only the enhanced prompt — no explanations, no comments."
+)
 
-    Ordre d'injection : (1) regle de preservation du style, (2) instructions du
-    template, (3) exemples, (4) regles obligatoires, (5) instructions speciales.
+
+def _build_system_prompt(template_system_prompt, template_examples, special_instructions, template_id):
+    """Construit le prompt systeme unifie.
+
+    Ordre d'injection : (1) role fixe, (2) instructions du template,
+    (3) exemples, (4) instructions speciales.
 
     Args:
-        style_text (str): texte du style a preserver (peut etre '').
         template_system_prompt (str): system_prompt du template.
         template_examples (list): exemples du template.
         special_instructions (str): instructions speciales (peut etre '').
@@ -1051,16 +1053,10 @@ def _build_system_prompt(style_text, template_system_prompt, template_examples, 
     """
     system_parts = []
 
-    # 1) STYLE — tout en haut, imperatif
-    if style_text:
-        system_parts.append(f"""CRITICAL — STYLE PRESERVATION RULE
-    You MUST preserve the following style in the output prompt, verbatim and unmodified:
-    {style_text}
-
-    This style is IMPERATIVE. Keep it exactly as written, do NOT rephrase or summarize it.""")
+    # 1) ROLE FIXE — toujours en haut
+    system_parts.append(_FIXED_ROLE)
 
     # 2) INSTRUCTIONS — system_prompt du template (doc, schema, tips, output format)
-    # Les exemples et les regles obligatoires sont geres separement ci-dessous.
     if template_system_prompt and template_system_prompt.strip():
         system_parts.append(template_system_prompt.strip())
     else:
@@ -1069,21 +1065,13 @@ def _build_system_prompt(style_text, template_system_prompt, template_examples, 
     # 3) EXAMPLES — injectes depuis le champ examples du template
     if template_examples:
         ex_list = '\n'.join(f'- {ex}' for ex in template_examples)
-        system_parts.append(f"""## Examples
-    Here are well-structured examples for reference — study them but do NOT copy verbatim:
-    {ex_list}""")
+        system_parts.append(
+            "## Examples\n"
+            "Here are well-structured examples for reference — study them but do NOT copy verbatim:\n"
+            f"{ex_list}"
+        )
 
-    # 4) MANDATORY RULES — regles obligatoires, non visibles dans l'UI
-    system_parts.append("""Mandatory rules:
-    - The assigned STYLE must be preserved exactly as-is
-    - In case of conflict, prioritize: base prompt > elements > random
-    - Remove duplicates
-    - Organize by importance
-    - DO NOT REPEAT the same tags/concepts
-    - OUTPUT ONLY the prompt, nothing else: no explanations, no comments, no introductory sentences
-    - The prompt must be ready to use in an image generator""")
-
-    # 5) Instructions speciales (toujours en dernier)
+    # 4) Instructions speciales (toujours en dernier)
     if special_instructions:
         system_parts.append(f"Additional instructions: {special_instructions}")
 
@@ -1247,8 +1235,7 @@ def _prepare_enhance(user_id, data):
         rand_text = _resolve_random_keywords(conn, text, ordered_ep_results, random_count)
 
         # 6. Construction de l'entree utilisateur (genérique)
-        merged = _build_merged_text(text, ordered_ep_results, rand_text, style_text,
-                                    special_instructions, width, height)
+        merged = _build_merged_text(text, ordered_ep_results, rand_text, style_text)
         if isinstance(merged, tuple):  # erreur (jsonify, status)
             return merged
         merged_text = merged
@@ -1266,7 +1253,7 @@ def _prepare_enhance(user_id, data):
         logging.warning(f"[enhance] template_id={template_id} name='{template_name}' output_format='{output_format}' found={'yes' if template_system_prompt else 'no'} sys_len={len(template_system_prompt)}")
 
         # 8. Construire le prompt systeme
-        sys_prompt = _build_system_prompt(style_text, template_system_prompt,
+        sys_prompt = _build_system_prompt(template_system_prompt,
                                           template_examples, special_instructions,
                                           template_id)
         if isinstance(sys_prompt, tuple):  # erreur (jsonify, status)

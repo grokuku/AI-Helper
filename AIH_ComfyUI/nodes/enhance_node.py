@@ -5,10 +5,10 @@ DOM widget + connexion aux éléments du Elements Picker.
 L'api_key et l'URL du serveur sont lues depuis le fichier de credentials
 ComfyUI (ComfyUI/user/default/aih_credentials.json) via le helper _credentials.
 
-Le mode client-side (LLM local) est désactivé pour l'instant — le backend
-fait tout l'appel LLM. Ce mode pourra être réintroduit plus tard via un
-nouvel endpoint /api/enhance/preset-info qui résoudra les métadonnées
-du preset (is_client_side, base_url) côté serveur.
+Le mode local (llm_config) et le mode cloud (backend) construisent désormais
+le même prompt unifié :
+  System : role fixe + template_system_prompt + examples + special_instructions
+  User   : base_prompt + elements + style_text
 """
 
 import json
@@ -16,6 +16,100 @@ import logging
 
 from . import _credentials
 from . import _llm_helper
+
+
+# Role fixe approuvé — identique dans le node ComfyUI et le backend
+_FIXED_ROLE = (
+    "You are an expert prompt engineer for image generation.\n"
+    "Your task is to enhance and expand the user's prompt.\n"
+    "Preserve the style provided in the user message. Remove duplicates.\n"
+    "Follow the format rules provided.\n"
+    "Output only the enhanced prompt — no explanations, no comments."
+)
+
+
+def _fetch_template(api_url, api_key, template_id):
+    """Fetch un template par ID depuis le backend (GET /api/prompts/templates, filtre par ID)."""
+    try:
+        import requests as _req
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        resp = _req.get(f"{api_url}/prompts/templates", headers=headers, timeout=10)
+        if resp.ok:
+            templates = resp.json()
+            for t in templates:
+                if t.get("id") == template_id:
+                    return t
+    except Exception as e:
+        logging.warning(f"[AIH Enhance] Template fetch failed: {e}")
+    return None
+
+
+def _fetch_style(api_url, api_key, style_id):
+    """Fetch un style par ID depuis le backend (GET /api/styles, filtre par ID)."""
+    try:
+        import requests as _req
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        resp = _req.get(f"{api_url}/styles", headers=headers, timeout=10)
+        if resp.ok:
+            styles = resp.json()
+            for s in styles:
+                if s.get("id") == style_id:
+                    return s
+    except Exception as e:
+        logging.warning(f"[AIH Enhance] Style fetch failed: {e}")
+    return None
+
+
+def _build_system_prompt_unified(template, special_instructions):
+    """Construit le system prompt unifié : role fixe + template + examples + special_instructions.
+
+    Args:
+        template (dict|None): template récupéré depuis la BDD (ou None si fetch échoué).
+        special_instructions (str): instructions spéciales (peut être '').
+
+    Returns:
+        str: le system prompt assemblé.
+    """
+    parts = [_FIXED_ROLE]
+
+    template_system_prompt = (template or {}).get("system_prompt", "")
+    if template_system_prompt and template_system_prompt.strip():
+        parts.append(template_system_prompt.strip())
+
+    # Examples
+    examples = (template or {}).get("examples", [])
+    if isinstance(examples, str):
+        try:
+            examples = json.loads(examples)
+        except (json.JSONDecodeError, TypeError):
+            examples = []
+    if examples:
+        ex_list = '\n'.join(f'- {ex}' for ex in examples)
+        parts.append(
+            "## Examples\n"
+            "Here are well-structured examples for reference — study them but do NOT copy verbatim:\n"
+            f"{ex_list}"
+        )
+
+    if special_instructions and special_instructions.strip():
+        parts.append(f"Additional instructions: {special_instructions.strip()}")
+
+    return '\n\n'.join(parts)
+
+
+def _build_user_prompt_unified(base_prompt, elements_text, style_text):
+    """Construit le user prompt unifié : base_prompt + elements + style_text.
+
+    Args:
+        base_prompt (str): l'input de la node.
+        elements_text (str): les éléments formatés (ou '').
+        style_text (str): le texte du style (ou '').
+
+    Returns:
+        str: le user prompt assemblé.
+    """
+    parts = [p for p in [base_prompt, elements_text, style_text] if p and p.strip()]
+    return '\n\n'.join(parts)
 
 
 class AIHEnhanceNode:
@@ -110,7 +204,8 @@ class AIHEnhanceNode:
             return "\n".join(lines)
 
         elems_text = _fmt_elems(elems)
-        parts = [p for p in [elems_text, elems_raw, base_prompt] if p]
+        # Ordre unifié : base_prompt + elements (elems_text + elems_raw)
+        parts = [p for p in [base_prompt, elems_text, elems_raw] if p]
         combined_text = "\n\n".join(parts)
 
         # Construire le payload pour /api/enhance
@@ -128,18 +223,32 @@ class AIHEnhanceNode:
             headers["Authorization"] = f"Bearer {api_key}"
 
         # --- Mode LLM local (llm_config) ---
+        # Le node construit lui-même le system prompt et le user prompt (unifiés avec le backend),
+        # fetch le template et le style depuis le backend, puis appelle le LLM local.
         if llm_config:
-            system_prompt = (
-                "You are an expert prompt engineer for image generation. "
-                "Enhance and expand the user's prompt with vivid details, "
-                "lighting, composition, and style. Return only the enhanced prompt."
-            )
-            user_prompt = combined_text or base_prompt
+            # Fetch template depuis le backend
+            template = None
+            if template_id and template_id > 0:
+                template = _fetch_template(api_url, api_key, template_id)
+
+            # Fetch style depuis le backend (style_id déjà résolu si -1 random)
+            style_text = ""
+            negative_prompt = ""
+            if style_id and style_id > 0:
+                style_obj = _fetch_style(api_url, api_key, style_id)
+                if style_obj:
+                    style_text = style_obj.get("style_text", "")
+                    negative_prompt = style_obj.get("negative_prompt", "")
+
+            # Construire les prompts unifiés
+            system_prompt = _build_system_prompt_unified(template, special_instructions)
+            user_prompt = _build_user_prompt_unified(combined_text, "", style_text)
+
             enhanced = _llm_helper.call_llm(llm_config, system_prompt, user_prompt, seed=seed)
             if enhanced:
                 return {
-                    "ui": {"prompt": [enhanced], "negative_prompt": [""]},
-                    "result": (enhanced, "", llm_config)
+                    "ui": {"prompt": [enhanced], "negative_prompt": [negative_prompt]},
+                    "result": (enhanced, negative_prompt, llm_config)
                 }
             # Fallback sur le backend si le LLM local échoue
 
