@@ -137,6 +137,7 @@ function _parseConceptSyntax(text, defaultCount) {
                 // (plus de _api_config : api_key/url sont lus cote Python depuis
                 // le fichier de credentials)
                 hideWidget(node, "_elements_json");
+                hideWidget(node, "elements_input");  // ← NOUVEAU : cacher le widget texte
 
                 // ---- Supprimer la socket d'entrée de _elements_json ----
                 {
@@ -1405,18 +1406,11 @@ function _parseConceptSyntax(text, defaultCount) {
 
                 // Intégrer dans le layout ComfyUI via addDOMWidget
                 const domWidget = node.addDOMWidget("elements_ui", "custom", container, {
-                    serialize: false,
-                    hideOnZoom: false,
                     getValue: () => "",
                     setValue: (v) => {},
                 });
                 domWidget.options = domWidget.options || {};
-                // computeSize dynamique : retourne la hauteur réelle du container
-                // au lieu d'une valeur fixe (300).  Empêche le DOM widget de
-                // déborder sous la node et de capturer les clics/drag du workflow.
-                domWidget.computeSize = function(width) {
-                    return [width, container.offsetHeight || 300];
-                };
+                domWidget.options.height = 300;
 
                 // ---- Taille minimum de la node ----
                 const MIN_WIDTH = 360;

@@ -236,9 +236,9 @@ class AIHElementsNode:
                 # JSON sérialisé par le JS : elements + random_count
                 # Masqué dans l'UI ComfyUI
                 "_elements_json": ("STRING", {"default": "{}", "multiline": True}),
-                # champ texte simple forceInput, PAS multiline : garde la persistance
-                "elements_input": ("STRING", {"default": "", "forceInput": True}),
-                "llm_config": ("STRING", {"default": "", "forceInput": True}),  # 2e entrée forceInput, nom d'origine
+                # champ texte simple (PAS forceInput, PAS multiline) : garde la persistance
+                "elements_input": ("STRING", {"default": ""}),
+                "llm_config": ("STRING", {"default": "", "forceInput": True}),  # seule entrée forceInput, nom d'origine
             }
         }
 
