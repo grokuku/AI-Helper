@@ -502,6 +502,17 @@ def _create_post_migration_tables(conn):
         )
     """)
 
+    # ── Table Preview images (upload d'images de preview) ──
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS preview_images (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            filename TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+    """)
+
     # ── Table File uploads (chunked upload pour gros fichiers) ──
     conn.execute("""
         CREATE TABLE IF NOT EXISTS file_uploads (
@@ -571,6 +582,7 @@ def _create_indexes(conn):
     conn.execute("CREATE INDEX IF NOT EXISTS idx_blobby_memories_type ON blobby_memories(type)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_workflows_user ON shared_workflows(user_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_workflows_public ON shared_workflows(is_public)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_preview_images_user ON preview_images(user_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_file_uploads_user ON file_uploads(user_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_file_uploads_status ON file_uploads(status)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_file_uploads_fp ON file_uploads(size, fingerprint_head, fingerprint_tail)")

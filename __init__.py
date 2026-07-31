@@ -130,6 +130,10 @@ _keywords_mod = _load_module(
     os.path.join(_nodes_dir, "keywords_node.py"),
     "AIHKeywordsNode"
 )
+_preview_mod = _load_module(
+    os.path.join(_nodes_dir, "preview_node.py"),
+    "AIHPreviewNode"
+)
 
 # Charger le module Terminal (utilise par la route WebSocket ci-dessous)
 # NB : ce module ne declare AUCUNE node ComfyUI — le terminal est un
@@ -215,6 +219,11 @@ if _keywords_mod and hasattr(_keywords_mod, "AIHKeywordsNode"):
     cls = _keywords_mod.AIHKeywordsNode
     NODE_CLASS_MAPPINGS["AIHKeywordsNode"] = cls
     NODE_DISPLAY_NAME_MAPPINGS["AIHKeywordsNode"] = "AIH Keywords"
+
+if _preview_mod and hasattr(_preview_mod, "AIHPreviewNode"):
+    cls = _preview_mod.AIHPreviewNode
+    NODE_CLASS_MAPPINGS["AIHPreviewNode"] = cls
+    NODE_DISPLAY_NAME_MAPPINGS["AIHPreviewNode"] = "AIH Preview"
 
 if _lmstudio_settings_mod and hasattr(_lmstudio_settings_mod, "AIHLMStudioSettingsNode"):
     cls = _lmstudio_settings_mod.AIHLMStudioSettingsNode

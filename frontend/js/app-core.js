@@ -63,13 +63,15 @@
         prompt: document.getElementById('tab-prompt-helper'),
         style: document.getElementById('tab-styles'),
         template: document.getElementById('tab-templates'),
-        keywords: document.getElementById('tab-keywords-manager')
+        keywords: document.getElementById('tab-keywords-manager'),
+        preview: document.getElementById('tab-preview')
       };
       const buttons = {
         prompt: document.getElementById('tab-btn-prompt'),
         style: document.getElementById('tab-btn-style'),
         template: document.getElementById('tab-btn-template'),
-        keywords: document.getElementById('tab-btn-keywords')
+        keywords: document.getElementById('tab-btn-keywords'),
+        preview: document.getElementById('tab-btn-preview')
       };
 
       Object.keys(tabs).forEach(function(key) {
@@ -78,6 +80,9 @@
           else tabs[key].classList.add('hidden');
         }
       });
+
+      // Arrêter le polling de l'onglet Preview quand on le quitte
+      if (tab !== 'preview' && typeof previewStop === 'function') previewStop();
 
       Object.keys(buttons).forEach(function(key) {
         var btn = buttons[key];
@@ -94,6 +99,7 @@
       if (tab === 'style') loadStylesTab();
       if (tab === 'template') loadTemplatesTab();
       if (tab === 'keywords') kwLoadList();
+      if (tab === 'preview') previewStart();
     }
 
     /* ── Theme system ── */
@@ -265,6 +271,7 @@
     }
 
     async function logout() {
+      if (typeof previewStop === 'function') previewStop();
       document.getElementById('admin-panel').classList.add('hidden');
       document.getElementById('members-panel').classList.add('hidden');
       document.getElementById('main-content').style.display = 'none';

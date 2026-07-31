@@ -469,3 +469,10 @@
     .dark .dark\:placeholder-slate-400::placeholder { color: var(--text-primary) !important; opacity: 0.4; }
     .placeholder-slate-400::placeholder { color: var(--text-primary) !important; opacity: 0.4; }
   
+    /* ===== Preview tab ===== */
+    #preview-gallery img {
+      background-color: var(--bg-body);
+    }
+    #preview-empty {
+      color: var(--text-secondary);
+    }
