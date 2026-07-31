@@ -230,13 +230,17 @@ class AIHElementsNode:
     def INPUT_TYPES(cls):
         return {
             "required": {
+                # elements_input en REQUIRED, AVANT seed : ComfyUI crée les
+                # widgets dans l'ordre required puis optional, donc ce widget
+                # s'affiche AU-DESSUS du widget seed dans l'UI.
+                # PAS de forceInput (widget STRING simple) : garde la persistance.
+                "elements_input": ("STRING", {"default": ""}),        # champ texte simple (PAS forceInput, PAS multiline)
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
             },
             "optional": {
                 # JSON sérialisé par le JS : elements + random_count
                 # Masqué dans l'UI ComfyUI
                 "_elements_json": ("STRING", {"default": "{}", "multiline": True}),
-                "elements_input": ("STRING", {"default": ""}),        # champ texte simple (PAS forceInput, PAS multiline)
                 "llm_config": ("STRING", {"default": "", "forceInput": True}),  # seule entrée forceInput, nom d'origine
             }
         }
