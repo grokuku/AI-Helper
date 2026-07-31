@@ -149,10 +149,26 @@ function _parseConceptSyntax(text, defaultCount) {
                 return result;
             };
 
+            // [AIH DEBUG] Nouvelle API ComfyUI Vue : onConfigure pourrait être
+            // appelé au lieu de configure(). Log-only pour diagnostiquer.
+            const origOnConfigure = nodeType.prototype.onConfigure;
+            nodeType.prototype.onConfigure = function(data) {
+                console.log("[AIH DEBUG] onConfigure called:", data ? JSON.stringify(data).substring(0, 500) : "no data");
+                if (origOnConfigure) return origOnConfigure.call(this, data);
+            };
+
             const onNodeCreated = nodeType.prototype.onNodeCreated;
             nodeType.prototype.onNodeCreated = function () {
                 const r = onNodeCreated?.apply(this, arguments);
                 const node = this;
+
+                // [AIH DEBUG] Diagnostic nouvelle frontend Vue : où sont les
+                // données brutes du workflow ? (configure() ne semble plus appelé)
+                console.log("[AIH DEBUG] node.data:", node.data ? JSON.stringify(node.data).substring(0, 500) : "no data");
+                console.log("[AIH DEBUG] node.properties:", JSON.stringify(node.properties || {}));
+                console.log("[AIH DEBUG] node.widgets_values:", node.widgets_values ? JSON.stringify(node.widgets_values).substring(0, 500) : "no widgets_values");
+                console.log("[AIH DEBUG] node._data:", node._data ? JSON.stringify(node._data).substring(0, 500) : "no _data");
+                console.log("[AIH DEBUG] node.workflowData:", node.workflowData ? JSON.stringify(node.workflowData).substring(0, 500) : "no workflowData");
 
                 // ---- Masquer le widget sérialisé _elements_json ----
                 // (plus de _api_config : api_key/url sont lus cote Python depuis
