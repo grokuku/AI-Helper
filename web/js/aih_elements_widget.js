@@ -1434,9 +1434,14 @@ function _parseConceptSyntax(text, defaultCount) {
 
                 function restoreFromWidgets(n) {
                     const ej = n.widgets?.find(w => w.name === "_elements_json");
-                    if (!ej || !ej.value || ej.value === "{}" || ej.value === "") return false;
+                    console.log("[AIH DEBUG] restoreFromWidgets called, ej.value =", ej ? ej.value.substring(0, 100) : "no widget");
+                    if (!ej || !ej.value || ej.value === "{}" || ej.value === "") {
+                        console.log("[AIH DEBUG] restoreFromWidgets: no data, returning false");
+                        return false;
+                    }
                     try {
                         const data = JSON.parse(ej.value);
+                        console.log("[AIH DEBUG] restoreFromWidgets: data found, elements count =", data.elements ? data.elements.length : 0);
                         if (data.elements && Array.isArray(data.elements) && data.elements.length > 0) {
                             n._aihElements = data.elements.map(e => {
                                 const visible = e.visible !== false;
@@ -1508,10 +1513,16 @@ function _parseConceptSyntax(text, defaultCount) {
                 // Fallback : tente de restaurer périodiquement (pour F5 et cas où les hooks ne marchent pas)
                 let restoreAttempts = 0;
                 function delayedRestore() {
-                    if (restoreFromWidgets(node)) return;
+                    console.log("[AIH DEBUG] delayedRestore attempt", restoreAttempts);
+                    if (restoreFromWidgets(node)) {
+                        console.log("[AIH DEBUG] delayedRestore: SUCCESS");
+                        return;
+                    }
                     restoreAttempts++;
                     if (restoreAttempts < 20) {
                         setTimeout(delayedRestore, 300);
+                    } else {
+                        console.log("[AIH DEBUG] delayedRestore: gave up after 20 attempts");
                     }
                 }
                 setTimeout(delayedRestore, 100);
@@ -1564,6 +1575,7 @@ function _parseConceptSyntax(text, defaultCount) {
                 // Sync initial — ne pas écraser les données chargées par configure()
                 var _ej = node.widgets?.find(w => w.name === "_elements_json");
                 var _hasSaved = _ej && _ej.value && _ej.value !== "{}" && _ej.value !== "";
+                console.log("[AIH DEBUG] onNodeCreated: _ej.value =", _ej ? _ej.value.substring(0, 100) : "no widget", "| _hasSaved =", _hasSaved);
                 if (!_hasSaved) {
                     // Nouveau node sans données : initialiser
                     if (_ej && (!_ej.value || _ej.value === "" || _ej.value === "{}")) {
@@ -1580,8 +1592,12 @@ function _parseConceptSyntax(text, defaultCount) {
 
         // Hook appelé APRÈS que ComfyUI a restauré les widgets depuis le workflow
         async loadedGraphNode(node) {
+            console.log("[AIH DEBUG] loadedGraphNode called for node", node.id);
             if (node._aihRestore) {
-                setTimeout(() => node._aihRestore(), 0);
+                setTimeout(() => {
+                    console.log("[AIH DEBUG] loadedGraphNode: calling _aihRestore");
+                    node._aihRestore();
+                }, 0);
             }
         },
 
