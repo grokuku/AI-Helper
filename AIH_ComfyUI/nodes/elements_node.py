@@ -236,7 +236,9 @@ class AIHElementsNode:
                 # JSON sérialisé par le JS : elements + random_count
                 # Masqué dans l'UI ComfyUI
                 "_elements_json": ("STRING", {"default": "{}", "multiline": True}),
-                "elements_input": ("STRING", {"default": "", "forceInput": True}),  # champ texte simple une ligne, accepte connexion
+                # TEST TEMPORAIRE : elements_input retiré de INPUT_TYPES pour valider
+                # la théorie "le NOMBRE d'entrées forceInput casse la frontend Vue".
+                # La signature generate() garde elements_input="" (rétro-compat workflow).
                 "external_llm": ("STRING", {"default": "", "forceInput": True}),  # config LLM externe (LM Studio/OpenAI), accepte connexion
             }
         }
