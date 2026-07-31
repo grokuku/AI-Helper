@@ -35,9 +35,11 @@
                 const hideWidget = (n, name) => {
                     const w = n.widgets?.find(x => x.name === name);
                     if (w) {
-                        w.hidden = true;
+                        // Ne PAS utiliser hidden = true (empêche la sérialisation dans ComfyUI récent)
+                        if (w.element) w.element.style.display = "none";
                         if (w.inputEl) w.inputEl.style.display = "none";
                         if (w.parentEl) w.parentEl.style.display = "none";
+                        if (w.widget) w.widget.style.display = "none"; // some ComfyUI versions
                     }
                 };
                 ["style_id", "template_id", "style_shortlist"].forEach(n => hideWidget(node, n));

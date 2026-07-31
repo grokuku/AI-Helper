@@ -60,12 +60,17 @@ async function apiCall(method, path, body) {
 
 // ========================
 // Cacher un widget ComfyUI
+// IMPORTANT : ne PAS utiliser w.hidden = true car ComfyUI récent ne sérialise PAS
+// les widgets hidden=true. On cache visuellement via computeSize à 0 et display:none.
 // ========================
 function hideWidget(node, name) {
     const w = node.widgets?.find(x => x.name === name);
     if (w) {
-        w.hidden = true;
+        // Ne PAS utiliser hidden = true (empêche la sérialisation dans ComfyUI récent)
         w.computeSize = () => [0, -4];
+        if (w.element) w.element.style.display = "none";
+        if (w.inputEl) w.inputEl.style.display = "none";
+        if (w.widget) w.widget.style.display = "none"; // some ComfyUI versions
         return w;
     }
     return null;
@@ -179,8 +184,11 @@ function debounce(fn, delay) {
                     // à côté de tout widget nommé "seed" — on le cache aussi.
                     var cag = node.widgets?.find(w => w.name === "control_after_generate");
                     if (cag) {
-                        cag.hidden = true;
+                        // Ne PAS utiliser hidden = true (empêche la sérialisation dans ComfyUI récent)
                         if (cag.computeSize) cag.computeSize = () => [0, -4];
+                        if (cag.element) cag.element.style.display = "none";
+                        if (cag.inputEl) cag.inputEl.style.display = "none";
+                        if (cag.widget) cag.widget.style.display = "none";
                     }
                 }
 

@@ -25,9 +25,15 @@
                     "type:", node.type);
 
                 // Rendre le widget _diag_json invisible
+                // Ne PAS utiliser hidden = true (empêche la sérialisation dans ComfyUI récent)
                 const hideWidget = (n, name) => {
                     const w = n.widgets?.find(x => x.name === name);
-                    if (w) { w.hidden = true; w.computeSize = () => [0, -4]; }
+                    if (w) {
+                        w.computeSize = () => [0, -4];
+                        if (w.element) w.element.style.display = "none";
+                        if (w.inputEl) w.inputEl.style.display = "none";
+                        if (w.widget) w.widget.style.display = "none"; // some ComfyUI versions
+                    }
                 };
                 hideWidget(node, "_diag_json");
 

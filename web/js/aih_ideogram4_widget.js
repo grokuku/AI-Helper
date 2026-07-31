@@ -26,10 +26,12 @@
                 const hideWidget = (n, name) => {
                     const w = n.widgets?.find(x => x.name === name);
                     if (w) {
-                        w.hidden = true;
+                        // Ne PAS utiliser hidden = true (empêche la sérialisation dans ComfyUI récent)
                         w.serializable = true; // garantir la sauvegarde dans le workflow
+                        if (w.element) w.element.style.display = "none";
                         if (w.inputEl) w.inputEl.style.display = "none";
                         if (w.parentEl) w.parentEl.style.display = "none";
+                        if (w.widget) w.widget.style.display = "none"; // some ComfyUI versions
                         return w;
                     }
                     return null;
