@@ -149,12 +149,38 @@ function _parseConceptSyntax(text, defaultCount) {
                 return result;
             };
 
-            // [AIH DEBUG] Nouvelle API ComfyUI Vue : onConfigure pourrait être
-            // appelé au lieu de configure(). Log-only pour diagnostiquer.
+            // Intercepter onConfigure (nouvelle API frontend Vue) pour restaurer
+            // _elements_json.  La nouvelle frontend Vue de ComfyUI appelle
+            // onConfigure au lieu de configure() avec les données brutes du
+            // workflow.  On garde l'interception configure() ci-dessus pour la
+            // compatibilité avec l'ancienne frontend.
             const origOnConfigure = nodeType.prototype.onConfigure;
             nodeType.prototype.onConfigure = function(data) {
                 console.log("[AIH DEBUG] onConfigure called:", data ? JSON.stringify(data).substring(0, 500) : "no data");
-                if (origOnConfigure) return origOnConfigure.call(this, data);
+
+                // Appeler l'original d'abord (peut être undefined)
+                const result = origOnConfigure ? origOnConfigure.call(this, data) : undefined;
+
+                // Restaurer _elements_json depuis les données brutes du workflow
+                if (data && data.widgets_values) {
+                    for (var i = 0; i < data.widgets_values.length; i++) {
+                        var val = data.widgets_values[i];
+                        if (typeof val === 'string' && val.indexOf('"elements"') >= 0) {
+                            var ej = this.widgets?.find(w => w.name === "_elements_json");
+                            if (ej) {
+                                ej.value = val;
+                                console.log("[AIH DEBUG] onConfigure: set _elements_json from widgets_values[" + i + "]");
+                                // Déclencher la restauration immédiatement
+                                if (this._aihRestore) {
+                                    setTimeout(() => this._aihRestore(), 0);
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+
+                return result;
             };
 
             const onNodeCreated = nodeType.prototype.onNodeCreated;
