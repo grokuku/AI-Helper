@@ -246,7 +246,7 @@ class AIHElementsNode:
         }
 
     RETURN_TYPES = ("STRING", "STRING")
-    RETURN_NAMES = ("elements", "llm_config")
+    RETURN_NAMES = ("llm_config", "elements")
 
     def generate(self, seed, _elements_json="{}", elements_input="", llm_config=None):
         from . import _credentials
@@ -256,7 +256,7 @@ class AIHElementsNode:
             msg = "Erreur : config JSON invalide"
             return {
                 "ui": {"elements": [msg]},
-                "result": (msg, llm_config)
+                "result": (llm_config, msg)
             }
 
         # api_key et api_url lus depuis le fichier de credentials
@@ -424,7 +424,7 @@ class AIHElementsNode:
         if not elements and random_count <= 0:
             return {
                 "ui": {"elements": ["⚠️ Aucun filtre sélectionné. Ajoutez des filtres dans la liste."]},
-                "result": ("⚠️ Aucun filtre sélectionné. Ajoutez des filtres dans la liste.", llm_config)
+                "result": (llm_config, "⚠️ Aucun filtre sélectionné. Ajoutez des filtres dans la liste.")
             }
 
         # Construire le payload pour /api/generate
@@ -448,13 +448,13 @@ class AIHElementsNode:
             prompt = data.get("prompt", "")
             return {
                 "ui": {"elements": [prompt]},
-                "result": (prompt, llm_config)
+                "result": (llm_config, prompt)
             }
         except ImportError:
             msg = "Erreur : module 'requests' manquant. pip install requests"
             return {
                 "ui": {"elements": [msg]},
-                "result": (msg, llm_config)
+                "result": (llm_config, msg)
             }
         except Exception as e:
             msg = str(e)
@@ -466,5 +466,5 @@ class AIHElementsNode:
                 msg = f"Erreur API : {msg}"
             return {
                 "ui": {"elements": [msg]},
-                "result": (msg, llm_config)
+                "result": (llm_config, msg)
             }
