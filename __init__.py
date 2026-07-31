@@ -524,6 +524,60 @@ if _routes is not None and _update_manager_mod is not None:
 
     print("[AIH] Blobby exec route registered: POST /aih/blobby/exec")
 
+    # ── Routes OpenAI API Keys (stockage local par base_url) ───
+    @_routes.get("/aih/openai/keys")
+    async def _aih_get_openai_keys(request):
+        """Retourne les clés API stockées, optionnellement filtrées par base_url."""
+        import os as _os, json as _json
+        try:
+            keys_path = _os.path.join(_get_aih_user_dir(), "openai_keys.json")
+            if _os.path.isfile(keys_path):
+                with open(keys_path, "r", encoding="utf-8") as f:
+                    data = _json.load(f)
+            else:
+                data = {}
+            # Filtrer par base_url si demandé
+            base_url = request.query.get("base_url", "").rstrip("/")
+            if base_url:
+                return _aio_web.json_response({"status": "ok", "key": data.get(base_url, "")})
+            return _aio_web.json_response({"status": "ok", "keys": data})
+        except Exception as e:
+            return _aio_web.json_response({"status": "error", "message": str(e)}, status=500)
+
+    @_routes.post("/aih/openai/keys")
+    async def _aih_save_openai_key(request):
+        """Sauvegarde une clé API pour un base_url donné."""
+        import os as _os, json as _json
+        try:
+            body = await request.json()
+            base_url = (body.get("base_url") or "").strip().rstrip("/")
+            api_key = (body.get("api_key") or "").strip()
+            if not base_url:
+                return _aio_web.json_response({"status": "error", "message": "base_url required"}, status=400)
+
+            keys_path = _os.path.join(_get_aih_user_dir(), "openai_keys.json")
+            _os.makedirs(_os.path.dirname(keys_path), exist_ok=True)
+
+            # Lire les clés existantes
+            data = {}
+            if _os.path.isfile(keys_path):
+                with open(keys_path, "r", encoding="utf-8") as f:
+                    data = _json.load(f)
+
+            if api_key:
+                data[base_url] = api_key
+            elif base_url in data:
+                del data[base_url]  # Supprimer si clé vide
+
+            with open(keys_path, "w", encoding="utf-8") as f:
+                _json.dump(data, f, indent=2, ensure_ascii=False)
+
+            return _aio_web.json_response({"status": "ok", "base_url": base_url})
+        except Exception as e:
+            return _aio_web.json_response({"status": "error", "message": str(e)}, status=500)
+
+    print("[AIH] OpenAI keys routes registered")
+
 # ── Routes workflow sharing ─────────────────────────────────────
 
 if _routes is not None:

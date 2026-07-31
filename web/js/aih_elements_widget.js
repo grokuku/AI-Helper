@@ -133,6 +133,11 @@ function _parseConceptSyntax(text, defaultCount) {
                 // (plus de _api_config : api_key/url sont lus cote Python depuis
                 // le fichier de credentials)
                 hideWidget(node, "_elements_json");
+                // Forcer serializable = true : certaines versions du frontend
+                // ComfyUI ne sérialisent pas les widgets cachés par défaut, ce
+                // qui fait perdre tous les réglages au refresh de la page.
+                var ejWidget = node.widgets.find(w => w.name === "_elements_json");
+                if (ejWidget) ejWidget.serializable = true;
 
                 // ---- Supprimer la socket d'entrée de _elements_json ----
                 {
@@ -1437,7 +1442,11 @@ function _parseConceptSyntax(text, defaultCount) {
                     if (!ej || !ej.value || ej.value === "{}" || ej.value === "") return false;
                     try {
                         const data = JSON.parse(ej.value);
-                        if (data.elements && Array.isArray(data.elements) && data.elements.length > 0 && n._aihElements.length === 0) {
+                        if (data.elements && Array.isArray(data.elements) && data.elements.length > 0) {
+                            // Écrase systématiquement au lieu de vérifier
+                            // n._aihElements.length === 0 : si _aihElements a
+                            // été peuplé entre-temps (race condition), on
+                            // veut quand même restaurer depuis le workflow.
                             n._aihElements = data.elements.map(e => {
                                 const visible = e.visible !== false;
                                 if (e.type === "filter") {
