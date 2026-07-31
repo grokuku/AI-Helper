@@ -120,6 +120,35 @@ function _parseConceptSyntax(text, defaultCount) {
         async beforeRegisterNodeDef(nodeType, nodeData) {
             if (nodeData.name !== "AIHElementsNode") return; // TODO: this guard could be part of AIH.registerWidget config
 
+            // Intercepter configure() pour restaurer _elements_json par contenu.
+            // ComfyUI mappe widgets_values[i] → node.widgets[i].value par index,
+            // mais l'index de _elements_json dans node.widgets ne correspond pas
+            // toujours à sa position dans widgets_values (widgets cachés, ordre
+            // de création…). On corrige donc en cherchant la valeur par contenu.
+            const origConfigure = nodeType.prototype.configure;
+            nodeType.prototype.configure = function(data) {
+                // Appeler configure original d'abord
+                const result = origConfigure.call(this, data);
+
+                // Après configure, chercher les données _elements_json dans widgets_values
+                if (data && data.widgets_values) {
+                    for (var i = 0; i < data.widgets_values.length; i++) {
+                        var val = data.widgets_values[i];
+                        if (typeof val === 'string' && val.indexOf('"elements"') >= 0) {
+                            // C'est probablement _elements_json
+                            var ej = this.widgets && this.widgets.find(function(w) { return w.name === "_elements_json"; });
+                            if (ej) {
+                                ej.value = val;
+                                console.log("[AIH DEBUG] configure: manually set _elements_json from widgets_values[" + i + "]");
+                            }
+                            break;
+                        }
+                    }
+                }
+
+                return result;
+            };
+
             const onNodeCreated = nodeType.prototype.onNodeCreated;
             nodeType.prototype.onNodeCreated = function () {
                 const r = onNodeCreated?.apply(this, arguments);
@@ -1575,6 +1604,7 @@ function _parseConceptSyntax(text, defaultCount) {
                 // Sync initial — ne pas écraser les données chargées par configure()
                 var _ej = node.widgets?.find(w => w.name === "_elements_json");
                 var _hasSaved = _ej && _ej.value && _ej.value !== "{}" && _ej.value !== "";
+                console.log("[AIH DEBUG] onNodeCreated widgets:", node.widgets && node.widgets.map(function(w) { return w.name + ":" + (w.value || "").substring(0, 30); }));
                 console.log("[AIH DEBUG] onNodeCreated: _ej.value =", _ej ? _ej.value.substring(0, 100) : "no widget", "| _hasSaved =", _hasSaved);
                 if (!_hasSaved) {
                     // Nouveau node sans données : initialiser
