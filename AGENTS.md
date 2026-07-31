@@ -67,6 +67,46 @@ AI-Helper/
 - Commits atomiques : un changement logique par commit.
 - Suivre le format existant des messages de commit.
 
+## Frontend ComfyUI — API moderne (ne pas utiliser l'ancienne)
+
+⚠️ **IMPORTANT** : Le projet utilise la NOUVELLE frontend Vue de ComfyUI.
+Ne jamais utiliser l'ancienne API `LGraphNode.configure()` — elle n'est plus appelée.
+
+### API à utiliser
+
+| Objet | Méthode moderne | Ancienne (MORTE) |
+|---|---|---|
+| Restauration des données workflow | `nodeType.prototype.onConfigure(data)` | ~~`nodeType.prototype.configure(data)`~~ |
+| Attente de l'app | `window.app` + polling `aihBoot()` | ~~`AIH.waitForApp`~~ (fichier supprimé) |
+
+### Pattern de restauration des widgets cachés
+
+Quand on sauvegarde un état dans un widget caché (ex: `_elements_json`), le workflow contient
+les données dans `data.widgets_values` au moment de `onConfigure`. Pour restaurer :
+
+```js
+const origOnConfigure = nodeType.prototype.onConfigure;
+nodeType.prototype.onConfigure = function(data) {
+    const result = origOnConfigure ? origOnConfigure.call(this, data) : undefined;
+    // Chercher la valeur par contenu, pas par index (les index peuvent différer)
+    if (data && data.widgets_values) {
+        for (var i = 0; i < data.widgets_values.length; i++) {
+            var val = data.widgets_values[i];
+            if (typeof val === 'string' && val.indexOf('"elements"') >= 0) {
+                var ej = this.widgets?.find(w => w.name === "_elements_json");
+                if (ej) { ej.value = val; break; }
+            }
+        }
+    }
+    return result;
+};
+```
+
+### Sérialisation des widgets
+- `widget.hidden = true` **empêche la sérialisation** dans certaines versions — vérifier avant d'utiliser
+- Ne pas utiliser `widget.serializable` (non standard)
+- La méthode `serializeValue()` peut être surchargée si nécessaire
+
 ## Ideogram 4 — Architecture LLM
 
 ### Format Bbox : pixels → conversion 0-1000

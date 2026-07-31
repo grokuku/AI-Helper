@@ -120,46 +120,26 @@ function _parseConceptSyntax(text, defaultCount) {
         async beforeRegisterNodeDef(nodeType, nodeData) {
             if (nodeData.name !== "AIHElementsNode") return; // TODO: this guard could be part of AIH.registerWidget config
 
-            // Intercepter configure() pour restaurer _elements_json par contenu.
-            // ComfyUI mappe widgets_values[i] → node.widgets[i].value par index,
-            // mais l'index de _elements_json dans node.widgets ne correspond pas
-            // toujours à sa position dans widgets_values (widgets cachés, ordre
-            // de création…). On corrige donc en cherchant la valeur par contenu.
-            const origConfigure = nodeType.prototype.configure;
-            nodeType.prototype.configure = function(data) {
-                // Appeler configure original d'abord
-                const result = origConfigure.call(this, data);
-
-                // Après configure, chercher les données _elements_json dans widgets_values
-                if (data && data.widgets_values) {
-                    for (var i = 0; i < data.widgets_values.length; i++) {
-                        var val = data.widgets_values[i];
-                        if (typeof val === 'string' && val.indexOf('"elements"') >= 0) {
-                            // C'est probablement _elements_json
-                            var ej = this.widgets && this.widgets.find(function(w) { return w.name === "_elements_json"; });
-                            if (ej) {
-                                ej.value = val;
-                                console.log("[AIH DEBUG] configure: manually set _elements_json from widgets_values[" + i + "]");
-                            }
-                            break;
-                        }
-                    }
-                }
-
-                return result;
-            };
-
             // Intercepter onConfigure (nouvelle API frontend Vue) pour restaurer
             // _elements_json.  La nouvelle frontend Vue de ComfyUI appelle
-            // onConfigure au lieu de configure() avec les données brutes du
-            // workflow.  On garde l'interception configure() ci-dessus pour la
-            // compatibilité avec l'ancienne frontend.
+            // onConfigure avec les données brutes du workflow.
             const origOnConfigure = nodeType.prototype.onConfigure;
             nodeType.prototype.onConfigure = function(data) {
-                console.log("[AIH DEBUG] onConfigure called:", data ? JSON.stringify(data).substring(0, 500) : "no data");
-
-                // Appeler l'original d'abord (peut être undefined)
                 const result = origOnConfigure ? origOnConfigure.call(this, data) : undefined;
+
+                // DIAG TEMPORAIRE — à retirer après résolution
+                console.log("[AIH DIAG] onConfigure keys:", data ? Object.keys(data) : "no data");
+                if (data) {
+                    console.log("[AIH DIAG] widgets_values:", JSON.stringify(data.widgets_values));
+                    if (data.widgets_values) {
+                        data.widgets_values.forEach(function(v, i) {
+                            console.log("[AIH DIAG] widgets_values[" + i + "] =", typeof v === "string" ? v.substring(0, 120) : v);
+                        });
+                    }
+                    // Vérifier si les données sont ailleurs
+                    console.log("[AIH DIAG] data.properties:", JSON.stringify(data.properties || {}));
+                    console.log("[AIH DIAG] data.inputs:", JSON.stringify(data.inputs || []).substring(0, 300));
+                }
 
                 // Restaurer _elements_json depuis les données brutes du workflow
                 if (data && data.widgets_values) {
@@ -169,7 +149,6 @@ function _parseConceptSyntax(text, defaultCount) {
                             var ej = this.widgets?.find(w => w.name === "_elements_json");
                             if (ej) {
                                 ej.value = val;
-                                console.log("[AIH DEBUG] onConfigure: set _elements_json from widgets_values[" + i + "]");
                                 // Déclencher la restauration immédiatement
                                 if (this._aihRestore) {
                                     setTimeout(() => this._aihRestore(), 0);
@@ -187,14 +166,6 @@ function _parseConceptSyntax(text, defaultCount) {
             nodeType.prototype.onNodeCreated = function () {
                 const r = onNodeCreated?.apply(this, arguments);
                 const node = this;
-
-                // [AIH DEBUG] Diagnostic nouvelle frontend Vue : où sont les
-                // données brutes du workflow ? (configure() ne semble plus appelé)
-                console.log("[AIH DEBUG] node.data:", node.data ? JSON.stringify(node.data).substring(0, 500) : "no data");
-                console.log("[AIH DEBUG] node.properties:", JSON.stringify(node.properties || {}));
-                console.log("[AIH DEBUG] node.widgets_values:", node.widgets_values ? JSON.stringify(node.widgets_values).substring(0, 500) : "no widgets_values");
-                console.log("[AIH DEBUG] node._data:", node._data ? JSON.stringify(node._data).substring(0, 500) : "no _data");
-                console.log("[AIH DEBUG] node.workflowData:", node.workflowData ? JSON.stringify(node.workflowData).substring(0, 500) : "no workflowData");
 
                 // ---- Masquer le widget sérialisé _elements_json ----
                 // (plus de _api_config : api_key/url sont lus cote Python depuis
@@ -1505,14 +1476,11 @@ function _parseConceptSyntax(text, defaultCount) {
 
                 function restoreFromWidgets(n) {
                     const ej = n.widgets?.find(w => w.name === "_elements_json");
-                    console.log("[AIH DEBUG] restoreFromWidgets called, ej.value =", ej ? ej.value.substring(0, 100) : "no widget");
                     if (!ej || !ej.value || ej.value === "{}" || ej.value === "") {
-                        console.log("[AIH DEBUG] restoreFromWidgets: no data, returning false");
                         return false;
                     }
                     try {
                         const data = JSON.parse(ej.value);
-                        console.log("[AIH DEBUG] restoreFromWidgets: data found, elements count =", data.elements ? data.elements.length : 0);
                         if (data.elements && Array.isArray(data.elements) && data.elements.length > 0) {
                             n._aihElements = data.elements.map(e => {
                                 const visible = e.visible !== false;
@@ -1584,16 +1552,12 @@ function _parseConceptSyntax(text, defaultCount) {
                 // Fallback : tente de restaurer périodiquement (pour F5 et cas où les hooks ne marchent pas)
                 let restoreAttempts = 0;
                 function delayedRestore() {
-                    console.log("[AIH DEBUG] delayedRestore attempt", restoreAttempts);
                     if (restoreFromWidgets(node)) {
-                        console.log("[AIH DEBUG] delayedRestore: SUCCESS");
                         return;
                     }
                     restoreAttempts++;
                     if (restoreAttempts < 20) {
                         setTimeout(delayedRestore, 300);
-                    } else {
-                        console.log("[AIH DEBUG] delayedRestore: gave up after 20 attempts");
                     }
                 }
                 setTimeout(delayedRestore, 100);
@@ -1643,11 +1607,9 @@ function _parseConceptSyntax(text, defaultCount) {
                     }
                 };
 
-                // Sync initial — ne pas écraser les données chargées par configure()
+                // Sync initial — ne pas écraser les données chargées du workflow
                 var _ej = node.widgets?.find(w => w.name === "_elements_json");
                 var _hasSaved = _ej && _ej.value && _ej.value !== "{}" && _ej.value !== "";
-                console.log("[AIH DEBUG] onNodeCreated widgets:", node.widgets && node.widgets.map(function(w) { return w.name + ":" + (w.value || "").substring(0, 30); }));
-                console.log("[AIH DEBUG] onNodeCreated: _ej.value =", _ej ? _ej.value.substring(0, 100) : "no widget", "| _hasSaved =", _hasSaved);
                 if (!_hasSaved) {
                     // Nouveau node sans données : initialiser
                     if (_ej && (!_ej.value || _ej.value === "" || _ej.value === "{}")) {
@@ -1664,10 +1626,8 @@ function _parseConceptSyntax(text, defaultCount) {
 
         // Hook appelé APRÈS que ComfyUI a restauré les widgets depuis le workflow
         async loadedGraphNode(node) {
-            console.log("[AIH DEBUG] loadedGraphNode called for node", node.id);
             if (node._aihRestore) {
                 setTimeout(() => {
-                    console.log("[AIH DEBUG] loadedGraphNode: calling _aihRestore");
                     node._aihRestore();
                 }, 0);
             }
