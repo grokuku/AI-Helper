@@ -237,14 +237,14 @@ class AIHElementsNode:
                 # Masqué dans l'UI ComfyUI
                 "_elements_json": ("STRING", {"default": "{}", "multiline": True}),
                 "elements_input": ("STRING", {"default": "", "forceInput": True}),  # champ texte simple une ligne, accepte connexion
-                "llm_config": ("STRING", {"default": "", "forceInput": True}),  # config LLM externe (LM Studio/OpenAI), accepte connexion
+                "external_llm": ("STRING", {"default": "", "forceInput": True}),  # config LLM externe (LM Studio/OpenAI), accepte connexion
             }
         }
 
     RETURN_TYPES = ("STRING",)
     RETURN_NAMES = ("elements",)
 
-    def generate(self, seed, _elements_json="{}", elements_input="", llm_config=None):
+    def generate(self, seed, _elements_json="{}", elements_input="", external_llm=None):
         from . import _credentials
         try:
             elems_cfg = json.loads(_elements_json) if _elements_json else {}
@@ -300,8 +300,8 @@ class AIHElementsNode:
                 concept, count, hint = parsed
 
                 # preset_id == 0 → pas de LLM backend disponible
-                # (sauf si llm_config externe fournie)
-                if preset_id == 0 and not llm_config:
+                # (sauf si external_llm externe fournie)
+                if preset_id == 0 and not external_llm:
                     indices_to_skip.add(i)
                     continue
 
@@ -321,9 +321,9 @@ class AIHElementsNode:
                     )
                     input_text = ""
 
-                if llm_config:
+                if external_llm:
                     # Config LLM externe (LM Studio ou OpenAI)
-                    output = _llm_helper.call_llm(llm_config, instruction, input_text, seed=seed)
+                    output = _llm_helper.call_llm(external_llm, instruction, input_text, seed=seed)
                     items = _parse_llm_list(output) if output else []
                 else:
                     # Backend existant (comportement actuel)
@@ -348,7 +348,7 @@ class AIHElementsNode:
             blocks = _extract_brace_blocks(raw_text)
             has_braces = len(blocks) >= 1
 
-            if has_braces and brain_on and (preset_id != 0 or llm_config):
+            if has_braces and brain_on and (preset_id != 0 or external_llm):
                 # 🧠 ON + liste manuelle avec {} → filtrage LLM par contexte
                 # Concaténer tous les choix de tous les blocs
                 all_choices = []
@@ -365,9 +365,9 @@ class AIHElementsNode:
                     f"Liste: [{', '.join(all_choices)}]"
                 )
 
-                if llm_config:
+                if external_llm:
                     # Config LLM externe (LM Studio ou OpenAI)
-                    output = _llm_helper.call_llm(llm_config, instruction, input_text, seed=seed)
+                    output = _llm_helper.call_llm(external_llm, instruction, input_text, seed=seed)
                     filtered = _parse_llm_list(output) if output else []
                 else:
                     # Backend existant (comportement actuel)
