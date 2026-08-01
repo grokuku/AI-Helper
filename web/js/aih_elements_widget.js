@@ -140,8 +140,13 @@ function _parseConceptSyntax(text, defaultCount) {
                     for (var i = 0; i < data.widgets_values.length; i++) {
                         var val = data.widgets_values[i];
                         if (typeof val === 'string' && val.indexOf('"elements"') >= 0) {
+                            // Stocker pour restoreFromWidgets (le widget _elements_json
+                            // peut ne pas exister encore si onConfigure s'exécute avant onNodeCreated)
+                            this._pendingElementsJson = val;
+                            // Essayer d'appliquer immédiatement si le widget existe déjà
                             var ej = this.widgets?.find(w => w.name === "_elements_json");
-                            if (ej) { ej.value = val; break; }
+                            if (ej) { ej.value = val; }
+                            break;
                         }
                     }
                 }
@@ -1466,6 +1471,15 @@ function _parseConceptSyntax(text, defaultCount) {
                 // En fallback, on tente aussi périodiquement.
 
                 function restoreFromWidgets(n) {
+                    // Appliquer la valeur stockée par onConfigure si elle existe
+                    // (le widget _elements_json peut ne pas exister au moment de onConfigure)
+                    if (n._pendingElementsJson) {
+                        var ej2 = n.widgets?.find(w => w.name === "_elements_json");
+                        if (ej2) {
+                            ej2.value = n._pendingElementsJson;
+                            n._pendingElementsJson = null;  // consommé
+                        }
+                    }
                     console.log("[AIH][restore] restoreFromWidgets appelé, widgets count:", n.widgets?.length);
                     console.log("[AIH][restore] widget names:", n.widgets?.map(w => w.name).join(", "));
                     const _ejDebug = n.widgets?.find(w => w.name === "_elements_json");
