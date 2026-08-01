@@ -1508,14 +1508,22 @@ function _parseConceptSyntax(text, defaultCount) {
                     if (origOnResize) origOnResize.call(this, size);
                     if (size[0] < MIN_WIDTH) size[0] = MIN_WIDTH;
                     container.style.width = (size[0] - 20) + "px";
+                    if (window.AIH && window.AIH.__log) {
+                        var dw = node.widgets?.find(function(w) { return w.name === "elements_ui"; });
+                        window.AIH.__log('Elements.onResize', 'node.size=[w=' + node.size[0] + ',h=' + node.size[1] + '] domWidget.computedHeight=' + (dw ? dw.computedHeight : 'N/A') + ' domWidget.y=' + (dw ? dw.y : 'N/A'));
+                    }
                 };
 
                 // Appliquer la taille initiale
-                requestAnimationFrame(() => {
+                requestAnimationFrame(function() {
                     if (node.size && node.size[0] < MIN_WIDTH) {
                         node.setSize([MIN_WIDTH, node.size[1]]);
                     }
                     container.style.width = (node.size[0] - 20) + "px";
+                    if (window.AIH && window.AIH.__log) {
+                        var dw = node.widgets?.find(function(w) { return w.name === "elements_ui"; });
+                        window.AIH.__log('Elements.rAF', 'node.size=[w=' + node.size[0] + ',h=' + node.size[1] + '] domWidget.computedHeight=' + (dw ? dw.computedHeight : 'N/A') + ' domWidget.y=' + (dw ? dw.y : 'N/A'));
+                    }
                 });
 
                 // ---- Persistance workflow (sauvegarde/chargement) ----
