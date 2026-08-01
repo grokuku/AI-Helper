@@ -247,6 +247,13 @@
                     serialize: false,
                     hideOnZoom: false,
                 });
+                // Sérialisation : poser LES DEUX flags.
+                // widget.serialize contrôle la persistance workflow (LGraphNode.serialize/configure)
+                // widget.options.serialize contrôle le prompt API (executionUtil)
+                // Sans widget.serialize=false, le DOM widget est sérialisé dans widgets_values,
+                // créant une valeur fantôme qui décale le mapping positionnel des autres widgets.
+                widget.serialize = false;
+                widget.options.serialize = false;
                 // ---- Calcul dynamique de la hauteur du DOM widget ----
                 // Le DOM widget remplit l'espace restant après les widgets natifs.
                 // Les widgets natifs (base_prompt, seed, etc.) ont une taille fixe,
