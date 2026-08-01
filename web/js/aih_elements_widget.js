@@ -1441,6 +1441,10 @@ function _parseConceptSyntax(text, defaultCount) {
                 // En fallback, on tente aussi périodiquement.
 
                 function restoreFromWidgets(n) {
+                    console.log("[AIH][restore] restoreFromWidgets appelé, widgets count:", n.widgets?.length);
+                    console.log("[AIH][restore] widget names:", n.widgets?.map(w => w.name).join(", "));
+                    const _ejDebug = n.widgets?.find(w => w.name === "_elements_json");
+                    console.log("[AIH][restore] _elements_json trouvé:", !!_ejDebug, "| value:", _ejDebug ? (_ejDebug.value || "").substring(0, 80) : "N/A");
                     const ej = n.widgets?.find(w => w.name === "_elements_json");
                     if (!ej || !ej.value || ej.value === "{}" || ej.value === "") return false;
                     try {
@@ -1516,6 +1520,7 @@ function _parseConceptSyntax(text, defaultCount) {
                 // Fallback : tente de restaurer périodiquement (pour F5 et cas où les hooks ne marchent pas)
                 let restoreAttempts = 0;
                 function delayedRestore() {
+                    console.log("[AIH][restore] delayedRestore tentative", restoreAttempts);
                     if (restoreFromWidgets(node)) return;
                     restoreAttempts++;
                     if (restoreAttempts < 20) {
