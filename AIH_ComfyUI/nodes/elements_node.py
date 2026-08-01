@@ -264,7 +264,8 @@ class AIHElementsNode:
                 # s'affiche AU-DESSUS du widget seed dans l'UI.
                 # PAS de forceInput (widget STRING simple) : garde la persistance.
                 "elements_input": ("STRING", {"default": ""}),        # champ texte simple (PAS forceInput, PAS multiline)
-                "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
+                "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff,
+                 "control_after_generate": "randomize"}),
                 # JSON sérialisé par le JS : elements + random_count
                 # REQUIRED (APRÈS seed) : les widgets required sont sérialisés
                 # dans widgets_values par la frontend (issue #3616), les optional
