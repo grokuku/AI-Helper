@@ -290,7 +290,6 @@ function debounce(fn, delay) {
                 Object.assign(container.style, {
                     width: "100%",
                     height: "100%",
-                    minHeight: "320px",
                     background: "#2a2a2e",
                     borderRadius: "8px",
                     padding: "8px",
@@ -799,7 +798,33 @@ function debounce(fn, delay) {
                 domWidget.serialize = false;          // persistance workflow (widgets_values)
                 domWidget.options = domWidget.options || {};
                 domWidget.options.serialize = false;  // prompt API
-                domWidget.options.height = 340;
+
+                // ---- Calcul dynamique de la hauteur du DOM widget (pattern Enhancer) ----
+                // Le DOM widget remplit l'espace restant après les widgets natifs.
+                // computeSize reste CONSTANT (PAS de feedback loop avec node.size[1]).
+                const DOM_WIDGET_HEIGHT = 320;
+                const CHROME = 70; // titre node + padding
+                // Somme des hauteurs des widgets natifs visibles (utilise computeSize de chaque widget)
+                function fixedWidgetsHeight() {
+                    let h = 0;
+                    for (const w of node.widgets) {
+                        if (w === domWidget) continue;
+                        if (w.hidden) continue;
+                        let wh = 26;
+                        if (w.computeSize) {
+                            try {
+                                const s = w.computeSize();
+                                if (Array.isArray(s) && s[1] !== undefined) wh = s[1];
+                            } catch {}
+                        }
+                        // Widgets compressés (computeSize [0,-4], sans hidden=true) : 0 px
+                        if (wh <= 0) continue;
+                        h += wh;
+                    }
+                    return h;
+                }
+                // computeSize reste CONSTANT (PAS de feedback loop avec node.size[1])
+                domWidget.computeSize = () => [node.size[0] - 20, DOM_WIDGET_HEIGHT];
 
                 // ---- Taille minimum ----
                 const MIN_WIDTH = 340;
@@ -807,10 +832,20 @@ function debounce(fn, delay) {
                 node.onResize = function (size) {
                     if (origOnResize) origOnResize.call(this, size);
                     if (size[0] < MIN_WIDTH) size[0] = MIN_WIDTH;
+                    // Hauteur VISUELLE dynamique : le DOM widget remplit l'espace restant
+                    // apres les widgets natifs, sans modifier computeSize (pas de feedback loop).
+                    var remainingHeight = node.size[1] - fixedWidgetsHeight() - CHROME;
+                    container.style.height = Math.max(remainingHeight, DOM_WIDGET_HEIGHT) + "px";
+                    container.style.width = (size[0] - 20) + "px";
                 };
                 requestAnimationFrame(() => {
-                    if (node.size && node.size[0] < MIN_WIDTH) {
-                        node.setSize([MIN_WIDTH, node.size[1]]);
+                    if (node.size) {
+                        if (node.size[0] < MIN_WIDTH) {
+                            node.setSize([MIN_WIDTH, node.size[1]]);
+                        }
+                        // Set initial container height based on available space
+                        var remH = node.size[1] - fixedWidgetsHeight() - CHROME;
+                        container.style.height = Math.max(remH, DOM_WIDGET_HEIGHT) + "px";
                     }
                 });
 
