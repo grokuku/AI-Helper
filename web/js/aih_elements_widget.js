@@ -153,9 +153,15 @@ function _parseConceptSyntax(text, defaultCount) {
                 if (!node._aihElements) node._aihElements = [];
                 node._aihDirty = false;
                 node._aihLoadedPresetName = null;
+                // Flag de restauration : false tant que la vraie valeur du workflow
+                // n'a pas été lue depuis _elements_json. Évite que syncElementsWidget
+                // écrase la valeur sérialisée par {"elements":[]} au chargement.
+                // Ne PAS confondre avec node._aihRestore (la fonction hook, ligne ~1518).
+                let _aihRestored = false;
 
                 // ---- Sync les widgets sérialisés ----
                 function syncElementsWidget() {
+                    if (!_aihRestored) return;  // ne pas écraser avant la restauration
                     const w = node.widgets?.find(x => x.name === "_elements_json");
                     if (!w) return;
                     w.value = JSON.stringify({
@@ -1507,6 +1513,14 @@ function _parseConceptSyntax(text, defaultCount) {
                             });
                             if (brainChanged) renderList();
                         }
+                        // Si aucun élément n'a été restauré (liste vide), on retourne false
+                        // pour que delayedRestore continue de retenter (la vraie valeur du
+                        // workflow peut arriver APRÈS, appliquée par la frontend).
+                        if (!data.elements || !Array.isArray(data.elements) || data.elements.length === 0) {
+                            return false;
+                        }
+                        // Restauration réussie : autoriser syncElementsWidget à écrire désormais.
+                        _aihRestored = true;
                         return true; // Succès
                     } catch (err) {
                         console.warn("[AIH] Impossible de restaurer les éléments :", err);
@@ -1574,8 +1588,12 @@ function _parseConceptSyntax(text, defaultCount) {
                     }
                 };
 
-                // Sync initial
-                syncElementsWidget();
+                // Sync initial — on NE synchronise PAS _elements_json ici : au
+                // chargement la valeur sérialisée du workflow n'est pas encore
+                // appliquée (la frontend la pose APRÈS onNodeCreated). Écrire ici
+                // écraserait la vraie valeur par {"elements":[]}. Le flag
+                // _aihRestored garde syncElementsWidget inerte jusqu'à la
+                // restauration réussie (voir restoreFromWidgets).
                 syncApiConfigWidget();
 
                 return r;
