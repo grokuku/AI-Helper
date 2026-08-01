@@ -58,9 +58,8 @@ function hideWidget(node, name) {
         // NE PAS mettre hidden=true — la nouvelle frontend Vue exclut
         // les widgets hidden de widgets_values au chargement (données perdues)
         w.computeSize = () => [0, -4]; // hauteur négative = ligne compressée
-        if (w.element) w.element.style.display = "none";
-        if (w.inputEl) w.inputEl.style.display = "none";
-        if (w.parentEl) w.parentEl.style.display = "none";
+        // ⚠️ TEMPORAIRE : display:none retiré pour test (la frontend Vue
+        // semble exclure les widgets display:none du mapping positionnel)
         return w;
     }
     return null;
