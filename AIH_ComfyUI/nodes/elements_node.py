@@ -212,13 +212,42 @@ def _call_llm_process(api_url, api_key, preset_id, instruction, input_text=""):
 
 
 def _parse_llm_list(output_text):
-    """Parse une sortie LLM en liste d'éléments (séparés par virgules ou newlines)."""
+    """Parse une sortie LLM en liste d'éléments avec robustesse contre les murs de texte."""
     if not output_text:
         return []
-    # Remplacer les newlines par virgules puis splitter
-    cleaned = output_text.replace("\n", ",").replace("\r", ",")
-    items = [x.strip() for x in cleaned.split(",") if x.strip()]
+
+    # 1. Remplacer tout séparateur (virgule, point-virgule, pipe) par des retours à la ligne
+    cleaned = output_text.replace(',', '\n').replace(';', '\n').replace('|', '\n')
+
+    # 2. Supprimer les listes numérotées ("1.", "2)") et les puces ("-", "*")
+    cleaned = re.sub(r'\d+[\.)]\s*', '\n', cleaned)
+    cleaned = re.sub(r'[-*•]\s+', '\n', cleaned)
+
+    items = []
+    for line in cleaned.split('\n'):
+        item = line.strip()
+        # Supprimer le Markdown résiduel
+        item = re.sub(r'[\*\_\#\`\~"]', '', item).strip()
+
+        if not item or item.isdigit():
+            continue
+
+        # 3. SECURITÉ : Si le modèle a recraché 50 mots à la suite séparés par de simples espaces,
+        # la ligne sera très longue. On la découpe mot par mot de force.
+        if item.count(' ') > 5 and len(item) > 40:
+            words = [w.strip() for w in item.split(' ') if w.strip()]
+            items.extend(words)
+        else:
+            items.append(item)
+
     return items
+
+
+# Consignes explicites optimisées pour que les petits modèles fassent des listes verticales
+STRICT_ENGLISH_FORMAT = (
+    " Respond ONLY in English. Return EXACTLY one distinct short option per line. "
+    "Do NOT include numbers, bullet points, or commas. Just the text, one per line."
+)
 
 
 class AIHElementsNode:
@@ -311,18 +340,12 @@ class AIHElementsNode:
 
                 # Construire instruction et input_text selon 🧠 ON/OFF
                 if brain_on:
-                    instruction = (
-                        f"Génère {count} {concept} cohérents avec le contexte. "
-                        f"Retourne uniquement une liste séparée par des virgules."
-                    )
+                    instruction = f"Generate {count} distinct options for '{concept}' matching the context." + STRICT_ENGLISH_FORMAT
                     input_text = (
                         f"Contexte: [{', '.join(context)}]" if context else ""
                     )
                 else:
-                    instruction = (
-                        f"Génère {count} {concept}. "
-                        f"Retourne uniquement une liste séparée par des virgules."
-                    )
+                    instruction = f"Generate {count} distinct options for '{concept}'." + STRICT_ENGLISH_FORMAT
                     input_text = ""
 
                 if llm_config:
@@ -359,15 +382,8 @@ class AIHElementsNode:
                 for _, choices in blocks:
                     all_choices.extend(choices)
 
-                instruction = (
-                    "Filtre cette liste pour garder uniquement les éléments "
-                    "cohérents avec le contexte. Retourne uniquement une liste "
-                    "séparée par des virgules."
-                )
-                input_text = (
-                    f"Contexte: [{', '.join(context)}]\n"
-                    f"Liste: [{', '.join(all_choices)}]"
-                )
+                instruction = "Filter this list to keep only elements consistent with the context." + STRICT_ENGLISH_FORMAT
+                input_text = f"Context: [{', '.join(context)}]\nList: [{', '.join(all_choices)}]"
 
                 if llm_config:
                     # Config LLM externe (LM Studio ou OpenAI)
@@ -440,31 +456,30 @@ class AIHElementsNode:
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
 
+        # Construire un prompt de secours depuis les éléments locaux (au cas où l'API échoue)
+        final_list = [el.get("text", "").strip() for el in elements if el.get("text", "").strip()]
+        final_prompt = ", ".join(final_list)
+        final_prompt = re.sub(r'\s*,\s*', ', ', final_prompt)
+        final_prompt = re.sub(r',+', ',', final_prompt).strip(' ,')
+
         try:
             import requests
             r = requests.post(f"{api_url}/generate", json=payload, headers=headers, timeout=30)
             r.raise_for_status()
             data = r.json()
-            prompt = data.get("prompt", "")
+            prompt = data.get("prompt", final_prompt)  # fallback à final_prompt si "prompt" absent
+
+            if prompt:
+                prompt = re.sub(r'\s*,\s*', ', ', prompt)
+                prompt = re.sub(r',+', ',', prompt).strip(' ,')
+
             return {
                 "ui": {"elements": [prompt]},
                 "result": (llm_config, prompt)
             }
-        except ImportError:
-            msg = "Erreur : module 'requests' manquant. pip install requests"
+        except Exception:
+            # Fallback silencieux : utiliser le prompt construit localement
             return {
-                "ui": {"elements": [msg]},
-                "result": (llm_config, msg)
-            }
-        except Exception as e:
-            msg = str(e)
-            if "401" in msg:
-                msg = "Erreur : clé API invalide ou manquante. Configurez-la dans le menu AIH."
-            elif "429" in msg:
-                msg = "Erreur : rate limit atteint. Attendez un instant."
-            else:
-                msg = f"Erreur API : {msg}"
-            return {
-                "ui": {"elements": [msg]},
-                "result": (llm_config, msg)
+                "ui": {"elements": [final_prompt]},
+                "result": (llm_config, final_prompt)
             }

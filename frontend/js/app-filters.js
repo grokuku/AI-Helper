@@ -931,7 +931,8 @@
         style_id: params.style_id,
         style_text: params.style_text,
         ep_elements: params.ep_elements || [],
-        random_count: params.random_count || 0
+        random_count: params.random_count || 0,
+        output_format: params.output_format || 'rich'
       };
       var prepareRes = await fetch(API + '/enhance/prepare', {
         method: 'POST',
@@ -1010,6 +1011,7 @@
     async function doEnhance() {
       var text = document.getElementById('enhance-input').value.trim();
       var presetId = document.getElementById('enhance-preset').value;
+      var outputFormat = document.getElementById('enhance-format').value || 'rich';
       var promptType = document.getElementById('enhance-type').value;
       var templateId = promptType ? parseInt(promptType) : null;
       var styleId = document.getElementById('enhance-style').value;
@@ -1092,6 +1094,7 @@
             style_text: styleText,
             ep_elements: epItems,
             random_count: useRandom ? randomCount : 0,
+            output_format: outputFormat,
             base_url: csUrl,
             onProgress: function(msg) { statusEl.textContent = msg; }
           });
@@ -1104,7 +1107,8 @@
             style_id: styleId ? parseInt(styleId) : null,
             style_text: styleText,
             ep_elements: epItems,
-            random_count: useRandom ? randomCount : 0
+            random_count: useRandom ? randomCount : 0,
+            output_format: outputFormat
           };
           var res = await fetch(API + '/enhance', {
             method: 'POST',

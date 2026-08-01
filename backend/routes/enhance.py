@@ -1,10 +1,52 @@
 """Routes enhance for AI-Helper backend."""
 
 import logging
+import re
 from context import *
 
 
 # ── Enhance ─────────────────────────────────────────────────────────
+
+def _clean_output(text, output_format="rich"):
+    """Nettoie la sortie LLM selon le format choisi.
+    
+    rich: garde markdown, JSON, retours à la ligne. Nettoie seulement:
+      - code fences en début/fin
+      - marqueurs [PRIORITE ...]
+      - doubles virgules
+    
+    basic: aplatit tout en une seule ligne comma-separated:
+      - remplace \n par ', '
+      - supprime markdown (*, _, #, `, ~)
+      - nettoie doubles virgules
+    """
+    if not text:
+        return ""
+    
+    # --- Nettoyage commun aux deux modes ---
+    # Code fences en début/fin
+    if text.startswith('```'):
+        lines = text.split('\n')
+        if lines and lines[0].startswith('```'):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == '```':
+            lines = lines[:-1]
+        text = '\n'.join(lines).strip()
+    
+    # Marqueurs [PRIORITE ...]
+    text = re.sub(r'\[PRIORITE\s+(HAUTE|MOYENNE|BASSE)\]', '', text, flags=re.IGNORECASE)
+    
+    if output_format == "basic":
+        # Aplatir en une seule ligne
+        text = text.replace('\n', ', ')
+        # Supprimer le markdown
+        text = re.sub(r'[\*\_\#\`\~]', '', text)
+    
+    # Nettoyage des virgules (commun aux deux modes)
+    text = re.sub(r'\s*,\s*', ', ', text)
+    text = re.sub(r',+', ',', text).strip(' ,')
+    
+    return text
 
 def convert_bboxes_to_normalized(json_text, width, height):
     """
@@ -272,7 +314,8 @@ def enhance_prepare():
             if 'connect' in msg.lower() or 'refused' in msg.lower():
                 return jsonify({'error': f'Serveur LLM inaccessible : verifie l\'URL ({prepared["llm_config"]["base_url"]})'}), 502
             return jsonify({'error': f'Erreur LLM: {msg}'}), 502
-        result = _finish_enhance_pass1(user_id, prepared, llm_response)
+        result = _finish_enhance_pass1(user_id, prepared, llm_response,
+                                       prepared.get('clean_output_format', 'rich'))
         # Passes de validation en interne (mode cloud)
         if prepared['validation_passes'] > 0:
             result['output'] = _run_validation_passes_internal(
@@ -414,7 +457,8 @@ def enhance_finish():
     # ── Mode cloud : on fait tout en interne, comme /api/enhance ─────────
     if not prepared.get('is_client_side'):
         try:
-            pass1_result = _finish_enhance_pass1(user_id, prepared, llm_response)
+            pass1_result = _finish_enhance_pass1(user_id, prepared, llm_response,
+                                                prepared.get('clean_output_format', 'rich'))
         except Exception as e:
             return jsonify({'error': f'Erreur post-traitement : {e}'}), 500
         # Passes de validation en interne
@@ -434,7 +478,8 @@ def enhance_finish():
     if pass_idx == 1:
         # Premier appel : on vient de finir la passe 1
         try:
-            pass1_result = _finish_enhance_pass1(user_id, prepared, llm_response)
+            pass1_result = _finish_enhance_pass1(user_id, prepared, llm_response,
+                                                prepared.get('clean_output_format', 'rich'))
         except Exception as e:
             return jsonify({'error': f'Erreur post-traitement passe 1 : {e}'}), 500
         # Sauvegarder le state pour les passes suivantes
@@ -552,7 +597,8 @@ def _do_enhance(user_id, data):
             return {'_status': 502, 'error': f'Serveur LLM inaccessible : verifie l\'URL ({prepared["llm_config"]["base_url"]})'}
         return {'_status': 502, 'error': f'Erreur LLM: {msg}'}
     # Post-traitement passe 1 (toujours commun cloud/local)
-    pass1_result = _finish_enhance_pass1(user_id, prepared, llm_response)
+    pass1_result = _finish_enhance_pass1(user_id, prepared, llm_response,
+                                        prepared.get('clean_output_format', 'rich'))
     # Passes de validation en mode cloud : le backend les fait toutes en interne
     if prepared['validation_passes'] > 0:
         pass1_result['output'] = _run_validation_passes_internal(
@@ -712,6 +758,7 @@ def _validate_enhance_inputs(data):
         'random_count': int(data.get('random_count', 0)),
         'width': int(data.get('width') or 0),
         'height': int(data.get('height') or 0),
+        'output_format': data.get('output_format', 'rich'),
     }
     return template_id, scalars
 
@@ -1116,7 +1163,7 @@ def _build_prepared_result(preset, user_id, template_id, template_name, output_f
                             merged_text, model, llm_request, llm_config,
                             validation_passes, validation_template_id,
                             validation_system_prompt, validation_examples,
-                            debug_sections):
+                            debug_sections, clean_output_format='rich'):
     """Assemble le dict final contenant le payload LLM et les metadata.
 
     Ce dict est consomme par _finish_enhance et les routes /api/enhance/*. En
@@ -1176,6 +1223,7 @@ def _build_prepared_result(preset, user_id, template_id, template_name, output_f
         'validation_system_prompt': validation_system_prompt,
         'validation_examples': validation_examples,
         'debug_sections': debug_sections,
+        'clean_output_format': clean_output_format,
     }
 
 
@@ -1209,6 +1257,7 @@ def _prepare_enhance(user_id, data):
     width = scalars['width']
     height = scalars['height']
     preset_id = scalars['preset_id']
+    output_format_clean = scalars['output_format']
 
     # Debug : collecter les etapes pour le markdown de debug
     debug_sections = []
@@ -1325,6 +1374,7 @@ def _prepare_enhance(user_id, data):
             validation_system_prompt=validation_system_prompt,
             validation_examples=validation_examples,
             debug_sections=debug_sections,
+            clean_output_format=output_format_clean,
         )
     finally:
         conn.close()
@@ -1412,10 +1462,10 @@ def _call_llm_internal(llm_request, llm_config):
     return result
 
 
-def _finish_enhance_pass1(user_id, prepared, llm_response):
+def _finish_enhance_pass1(user_id, prepared, llm_response, output_format="rich"):
     """
     Post-traitement apres l'appel LLM passe 1.
-    - Nettoyage output (code fences, [PRIORITE ...])
+    - Nettoyage output (code fences, [PRIORITE ...]) via _clean_output
     - Sauvegarde BDD (generated_prompts)
     - Conversion bbox pixels -> 0-1000 (Ideogram 4)
     - Construction du debug_md initial (passe 1 uniquement)
@@ -1440,21 +1490,8 @@ def _finish_enhance_pass1(user_id, prepared, llm_response):
     if debug_sections:
         debug_sections[-1]['raw_output'] = output[:3000]
 
-    # Post-nettoyage de la sortie : retirer les balises de code et [PRIORITE ...]
-    import re
-    def clean_output(text):
-        text = re.sub(r'\[PRIORITE\s+(HAUTE|MOYENNE|BASSE)\]', '', text, flags=re.IGNORECASE)
-        return text.strip()
-    # Nettoyer les balises de code eventuelles
-    if output.startswith('```'):
-        lines = output.split('\n')
-        if lines[0].startswith('```'):
-            lines = lines[1:]
-        if lines and lines[-1].strip() == '```':
-            lines = lines[:-1]
-        output = '\n'.join(lines).strip()
-    # Nettoyer les marqueurs [PRIORITE ...]
-    output = clean_output(output)
+    # Post-nettoyage unifié de la sortie via _clean_output
+    output = _clean_output(output, output_format)
 
     # Metadata
     template_id = prepared['template_id']

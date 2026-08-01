@@ -37,7 +37,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import org.json.JSONArray
 import java.util.concurrent.TimeUnit
 
 // ─── Data Models ────────────────────────────────────────────────────────────
@@ -83,8 +82,8 @@ class PreviewViewModel : ViewModel() {
     var okhttpClient: OkHttpClient? = null
         private set
 
-    var imageLoader: ImageLoader? = null
-        private set
+    private val _imageLoader = MutableStateFlow<ImageLoader?>(null)
+    val imageLoader: StateFlow<ImageLoader?> = _imageLoader.asStateFlow()
 
     fun loadSettings(context: android.content.Context) {
         val prefs = context.getSharedPreferences(prefsName, android.content.Context.MODE_PRIVATE)
@@ -92,7 +91,7 @@ class PreviewViewModel : ViewModel() {
         val key = prefs.getString("api_key", "") ?: ""
         _settings.value = SettingsData(url, key)
         if (url.isNotEmpty() && key.isNotEmpty()) {
-            initClients(url, key)
+            initClients(url, key, context)
             testConnection()
         } else {
             _screenState.value = ScreenState.SETTINGS
@@ -107,11 +106,11 @@ class PreviewViewModel : ViewModel() {
             apply()
         }
         _settings.value = SettingsData(url.trimEnd('/'), key)
-        initClients(url.trimEnd('/'), key)
+        initClients(url.trimEnd('/'), key, context)
         testConnection()
     }
 
-    private fun initClients(baseUrl: String, apiKey: String) {
+    private fun initClients(baseUrl: String, apiKey: String, context: android.content.Context? = null) {
         val client = OkHttpClient.Builder()
             .addInterceptor { chain ->
                 val original = chain.request()
@@ -124,14 +123,17 @@ class PreviewViewModel : ViewModel() {
             .readTimeout(30, TimeUnit.SECONDS)
             .build()
         okhttpClient = client
-        // imageLoader will be created in setImageLoaderContext once we have a Context
+
+        // Create imageLoader if context available
+        if (context != null) {
+            _imageLoader.value = ImageLoader.Builder(context)
+                .okHttpClient(client)
+                .build()
+        }
     }
 
     fun setImageLoaderContext(context: android.content.Context) {
-        val client = okhttpClient ?: return
-        imageLoader = ImageLoader.Builder(context)
-            .okHttpClient(client)
-            .build()
+        // No longer needed: imageLoader is created in initClients(context)
     }
 
     fun testConnection() {
@@ -144,15 +146,11 @@ class PreviewViewModel : ViewModel() {
         _errorMsg.value = null
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val client = OkHttpClient.Builder()
-                    .addInterceptor { chain ->
-                        val original = chain.request()
-                        val request = original.newBuilder()
-                            .header("Authorization", "Bearer ${_settings.value.apiKey}")
-                            .build()
-                        chain.proceed(request)
-                    }
-                    .build()
+                if (okhttpClient == null) {
+                    // No context available here; imageLoader will be set on next initClients(context) call
+                    initClients(_settings.value.baseUrl, _settings.value.apiKey)
+                }
+                val client = okhttpClient ?: throw IllegalStateException("HTTP client not initialized")
                 val request = Request.Builder()
                     .url("$url/api/preview/recent")
                     .get()
@@ -194,7 +192,7 @@ class PreviewViewModel : ViewModel() {
                     }
                 }
             } catch (e: Exception) {
-                // silent fail during polling
+                android.util.Log.w("AIH", "Polling error", e)
             }
         }
     }
@@ -211,11 +209,18 @@ class PreviewViewModel : ViewModel() {
         if (body.isNullOrBlank()) return emptyList()
         val result = mutableListOf<PreviewImage>()
         try {
-            val arr = JSONArray(body)
+            val root = org.json.JSONObject(body)
+            val arr = root.getJSONArray("images")
             for (i in 0 until arr.length()) {
                 val obj = arr.getJSONObject(i)
                 val id = obj.optString("id", obj.optString("_id", ""))
-                val ts = obj.optLong("timestamp", obj.optLong("createdAt", 0L))
+                val createdAtStr = obj.optString("created_at", "")
+                val ts = if (createdAtStr.isNotEmpty()) {
+                    try {
+                        java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US)
+                            .parse(createdAtStr)?.time ?: 0L
+                    } catch (_: Exception) { 0L }
+                } else 0L
                 if (id.isNotEmpty()) {
                     result.add(PreviewImage(id, ts))
                 }
@@ -226,7 +231,7 @@ class PreviewViewModel : ViewModel() {
                 val obj = org.json.JSONObject(body)
                 val id = obj.optString("id", obj.optString("_id", ""))
                 if (id.isNotEmpty()) {
-                    result.add(PreviewImage(id, obj.optLong("timestamp", 0L)))
+                    result.add(PreviewImage(id, 0L))
                 }
             } catch (_: Exception) {
             }
@@ -268,7 +273,6 @@ fun AppContent() {
     // Initialize on first composition
     LaunchedEffect(Unit) {
         viewModel.loadSettings(context)
-        viewModel.setImageLoaderContext(context)
     }
 
     when (screenState) {
@@ -277,7 +281,6 @@ fun AppContent() {
             initialKey = settings.apiKey,
             onConnect = { url, key ->
                 viewModel.saveSettingsAndConnect(context, url, key)
-                viewModel.setImageLoaderContext(context)
             }
         )
 
@@ -383,7 +386,7 @@ fun GalleryScreen(
     images: List<PreviewImage>,
     baseUrl: String
 ) {
-    val imageLoader = viewModel.imageLoader
+    val imageLoader by viewModel.imageLoader.collectAsState()
     val context = LocalContext.current
 
     // Polling: fetch every 5 seconds
@@ -506,6 +509,11 @@ fun AuthAsyncImage(
         ImageRequest.Builder(context)
             .data(url)
             .crossfade(true)
+            .listener(
+                onError = { _, result ->
+                    android.util.Log.w("AIH", "Image load failed: $url", result.throwable)
+                }
+            )
             .build()
     }
 

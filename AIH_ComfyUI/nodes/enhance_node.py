@@ -1,21 +1,60 @@
 """
-AIH Prompt Enhancer Node — Optimise un prompt via LLM.
+AIH Prompt Enhancer Node — Optimise un prompt via LLM ou concatène directement.
 DOM widget + connexion aux éléments du Elements Picker.
 
-L'api_key et l'URL du serveur sont lues depuis le fichier de credentials
-ComfyUI (ComfyUI/user/default/aih_credentials.json) via le helper _credentials.
-
-Le mode local (llm_config) et le mode cloud (backend) construisent désormais
-le même prompt unifié :
-  System : role fixe + template_system_prompt + examples + special_instructions
-  User   : base_prompt + elements + style_text
+Option use_llm :
+  - True  : Génération intelligente via LLM (System prompt + User prompt)
+  - False : Concaténation directe (base_prompt + elements + style) sans LLM
 """
 
 import json
 import logging
+import re
 
 from . import _credentials
 from . import _llm_helper
+
+
+def _clean_output(text, output_format="rich"):
+    """Nettoie la sortie LLM selon le format choisi.
+    
+    rich: garde markdown, JSON, retours à la ligne. Nettoie seulement:
+      - code fences en début/fin
+      - marqueurs [PRIORITE ...]
+      - doubles virgules
+    
+    basic: aplatit tout en une seule ligne comma-separated:
+      - remplace \n par ', '
+      - supprime markdown (*, _, #, `, ~)
+      - nettoie doubles virgules
+    """
+    if not text:
+        return ""
+    
+    # --- Nettoyage commun aux deux modes ---
+    # Code fences en début/fin
+    if text.startswith('```'):
+        lines = text.split('\n')
+        if lines and lines[0].startswith('```'):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == '```':
+            lines = lines[:-1]
+        text = '\n'.join(lines).strip()
+    
+    # Marqueurs [PRIORITE ...]
+    text = re.sub(r'\[PRIORITE\s+(HAUTE|MOYENNE|BASSE)\]', '', text, flags=re.IGNORECASE)
+    
+    if output_format == "basic":
+        # Aplatir en une seule ligne
+        text = text.replace('\n', ', ')
+        # Supprimer le markdown
+        text = re.sub(r'[\*\_\#\`\~]', '', text)
+    
+    # Nettoyage des virgules (commun aux deux modes)
+    text = re.sub(r'\s*,\s*', ', ', text)
+    text = re.sub(r',+', ',', text).strip(' ,')
+    
+    return text
 
 
 # Role fixe approuvé — identique dans le node ComfyUI et le backend
@@ -121,10 +160,12 @@ class AIHEnhanceNode:
     def INPUT_TYPES(cls):
         return {
             "required": {
+                "use_llm": ("BOOLEAN", {"default": True}),
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
                 "base_prompt": ("STRING", {"multiline": True, "default": ""}),
                 "template_id": ("INT", {"default": 0, "min": 0}),
                 "preset_id": ("INT", {"default": 0, "min": 0}),
+                "output_format": (["rich", "basic"], {"default": "rich"}),
                 "style_id": ("INT", {"default": 0, "min": -1}),
                 "style_shortlist": ("STRING", {"default": "[]"}),  # frontend-only (filtre dropdown), pas envoyé à l'API
                 "special_instructions": ("STRING", {"default": ""}),
@@ -139,8 +180,8 @@ class AIHEnhanceNode:
     RETURN_TYPES = ("STRING", "STRING", "STRING")
     RETURN_NAMES = ("prompt", "negative_prompt", "llm_config")
 
-    def enhance(self, seed=0, base_prompt="", template_id=0,
-                preset_id=0, style_id=0, style_shortlist="[]",
+    def enhance(self, use_llm=True, seed=0, base_prompt="", template_id=0,
+                preset_id=0, output_format="rich", style_id=0, style_shortlist="[]",
                 special_instructions="", elements="[]", llm_config=None):
         # api_key et api_url lus depuis le fichier de credentials
         api_url = _credentials.get_api_url()
@@ -191,6 +232,13 @@ class AIHEnhanceNode:
         except (json.JSONDecodeError, TypeError):
             elems_raw = elements or ""
 
+        # _fmt_elems : formatte une liste d'éléments structurés (JSON) en texte.
+        # Conservée pour une utilisation future : si une node connectée à l'input
+        # 'elements' sort du JSON structuré (ex: [{"type": "filter", "name": "..."}]),
+        # cette fonction le convertirait en texte lisible.
+        # Actuellement, l'Elements Picker sort du texte simple (pas du JSON), donc
+        # elems est toujours vide et cette fonction retourne "". Le vrai contenu
+        # passe par elems_raw.
         def _fmt_elems(elist):
             lines = []
             for e in elist:
@@ -208,6 +256,28 @@ class AIHEnhanceNode:
         parts = [p for p in [base_prompt, elems_text, elems_raw] if p]
         combined_text = "\n\n".join(parts)
 
+        # Fetch style depuis le backend (style_id déjà résolu si -1 random)
+        # Déplacé AVANT la séparation LLM/concaténation pour que style_text
+        # et negative_prompt soient disponibles dans les deux modes.
+        style_text = ""
+        negative_prompt = ""
+        if style_id and style_id > 0:
+            style_obj = _fetch_style(api_url, api_key, style_id)
+            if style_obj:
+                style_text = style_obj.get("style_text", "")
+                negative_prompt = style_obj.get("negative_prompt", "")
+
+        # --- Mode concaténation (use_llm = False) ---
+        # On combine directement les éléments sans passer par le LLM
+        if not use_llm:
+            raw_parts = [p for p in [base_prompt, elems_text, elems_raw, style_text] if p and p.strip()]
+            full_prompt = ", ".join(raw_parts)
+            final_prompt = _clean_output(full_prompt, output_format)
+            return {
+                "ui": {"prompt": [final_prompt], "negative_prompt": [negative_prompt]},
+                "result": (final_prompt, negative_prompt, llm_config)
+            }
+
         # Construire le payload pour /api/enhance
         payload = {
             "text": combined_text,
@@ -216,6 +286,7 @@ class AIHEnhanceNode:
             "preset_id": preset_id if preset_id > 0 else None,
             "style_id": style_id if style_id > 0 else None,
             "special_instructions": special_instructions,
+            "output_format": output_format,
         }
 
         headers = {"Content-Type": "application/json"}
@@ -224,21 +295,12 @@ class AIHEnhanceNode:
 
         # --- Mode LLM local (llm_config) ---
         # Le node construit lui-même le system prompt et le user prompt (unifiés avec le backend),
-        # fetch le template et le style depuis le backend, puis appelle le LLM local.
+        # fetch le template depuis le backend, puis appelle le LLM local.
         if llm_config:
             # Fetch template depuis le backend
             template = None
             if template_id and template_id > 0:
                 template = _fetch_template(api_url, api_key, template_id)
-
-            # Fetch style depuis le backend (style_id déjà résolu si -1 random)
-            style_text = ""
-            negative_prompt = ""
-            if style_id and style_id > 0:
-                style_obj = _fetch_style(api_url, api_key, style_id)
-                if style_obj:
-                    style_text = style_obj.get("style_text", "")
-                    negative_prompt = style_obj.get("negative_prompt", "")
 
             # Construire les prompts unifiés
             system_prompt = _build_system_prompt_unified(template, special_instructions)
@@ -246,6 +308,7 @@ class AIHEnhanceNode:
 
             enhanced = _llm_helper.call_llm(llm_config, system_prompt, user_prompt, seed=seed)
             if enhanced:
+                enhanced = _clean_output(enhanced, output_format)
                 return {
                     "ui": {"prompt": [enhanced], "negative_prompt": [negative_prompt]},
                     "result": (enhanced, negative_prompt, llm_config)
