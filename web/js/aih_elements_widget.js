@@ -140,28 +140,20 @@ function _parseConceptSyntax(text, defaultCount) {
             const origOnConfigure = nodeType.prototype.onConfigure;
             nodeType.prototype.onConfigure = function(data) {
                 const result = origOnConfigure ? origOnConfigure.call(this, data) : undefined;
-                var _dbg = window.AIH && window.AIH.__log ? window.AIH.__log : function () {};
-                _dbg('Elements.onConfigure', 'node id=' + this.id + ' — appelé, data keys: ' + (data ? Object.keys(data).join(', ') : 'N/A'));
                 if (data && data.widgets_values) {
-                    _dbg('Elements.onConfigure', 'node id=' + this.id + ' — widgets_values count=' + data.widgets_values.length, data.widgets_values);
                     for (var i = 0; i < data.widgets_values.length; i++) {
                         var val = data.widgets_values[i];
-                        _dbg('Elements.onConfigure', 'node id=' + this.id + ' — [' + i + '] type=' + typeof val + ' | val=' + (typeof val === 'string' ? val.substring(0, 80) : String(val)));
                         if (typeof val === 'string' && val.indexOf('"elements"') >= 0) {
-                            _dbg('Elements.onConfigure', 'node id=' + this.id + ' — TROUVÉ valeur elements à l\'index ' + i, val.substring(0, 500));
                             this._pendingElementsJson = val;
                             var ej = this.widgets?.find(w => w.name === "_elements_json");
                             if (ej) {
                                 ej.value = val;
-                                _dbg('Elements.onConfigure', 'node id=' + this.id + ' — _pendingElementsJson stocké + _elements_json.value écrit');
                             } else {
-                                _dbg('Elements.onConfigure', 'node id=' + this.id + ' — _pendingElementsJson stocké mais widget _elements_json INTROUVABLE (retry via restoreFromWidgets)');
                             }
                             break;
                         }
                     }
                 } else {
-                    _dbg('Elements.onConfigure', 'node id=' + this.id + ' — PAS de widgets_values dans data');
                 }
                 return result;
             };
@@ -172,8 +164,6 @@ function _parseConceptSyntax(text, defaultCount) {
                 const node = this;
 
                 // ---- Debug : état initial des widgets au moment de la création ----
-                var _dbg = window.AIH && window.AIH.__log ? window.AIH.__log : function () {};
-                _dbg('Elements.onNodeCreated', 'node id=' + node.id + ' — widgets présents (' + (node.widgets ? node.widgets.length : 0) + ')', node.widgets ? node.widgets.map(function (w) { return w.name + '=' + (typeof w.value === 'string' ? JSON.stringify(w.value).substring(0, 80) : String(w.value)); }).join(' | ') : 'aucun');
 
                 // ---- Masquer le widget sérialisé _elements_json ----
                 // (plus de _api_config : api_key/url sont lus cote Python depuis
@@ -209,14 +199,11 @@ function _parseConceptSyntax(text, defaultCount) {
 
                 // ---- Sync les widgets sérialisés ----
                 function syncElementsWidget(force) {
-                    _dbg('Elements.sync', 'node id=' + node.id + ' — syncElementsWidget appelé force=' + !!force + ' _aihRestored=' + _aihRestored);
                     if (!_aihRestored && !force) {
-                        _dbg('Elements.sync', 'node id=' + node.id + ' — IGNORÉ (pas encore restauré, pas de force)');
                         return;  // ne pas écraser avant la restauration
                     }
                     const w = node.widgets?.find(x => x.name === "_elements_json");
                     if (!w) {
-                        _dbg('Elements.sync', 'node id=' + node.id + ' — widget _elements_json INTROUVABLE, rien écrit');
                         return;
                     }
                     w.value = JSON.stringify({
@@ -238,7 +225,6 @@ function _parseConceptSyntax(text, defaultCount) {
                         llm_default_count: parseInt(llmCountInput.value) || 10,
                         brain_toggles: node._aihElements.map(e => !!e.brain),
                     });
-                    _dbg('Elements.sync', 'node id=' + node.id + ' — valeur écrite dans _elements_json (' + w.value.length + ' chars)', w.value.substring(0, 300));
                 }
 
                 function syncApiConfigWidget() {
@@ -1512,9 +1498,6 @@ function _parseConceptSyntax(text, defaultCount) {
                     if (origOnResize) origOnResize.call(this, size);
                     if (size[0] < MIN_WIDTH) size[0] = MIN_WIDTH;
                     container.style.width = (size[0] - 20) + "px";
-                    if (window.AIH && window.AIH.__log) {
-                        var dw = node.widgets?.find(function(w) { return w.name === "elements_ui"; });
-                        window.AIH.__log('Elements.onResize', 'node.size=[w=' + node.size[0] + ',h=' + node.size[1] + '] domWidget.computedHeight=' + (dw ? dw.computedHeight : 'N/A') + ' domWidget.y=' + (dw ? dw.y : 'N/A'));
                     }
                 };
 
@@ -1524,9 +1507,6 @@ function _parseConceptSyntax(text, defaultCount) {
                         node.setSize([MIN_WIDTH, node.size[1]]);
                     }
                     container.style.width = (node.size[0] - 20) + "px";
-                    if (window.AIH && window.AIH.__log) {
-                        var dw = node.widgets?.find(function(w) { return w.name === "elements_ui"; });
-                        window.AIH.__log('Elements.rAF', 'node.size=[w=' + node.size[0] + ',h=' + node.size[1] + '] domWidget.computedHeight=' + (dw ? dw.computedHeight : 'N/A') + ' domWidget.y=' + (dw ? dw.y : 'N/A'));
                     }
                 });
 
@@ -1546,19 +1526,14 @@ function _parseConceptSyntax(text, defaultCount) {
                             n._pendingElementsJson = null;  // consommé
                         }
                     }
-                    _dbg('Elements.restore', 'node id=' + n.id + ' — restoreFromWidgets appelé, widgets count=' + (n.widgets ? n.widgets.length : 0), n.widgets ? n.widgets.map(w => w.name).join(', ') : 'aucun');
                     const _ejDebug = n.widgets?.find(w => w.name === "_elements_json");
-                    _dbg('Elements.restore', 'node id=' + n.id + ' — _elements_json trouvé=' + !!_ejDebug + ' | value=' + (_ejDebug && _ejDebug.value ? (_ejDebug.value || "").substring(0, 200) : '""'));
                     const ej = n.widgets?.find(w => w.name === "_elements_json");
                     if (!ej || !ej.value || ej.value === "{}" || ej.value === "") {
-                        _dbg('Elements.restore', 'node id=' + n.id + ' — ÉCHEC : _elements_json absent ou vide (retour false, on retentera)');
                         return false;
                     }
                     try {
-                        _dbg('Elements.restore', 'node id=' + n.id + ' — parse de _elements_json.value', ej.value.substring(0, 500));
                         const data = JSON.parse(ej.value);
                         if (data.elements && Array.isArray(data.elements) && data.elements.length > 0 && n._aihElements.length === 0) {
-                            _dbg('Elements.restore', 'node id=' + n.id + ' — elements trouvés dans le workflow (' + data.elements.length + '), application à _aihElements');
                             n._aihElements = data.elements.map(e => {
                                 const visible = e.visible !== false;
                                 if (e.type === "filter") {
@@ -1620,15 +1595,12 @@ function _parseConceptSyntax(text, defaultCount) {
                         // pour que delayedRestore continue de retenter (la vraie valeur du
                         // workflow peut arriver APRÈS, appliquée par la frontend).
                         if (!data.elements || !Array.isArray(data.elements) || data.elements.length === 0) {
-                            _dbg('Elements.restore', 'node id=' + n.id + ' — PAS d\'éléments dans le JSON (retour false, on retentera)');
                             return false;
                         }
                         // Restauration réussie : autoriser syncElementsWidget à écrire désormais.
                         _aihRestored = true;
-                        _dbg('Elements.restore', 'node id=' + n.id + ' — RESTAURATION RÉUSSIE, _aihRestored=true, éléments=' + n._aihElements.length);
                         return true; // Succès
                     } catch (err) {
-                        _dbg('Elements.restore', 'node id=' + n.id + ' — ÉCHEC parse : ' + (err && err.message ? err.message : err));
                         console.warn("[AIH] Impossible de restaurer les éléments :", err);
                         return false;
                     }
@@ -1640,16 +1612,13 @@ function _parseConceptSyntax(text, defaultCount) {
                 // Fallback : tente de restaurer périodiquement (pour F5 et cas où les hooks ne marchent pas)
                 let restoreAttempts = 0;
                 function delayedRestore() {
-                    _dbg('Elements.delayedRestore', 'node id=' + node.id + ' — tentative #' + restoreAttempts);
                     if (restoreFromWidgets(node)) {
-                        _dbg('Elements.delayedRestore', 'node id=' + node.id + ' — tentative #' + restoreAttempts + ' : SUCCÈS, arrêt du retry');
                         return;
                     }
                     restoreAttempts++;
                     if (restoreAttempts < 20) {
                         setTimeout(delayedRestore, 300);
                     } else {
-                        _dbg('Elements.delayedRestore', 'node id=' + node.id + ' — 20 tentatives épuisées, abandon');
                     }
                 }
                 setTimeout(delayedRestore, 100);
@@ -1706,9 +1675,6 @@ function _parseConceptSyntax(text, defaultCount) {
                 // _aihRestored garde syncElementsWidget inerte jusqu'à la
                 // restauration réussie (voir restoreFromWidgets).
                 syncApiConfigWidget();
-
-                _dbg('Elements.onNodeCreated', 'node id=' + node.id + ' — FIN : widgets finaux (' + (node.widgets ? node.widgets.length : 0) + ')', node.widgets ? node.widgets.map(function (w) { return w.name + (w.serialize === false ? ' (serialize=false)' : ''); }).join(' | ') : 'aucun');
-                _dbg('Elements.onNodeCreated', 'node id=' + node.id + ' — DOM widget serialize flags', { serialize: domWidget.serialize, optionsSerialize: domWidget.options ? domWidget.options.serialize : 'N/A' });
 
                 return r;
             };

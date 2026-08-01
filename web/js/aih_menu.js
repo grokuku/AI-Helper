@@ -101,10 +101,6 @@ function initMenu(appInstance) {
     dd.appendChild(mkItem("Membres", "👥", () => openMembers()));
     dd.appendChild(mkItem("Paramètres", "⚙️", () => openSettings()));
     dd.appendChild(mkItem("Update", "🔄", () => openUpdate()));
-    dd.appendChild(mkItem("Debug", "🔍", () => {
-        if (window.AIH && window.AIH.__openDebug) window.AIH.__openDebug();
-        else aihShowAlert("Info", "Système de debug pas encore chargé. Réessaie.", "info");
-    }));
 
     // ── Blobby Companion toggle ──
     const blobbyDiv = document.createElement("div");
