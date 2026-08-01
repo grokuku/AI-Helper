@@ -259,12 +259,6 @@ class AIHElementsNode:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                # llm_config en REQUIRED, EN PREMIER : l'ordre required puis
-                # optional détermine l'ordre des sockets d'entrée → ce socket
-                # forceInput s'affiche TOUT EN HAUT.
-                # forceInput : permet de connecter un upstream (STRING). La valeur
-                # peut être None si l'upstream renvoie une sortie vide → durci dans generate().
-                "llm_config": ("STRING", {"default": "", "forceInput": True}),
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff,
                  "control_after_generate": "randomize"}),
                 # JSON sérialisé par le JS : elements + random_count
@@ -273,17 +267,18 @@ class AIHElementsNode:
                 # ne le sont plus → sans ça, les éléments seraient perdus à la sauvegarde.
                 # Masqué dans l'UI ComfyUI
                 "_elements_json": ("STRING", {"default": "{}", "multiline": True}),
-                # elements_input en REQUIRED, EN DERNIER : socket forceInput TOUT EN BAS
-                # (inversion de l'ordre : llm_config en haut, elements_input en bas).
+            },
+            "optional": {
+                # PREMIER dans optional → socket EN HAUT (au-dessus de llm_config).
                 # forceInput : permet de connecter un upstream (STRING). La valeur
                 # peut être None si l'upstream renvoie une sortie vide → durci dans generate().
                 "elements_input": ("STRING", {"default": "", "forceInput": True}),        # forceInput, PAS multiline
-            },
-            "optional": {},
+                "llm_config": ("STRING", {"default": "", "forceInput": True}),  # nom d'origine
+            }
         }
 
     RETURN_TYPES = ("STRING", "STRING")
-    RETURN_NAMES = ("llm_config", "elements")
+    RETURN_NAMES = ("elements", "llm_config")
 
     def generate(self, seed, _elements_json="{}", elements_input="", llm_config=None):
         from . import _credentials
@@ -293,7 +288,7 @@ class AIHElementsNode:
             msg = "Erreur : config JSON invalide"
             return {
                 "ui": {"elements": [msg]},
-                "result": (llm_config, msg)
+                "result": (msg, llm_config)
             }
 
         # api_key et api_url lus depuis le fichier de credentials
@@ -452,7 +447,7 @@ class AIHElementsNode:
         if not elements and random_count <= 0:
             return {
                 "ui": {"elements": ["⚠️ Aucun filtre sélectionné. Ajoutez des filtres dans la liste."]},
-                "result": (llm_config, "⚠️ Aucun filtre sélectionné. Ajoutez des filtres dans la liste.")
+                "result": ("⚠️ Aucun filtre sélectionné. Ajoutez des filtres dans la liste.", llm_config)
             }
 
         # Construire le payload pour /api/generate
@@ -487,11 +482,11 @@ class AIHElementsNode:
 
             return {
                 "ui": {"elements": [prompt]},
-                "result": (llm_config, prompt)
+                "result": (prompt, llm_config)
             }
         except Exception:
             # Fallback silencieux : utiliser le prompt construit localement
             return {
                 "ui": {"elements": [final_prompt]},
-                "result": (llm_config, final_prompt)
+                "result": (final_prompt, llm_config)
             }
