@@ -265,11 +265,14 @@ class AIHElementsNode:
                 # PAS de forceInput (widget STRING simple) : garde la persistance.
                 "elements_input": ("STRING", {"default": ""}),        # champ texte simple (PAS forceInput, PAS multiline)
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
-            },
-            "optional": {
                 # JSON sérialisé par le JS : elements + random_count
+                # REQUIRED (APRÈS seed) : les widgets required sont sérialisés
+                # dans widgets_values par la frontend (issue #3616), les optional
+                # ne le sont plus → sans ça, les éléments seraient perdus à la sauvegarde.
                 # Masqué dans l'UI ComfyUI
                 "_elements_json": ("STRING", {"default": "{}", "multiline": True}),
+            },
+            "optional": {
                 "llm_config": ("STRING", {"default": "", "forceInput": True}),  # seule entrée forceInput, nom d'origine
             }
         }
