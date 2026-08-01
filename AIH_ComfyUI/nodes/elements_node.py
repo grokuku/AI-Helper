@@ -262,8 +262,9 @@ class AIHElementsNode:
                 # elements_input en REQUIRED, AVANT seed : ComfyUI crée les
                 # widgets dans l'ordre required puis optional, donc ce widget
                 # s'affiche AU-DESSUS du widget seed dans l'UI.
-                # PAS de forceInput (widget STRING simple) : garde la persistance.
-                "elements_input": ("STRING", {"default": ""}),        # champ texte simple (PAS forceInput, PAS multiline)
+                # forceInput : permet de connecter un upstream (STRING). La valeur
+                # peut être None si l'upstream renvoie une sortie vide → durci dans generate().
+                "elements_input": ("STRING", {"default": "", "forceInput": True}),        # forceInput, PAS multiline
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff,
                  "control_after_generate": "randomize"}),
                 # JSON sérialisé par le JS : elements + random_count
@@ -295,6 +296,10 @@ class AIHElementsNode:
         # api_key et api_url lus depuis le fichier de credentials
         api_url = _credentials.get_api_url()
         api_key = _credentials.get_api_key()
+
+        # elements_input peut être None si un fil upstream renvoie une sortie vide/None
+        elements_input = elements_input or ""
+
         elements = elems_cfg.get("elements", [])
         random_count = int(elems_cfg.get("random_count", 0))
 
