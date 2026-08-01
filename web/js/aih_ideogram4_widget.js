@@ -134,6 +134,7 @@
                 const container = document.createElement("div");
                 Object.assign(container.style, {
                     width: "100%",
+                    height: "100%",
                     padding: "8px", boxSizing: "border-box",
                     background: "#2a2a2e", borderRadius: "8px",
                     display: "flex", flexDirection: "column", gap: "6px",
@@ -258,18 +259,17 @@
                     serialize: false,
                     getValue: () => "",
                     setValue: (v) => {},
+                    getMinHeight: () => 200,  // ← minHeight pour computeLayoutSize (widget "growable")
                 });
                 domWidget.serialize = false;          // persistance workflow (widgets_values)
                 domWidget.options = domWidget.options || {};
                 domWidget.options.serialize = false;  // prompt API
 
-                // ---- Hauteur FIXE pour le DOM widget (anti feedback loop) ----
-                // computeSize DOIT retourner une hauteur constante, sinon LiteGraph
-                // aggrandit la node à chaque frame (computeDomHeight lisait node.size[1]
-                // → feedback loop). La hauteur réelle du container est pilotée
-                // manuellement dans onResize / init.
-                const FIXED_DOM_HEIGHT = 200; // valeur fixe retournée à LiteGraph
-                domWidget.computeSize = () => [node.size[0] - 20, FIXED_DOM_HEIGHT];
+                // ---- Constantes de hauteur (conservées pour référence) ----
+                // La hauteur du DOM widget est désormais gérée nativement par la frontend
+                // via getMinHeight / computeLayoutSize. Ces constantes ne sont plus utilisées
+                // dans computeSize/onResize/rAF mais conservées pour d'éventuels usages futurs.
+                const FIXED_DOM_HEIGHT = 200; // valeur fixe (référence)
 
                 // Hauteur des widgets natifs (description + autres ~26px chacun)
                 // Somme dynamique des computeSize() de tous les widgets natifs visibles
@@ -292,28 +292,22 @@
                     return h;
                 }
                 const CHROME = 112; // titre node + padding (+42 pour corriger le décalage de 42px)
-                // La hauteur du container est pilotée dynamiquement dans onResize
-                // via le calcul de l'espace restant (node.size[1] - fixedWidgetsHeight() - CHROME).
-                // applyContainerHeight n'est plus utilisée ; le calcul est fait directement
-                // dans onResize et requestAnimationFrame.
 
                 const MIN_WIDTH = 340;
+
+                // Intercepter le resize pour imposer un minimum de largeur seulement.
+                // La hauteur du container est gérée nativement par la frontend (computeLayoutSize)
+                // via getMinHeight → le widget est "growable" et grandit avec la node.
                 const origOnResize = node.onResize;
                 node.onResize = function (size) {
                     if (origOnResize) origOnResize.call(this, size);
                     if (size[0] < MIN_WIDTH) size[0] = MIN_WIDTH;
-                    // Hauteur VISUELLE dynamique : le DOM widget remplit l'espace restant
-                    // apres les widgets natifs, sans modifier computeSize (pas de feedback loop).
-                    var remainingHeight = node.size[1] - fixedWidgetsHeight() - CHROME;
-                    container.style.height = Math.max(remainingHeight, FIXED_DOM_HEIGHT) + "px";
                     container.style.width = (size[0] - 20) + "px";
                 };
                 requestAnimationFrame(() => {
                     if (node.size && node.size[0] < MIN_WIDTH) node.setSize([MIN_WIDTH, node.size[1]]);
                     if (node.size) {
                         container.style.width = (node.size[0] - 20) + "px";
-                        var remH = node.size[1] - fixedWidgetsHeight() - CHROME;
-                        container.style.height = Math.max(remH, FIXED_DOM_HEIGHT) + "px";
                     }
                 });
 

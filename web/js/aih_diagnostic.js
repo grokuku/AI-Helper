@@ -124,14 +124,16 @@
                     serialize: false,
                     getValue: () => "",
                     setValue: (v) => {},
+                    getMinHeight: () => 200,  // ← minHeight pour computeLayoutSize (widget "growable")
                 });
                 domWidget.serialize = false;          // persistance workflow (widgets_values)
                 domWidget.options = domWidget.options || {};
                 domWidget.options.serialize = false;  // prompt API
 
-                // ---- Calcul dynamique de la hauteur du DOM widget (pattern Enhancer) ----
-                // Le DOM widget remplit l'espace restant après les widgets natifs.
-                // computeSize reste CONSTANT (PAS de feedback loop avec node.size[1]).
+                // ---- Constantes de hauteur (conservées pour référence) ----
+                // La hauteur du DOM widget est désormais gérée nativement par la frontend
+                // via getMinHeight / computeLayoutSize. Ces constantes ne sont plus utilisées
+                // dans computeSize/onResize/rAF mais conservées pour d'éventuels usages futurs.
                 const DOM_WIDGET_HEIGHT = 200;
                 const CHROME = 70; // titre node + padding
                 // Somme des hauteurs des widgets natifs visibles (utilise computeSize de chaque widget)
@@ -153,25 +155,19 @@
                     }
                     return h;
                 }
-                // computeSize reste CONSTANT (PAS de feedback loop avec node.size[1])
-                domWidget.computeSize = () => [node.size[0] - 20, DOM_WIDGET_HEIGHT];
 
-                // ---- Clamp de hauteur : le DOM widget remplit l'espace restant ----
+                // ---- Resize : largeur minimum seulement ----
+                // La hauteur du container est gérée nativement par la frontend (computeLayoutSize)
+                // via getMinHeight → le widget est "growable" et grandit avec la node.
                 const origOnResize = node.onResize;
                 node.onResize = function (size) {
                     const r = origOnResize?.apply(this, arguments);
-                    // Hauteur VISUELLE dynamique : le DOM widget remplit l'espace restant
-                    // apres les widgets natifs, sans modifier computeSize (pas de feedback loop).
-                    var remainingHeight = node.size[1] - fixedWidgetsHeight() - CHROME;
-                    container.style.height = Math.max(remainingHeight, DOM_WIDGET_HEIGHT) + "px";
                     container.style.width = (size[0] - 20) + "px";
                     return r;
                 };
-                // Set initial container height based on available space
                 requestAnimationFrame(() => {
                     if (node.size) {
-                        var remH = node.size[1] - fixedWidgetsHeight() - CHROME;
-                        container.style.height = Math.max(remH, DOM_WIDGET_HEIGHT) + "px";
+                        container.style.width = (node.size[0] - 20) + "px";
                     }
                 });
 

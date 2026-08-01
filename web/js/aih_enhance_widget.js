@@ -165,7 +165,7 @@
                 // ---- Container ----
                 const container = document.createElement("div");
                 Object.assign(container.style, {
-                    width: "100%", padding: "8px", boxSizing: "border-box",
+                    width: "100%", height: "100%", padding: "8px", boxSizing: "border-box",
                     background: "#2a2a2e", borderRadius: "8px",
                     display: "flex", flexDirection: "column", gap: "6px",
                     fontSize: "12px", color: "#ccc", overflow: "hidden",
@@ -271,6 +271,7 @@
                 const widget = node.addDOMWidget("AIH_Enhance", "div", container, {
                     serialize: false,
                     hideOnZoom: false,
+                    getMinHeight: () => 248,  // ← minHeight pour computeLayoutSize (widget "growable")
                 });
                 // Sérialisation : poser LES DEUX flags.
                 // widget.serialize contrôle la persistance workflow (LGraphNode.serialize/configure)
@@ -280,10 +281,10 @@
                 widget.serialize = false;
                 widget.options.serialize = false;
                 _dbg('Enhance.addDOMWidget', 'node id=' + node.id + ' — DOM widget créé, serialize flags', { serialize: widget.serialize, optionsSerialize: widget.options ? widget.options.serialize : 'N/A' });
-                // ---- Calcul dynamique de la hauteur du DOM widget ----
-                // Le DOM widget remplit l'espace restant après les widgets natifs.
-                // Les widgets natifs (base_prompt, seed, etc.) ont une taille fixe,
-                // et le DOM widget s'agrandit quand on resize la node verticalement.
+                // ---- Constantes de hauteur (conservées pour référence) ----
+                // La hauteur du DOM widget est désormais gérée nativement par la frontend
+                // via getMinHeight / computeLayoutSize. Ces constantes ne sont plus utilisées
+                // dans computeSize/onResize/rAF mais conservées pour d'éventuels usages futurs.
                 const DOM_WIDGET_HEIGHT = 248; // +8px: minimum node height increase
                 const CHROME = 70; // titre node + padding
                 // Somme des hauteurs des widgets natifs visibles (utilise computeSize de chaque widget)
@@ -305,8 +306,6 @@
                     }
                     return h;
                 }
-                // computeSize reste CONSTANT (PAS de feedback loop avec node.size[1])
-                widget.computeSize = () => [node.size[0] - 20, DOM_WIDGET_HEIGHT];
 
                 // ---- Sync des widgets natifs ----
                 function syncNativeWidgets(force) {
@@ -446,22 +445,19 @@
                 templateSelect.addEventListener("mousedown", () => refreshIfStale(templateSelect, "prompts/templates", "tmpl", "-- Template --"));
                 presetSelect.addEventListener("mousedown", () => refreshIfStale(presetSelect, "presets", "presets", "-- Preset IA --"));
 
-                // ---- Resize : pas de ResizeObserver (evite le feedback loop) ----
+                // ---- Resize : largeur minimum seulement ----
+                // La hauteur du container est gérée nativement par la frontend (computeLayoutSize)
+                // via getMinHeight → le widget est "growable" et grandit avec la node.
                 const onResize = node.onResize;
                 node.onResize = function (size) {
                     const r = onResize?.apply(this, arguments);
-                    // Hauteur VISUELLE dynamique : le DOM widget remplit l'espace restant
-                    // apres les widgets natifs, sans modifier computeSize (pas de feedback loop).
-                    var remainingHeight = node.size[1] - fixedWidgetsHeight() - CHROME;
-                    container.style.height = Math.max(remainingHeight, DOM_WIDGET_HEIGHT) + "px";
                     container.style.width = (size[0] - 20) + "px";
                     tsRow.style.gridTemplateColumns = "1fr 1fr";
                     return r;
                 };
-                // Set initial container height based on available space
+                // Appliquer la taille initiale
                 requestAnimationFrame(() => {
-                    var remH = node.size[1] - fixedWidgetsHeight() - CHROME;
-                    container.style.height = Math.max(remH, DOM_WIDGET_HEIGHT) + "px";
+                    container.style.width = (node.size[0] - 20) + "px";
                 });
                 tsRow.style.gridTemplateColumns = "1fr 1fr";
 
