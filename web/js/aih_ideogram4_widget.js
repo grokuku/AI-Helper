@@ -28,8 +28,9 @@
                 const hideWidget = (n, name) => {
                     const w = n.widgets?.find(x => x.name === name);
                     if (w) {
-                        // NE PAS mettre hidden=true — la nouvelle frontend Vue exclut
-                        // les widgets hidden de widgets_values au chargement (données perdues)
+                        // hidden=true : la frontend Vue ne rend PAS le widget (ni textarea, ni conteneur).
+                        // display:none seul laisse le conteneur Vue capturer les clics (zone invisible).
+                        w.hidden = true;
                         w.computeSize = () => [0, -4];  // 0 place visuelle (compressé)
                         if (w.element) w.element.style.display = "none";
                         if (w.inputEl) w.inputEl.style.display = "none";

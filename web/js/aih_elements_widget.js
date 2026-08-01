@@ -55,9 +55,13 @@ async function apiCall(method, path, body) {
 function hideWidget(node, name) {
     const w = node.widgets?.find(x => x.name === name);
     if (w) {
-        // NE PAS mettre hidden=true — la nouvelle frontend Vue exclut
-        // les widgets hidden de widgets_values au chargement (données perdues)
-        w.computeSize = () => [0, -4]; // hauteur négative = ligne compressée
+        // hidden=true : la frontend Vue ne rend PAS le widget (ni textarea,
+        // ni conteneur). display:none seul laisse le conteneur Vue capturer
+        // les clics (zone invisible). hidden=true est sûr car serialize()
+        // ne vérifie que serialize===false (pas hidden), donc le widget
+        // reste sérialisé et restauré normalement.
+        w.hidden = true;
+        w.computeSize = () => [0, -4];
         if (w.element) w.element.style.display = "none";
         if (w.inputEl) w.inputEl.style.display = "none";
         if (w.parentEl) w.parentEl.style.display = "none";
