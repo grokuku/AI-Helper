@@ -1498,7 +1498,6 @@ function _parseConceptSyntax(text, defaultCount) {
                     if (origOnResize) origOnResize.call(this, size);
                     if (size[0] < MIN_WIDTH) size[0] = MIN_WIDTH;
                     container.style.width = (size[0] - 20) + "px";
-                    }
                 };
 
                 // Appliquer la taille initiale
@@ -1507,7 +1506,6 @@ function _parseConceptSyntax(text, defaultCount) {
                         node.setSize([MIN_WIDTH, node.size[1]]);
                     }
                     container.style.width = (node.size[0] - 20) + "px";
-                    }
                 });
 
                 // ---- Persistance workflow (sauvegarde/chargement) ----
