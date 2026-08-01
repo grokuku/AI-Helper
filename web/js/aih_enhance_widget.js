@@ -25,10 +25,35 @@
         async beforeRegisterNodeDef(nodeType, nodeData) {
             if (nodeData.name !== "AIHEnhanceNode") return; // TODO: this guard could be part of AIH.registerWidget config
 
+            // ---- Debug : onConfigure (valeurs restaurées depuis le workflow) ----
+            const origOnConfigureEnh = nodeType.prototype.onConfigure;
+            nodeType.prototype.onConfigure = function (data) {
+                const result = origOnConfigureEnh ? origOnConfigureEnh.call(this, data) : undefined;
+                var _dbgc = window.AIH && window.AIH.__log ? window.AIH.__log : function () {};
+                _dbgc('Enhance.onConfigure', 'node id=' + this.id + ' — appelé, data keys: ' + (data ? Object.keys(data).join(', ') : 'N/A'));
+                if (data && data.widgets_values) {
+                    _dbgc('Enhance.onConfigure', 'node id=' + this.id + ' — widgets_values count=' + data.widgets_values.length, data.widgets_values);
+                    // Associer les valeurs positionnelles aux noms de widgets (debug mapping)
+                    var pairs = [];
+                    var ws = this.widgets || [];
+                    for (var i = 0; i < Math.max(ws.length, data.widgets_values.length); i++) {
+                        var wname = ws[i] ? ws[i].name : '(index sans widget)';
+                        var wval = data.widgets_values[i];
+                        pairs.push(wname + ' = ' + (typeof wval === 'string' ? JSON.stringify(wval).substring(0, 60) : String(wval)));
+                    }
+                    _dbgc('Enhance.onConfigure', 'node id=' + this.id + ' — mapping positionnel widgets_values', pairs.join(' | '));
+                } else {
+                    _dbgc('Enhance.onConfigure', 'node id=' + this.id + ' — PAS de widgets_values dans data');
+                }
+                return result;
+            };
+
             const onNodeCreated = nodeType.prototype.onNodeCreated;
             nodeType.prototype.onNodeCreated = function () {
                 const r = onNodeCreated?.apply(this, arguments);
                 const node = this;
+                var _dbg = window.AIH && window.AIH.__log ? window.AIH.__log : function () {};
+                _dbg('Enhance.onNodeCreated', 'node id=' + node.id + ' — widgets présents (' + (node.widgets ? node.widgets.length : 0) + ')', node.widgets ? node.widgets.map(function (w) { return w.name + '=' + (typeof w.value === 'string' ? JSON.stringify(w.value).substring(0, 60) : String(w.value)); }).join(' | ') : 'aucun');
                 let _aihRestored = false;
 
                 // ---- Cacher les widgets natifs pilotés par le DOM ----
@@ -254,6 +279,7 @@
                 // créant une valeur fantôme qui décale le mapping positionnel des autres widgets.
                 widget.serialize = false;
                 widget.options.serialize = false;
+                _dbg('Enhance.addDOMWidget', 'node id=' + node.id + ' — DOM widget créé, serialize flags', { serialize: widget.serialize, optionsSerialize: widget.options ? widget.options.serialize : 'N/A' });
                 // ---- Calcul dynamique de la hauteur du DOM widget ----
                 // Le DOM widget remplit l'espace restant après les widgets natifs.
                 // Les widgets natifs (base_prompt, seed, etc.) ont une taille fixe,
@@ -284,7 +310,11 @@
 
                 // ---- Sync des widgets natifs ----
                 function syncNativeWidgets(force) {
-                    if (!_aihRestored && !force) return;
+                    _dbg('Enhance.syncNativeWidgets', 'node id=' + node.id + ' — appelé force=' + !!force + ' _aihRestored=' + _aihRestored);
+                    if (!_aihRestored && !force) {
+                        _dbg('Enhance.syncNativeWidgets', 'node id=' + node.id + ' — IGNORÉ (pas restauré, pas de force)');
+                        return;
+                    }
                     const set = (name, val) => {
                         const w = node.widgets?.find(x => x.name === name);
                         if (!w) return;
@@ -301,6 +331,7 @@
                         sval = parseInt(styleSelect.value) || 0;
                     }
                     set("style_id", sval);
+                    _dbg('Enhance.syncNativeWidgets', 'node id=' + node.id + ' — widgets natifs mis à jour', { template_id: parseInt(templateSelect.value) || 0, preset_id: parseInt(presetSelect.value) || 0, style_id: sval, output_format: formatSelect.value || 'rich' });
                 }
 
                 templateSelect.onchange = syncNativeWidgets;
@@ -310,14 +341,23 @@
 
                 // ---- Restoration depuis widgets natifs ----
                 function restoreFromNativeWidgets() {
+                    _dbg('Enhance.restore', 'node id=' + node.id + ' — restoreFromNativeWidgets appelé, valeurs natives lues', {
+                        template_id: templateIdWidget ? templateIdWidget.value : 'N/A',
+                        preset_id: presetIdWidget ? presetIdWidget.value : 'N/A',
+                        style_id: styleIdWidget ? styleIdWidget.value : 'N/A',
+                        output_format: node.widgets?.find(x => x.name === "output_format")?.value
+                    });
                     let restored = false;
                     if (templateIdWidget) {
                         const tid = parseInt(templateIdWidget.value) || 0;
                         if (tid > 0 && [...templateSelect.options].some(o => o.value === String(tid))) {
                             templateSelect.value = String(tid);
                             restored = true;
+                            _dbg('Enhance.restore', 'node id=' + node.id + ' — template_id restauré=' + tid);
                         } else if (tid === 0) {
                             templateSelect.value = "0";
+                        } else {
+                            _dbg('Enhance.restore', 'node id=' + node.id + ' — template_id=' + tid + ' PAS trouvé dans les options (retry)');
                         }
                     }
                     if (presetIdWidget) {
@@ -325,8 +365,11 @@
                         if (pid > 0 && [...presetSelect.options].some(o => o.value === String(pid))) {
                             presetSelect.value = String(pid);
                             restored = true;
+                            _dbg('Enhance.restore', 'node id=' + node.id + ' — preset_id restauré=' + pid);
                         } else if (pid === 0) {
                             presetSelect.value = "0";
+                        } else {
+                            _dbg('Enhance.restore', 'node id=' + node.id + ' — preset_id=' + pid + ' PAS trouvé dans les options (retry)');
                         }
                     }
                     if (styleIdWidget) {
@@ -334,11 +377,15 @@
                         if (sid === -1 && [...styleSelect.options].some(o => o.value === '_random')) {
                             styleSelect.value = '_random';
                             restored = true;
+                            _dbg('Enhance.restore', 'node id=' + node.id + ' — style_id restauré=_random (sentinelle -1)');
                         } else if (sid > 0 && [...styleSelect.options].some(o => o.value === String(sid))) {
                             styleSelect.value = String(sid);
                             restored = true;
+                            _dbg('Enhance.restore', 'node id=' + node.id + ' — style_id restauré=' + sid);
                         } else if (sid === 0 || isNaN(sid)) {
                             styleSelect.value = "0";
+                        } else {
+                            _dbg('Enhance.restore', 'node id=' + node.id + ' — style_id=' + sid + ' PAS trouvé dans les options (retry)');
                         }
                     }
                     // Format (rich/basic) : restauration directe depuis le widget natif
@@ -352,6 +399,7 @@
                         }
                     }
                     _aihRestored = true;
+                    _dbg('Enhance.restore', 'node id=' + node.id + ' — FIN : restored=' + restored + ' _aihRestored=true');
                     return restored;
                 }
 

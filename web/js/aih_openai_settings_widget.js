@@ -38,6 +38,7 @@
                 nodeType.prototype.onNodeCreated = function () {
                     const r = onNodeCreated ? onNodeCreated.apply(this, arguments) : undefined;
                     const node = this;
+                    if (window.AIH && window.AIH.__log) window.AIH.__log('OpenAI.onNodeCreated', 'node id=' + node.id + ' — widgets présents (' + (node.widgets ? node.widgets.length : 0) + ')', node.widgets ? node.widgets.map(function (w) { return w.name + '=' + (typeof w.value === 'string' ? JSON.stringify(w.value).substring(0, 60) : String(w.value)); }).join(' | ') : 'aucun');
                     try {
                         setupOpenAISettingsNode(node);
                     } catch (err) {
@@ -74,12 +75,17 @@
                 setTimeout(trySetup, 50);
                 return;
             }
+            if (!modelReady || !apiKeyReady) {
+                if (window.AIH && window.AIH.__log) window.AIH.__log('OpenAI.restore', 'node id=' + node.id + ' — TIMEOUT: inputEl non prêts après ' + MAX_ATTEMPTS + ' tentatives', { modelReady: !!modelReady, apiKeyReady: !!apiKeyReady });
+            }
 
             if (modelReady) {
+                if (window.AIH && window.AIH.__log) window.AIH.__log('OpenAI.restore', 'node id=' + node.id + ' — widgets model/api_key prêts après ' + attempts + ' tentative(s)');
                 enhanceModelWidget(node, modelWidget);
             } else if (modelWidget) {
                 // Fallback: the widget exists but has no inputEl (shouldn't
                 // normally happen).  Try again once more after a longer delay.
+                if (window.AIH && window.AIH.__log) window.AIH.__log('OpenAI.restore', 'node id=' + node.id + ' — modelWidget sans inputEl, fallback 500ms');
                 setTimeout(function () {
                     if (modelWidget.inputEl) enhanceModelWidget(node, modelWidget);
                 }, 500);

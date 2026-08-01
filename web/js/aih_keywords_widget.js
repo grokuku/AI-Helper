@@ -167,6 +167,8 @@ function debounce(fn, delay) {
             nodeType.prototype.onNodeCreated = function () {
                 const r = onNodeCreated?.apply(this, arguments);
                 const node = this;
+                var _dbg = window.AIH && window.AIH.__log ? window.AIH.__log : function () {};
+                _dbg('Keywords.onNodeCreated', 'node id=' + node.id + ' — widgets présents (' + (node.widgets ? node.widgets.length : 0) + ')', node.widgets ? node.widgets.map(function (w) { return w.name + '=' + (typeof w.value === 'string' ? JSON.stringify(w.value).substring(0, 60) : String(w.value)); }).join(' | ') : 'aucun');
 
                 // ---- Masquer le widget sérialisé _keywords_config ----
                 {
@@ -901,11 +903,19 @@ function debounce(fn, delay) {
                  * Retourne true si la restauration a réussi, false sinon.
                  */
                 function restoreFromWidgets(n) {
+                    _dbg('Keywords.restore', 'node id=' + n.id + ' — restoreFromWidgets appelé');
                     const kwc = n.widgets?.find(w => w.name === "_keywords_config");
-                    if (!kwc || !kwc.value || kwc.value === "{}" || kwc.value === "") return false;
+                    if (!kwc || !kwc.value || kwc.value === "{}" || kwc.value === "") {
+                        _dbg('Keywords.restore', 'node id=' + n.id + ' — _keywords_config absent ou vide, retour false');
+                        return false;
+                    }
+                    _dbg('Keywords.restore', 'node id=' + n.id + ' — _keywords_config.value lu (' + kwc.value.length + ' chars)', kwc.value.substring(0, 400));
                     try {
                         const data = JSON.parse(kwc.value);
-                        if (!data.config) return false;
+                        if (!data.config) {
+                            _dbg('Keywords.restore', 'node id=' + n.id + ' — pas de data.config dans le JSON, retour false');
+                            return false;
+                        }
 
                         const cfg = data.config;
 
@@ -922,9 +932,10 @@ function debounce(fn, delay) {
 
                         // 3. Synchroniser le widget caché avec l'état restauré
                         syncKeywordsConfig();
-
+                        _dbg('Keywords.restore', 'node id=' + n.id + ' — RESTAURATION RÉUSSIE, keywords=' + (data.keywords ? data.keywords.length : 0) + ' config=' + JSON.stringify(cfg));
                         return true;
                     } catch (err) {
+                        _dbg('Keywords.restore', 'node id=' + n.id + ' — ÉCHEC parse : ' + (err && err.message ? err.message : err));
                         console.warn("[AIH.Keywords] restore error:", err);
                         return false;
                     }
@@ -935,6 +946,7 @@ function debounce(fn, delay) {
                 // Fallback : tentative périodique de restauration
                 let restoreAttempts = 0;
                 function delayedRestore() {
+                    _dbg('Keywords.delayedRestore', 'node id=' + node.id + ' — tentative #' + restoreAttempts);
                     if (restoreFromWidgets(node)) return;
                     restoreAttempts++;
                     if (restoreAttempts < 20) {

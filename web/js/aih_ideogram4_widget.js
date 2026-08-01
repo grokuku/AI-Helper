@@ -21,6 +21,8 @@
             nodeType.prototype.onNodeCreated = function () {
                 const r = onNodeCreated?.apply(this, arguments);
                 const node = this;
+                var _dbg = window.AIH && window.AIH.__log ? window.AIH.__log : function () {};
+                _dbg('Ideogram4.onNodeCreated', 'node id=' + node.id + ' — widgets présents (' + (node.widgets ? node.widgets.length : 0) + ')', node.widgets ? node.widgets.map(function (w) { return w.name + '=' + (typeof w.value === 'string' ? JSON.stringify(w.value).substring(0, 60) : String(w.value)); }).join(' | ') : 'aucun');
                 let _aihRestored = false;
 
                 const hideWidget = (n, name) => {
@@ -319,6 +321,7 @@
                 node._domWidget = domWidget;
 
                 function syncNativeWidgets() {
+                    _dbg('Ideogram4.sync', 'node id=' + node.id + ' — syncNativeWidgets appelé, _aihRestored=' + _aihRestored);
                     if (!_aihRestored) return;
                     const set = (name, val) => {
                         const w = node.widgets?.find(x => x.name === name);
@@ -344,6 +347,12 @@
                 valTmplSelect.onchange = syncNativeWidgets;
 
                 function restoreFromWidgets(n) {
+                    _dbg('Ideogram4.restore', 'node id=' + n.id + ' — restoreFromWidgets appelé, valeurs natives lues', {
+                        preset_id: n.widgets?.find(x => x.name === "preset_id")?.value,
+                        style_id: n.widgets?.find(x => x.name === "style_id")?.value,
+                        template_id: n.widgets?.find(x => x.name === "template_id")?.value,
+                        validation_template_id: n.widgets?.find(x => x.name === "validation_template_id")?.value
+                    });
                     let restored = false;
                     const pw = n.widgets?.find(x => x.name === "preset_id");
                     const sw = n.widgets?.find(x => x.name === "style_id");
@@ -384,6 +393,7 @@
                         }
                     } catch {}
                     _aihRestored = true;
+                    _dbg('Ideogram4.restore', 'node id=' + n.id + ' — FIN : restored=' + restored + ' _aihRestored=true');
                     return restored;
                 }
                 node._aihRestore = function () {

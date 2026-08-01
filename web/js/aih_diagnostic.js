@@ -23,6 +23,7 @@
                 const node = this;
                 console.log("[DIAG] onNodeCreated — node.id:", node.id,
                     "type:", node.type);
+                if (window.AIH && window.AIH.__log) window.AIH.__log('Diagnostic.onNodeCreated', 'node id=' + node.id + ' — widgets présents (' + (node.widgets ? node.widgets.length : 0) + ')', node.widgets ? node.widgets.map(function (w) { return w.name + '=' + (typeof w.value === 'string' ? JSON.stringify(w.value).substring(0, 60) : String(w.value)); }).join(' | ') : 'aucun');
 
                 // Rendre le widget _diag_json invisible
                 // Ne PAS utiliser hidden = true (empêche la sérialisation dans ComfyUI récent)
@@ -175,7 +176,10 @@
 
                 // Sync initial
                 const w = node.widgets?.find(x => x.name === "_diag_json");
-                if (w) w.value = JSON.stringify({ mode: "hello" });
+                if (w) {
+                    if (window.AIH && window.AIH.__log) window.AIH.__log('Diagnostic.restore', 'node id=' + node.id + ' — _diag_json au chargement', w.value || '(vide)');
+                    w.value = JSON.stringify({ mode: "hello" });
+                }
 
                 return r;
             };
