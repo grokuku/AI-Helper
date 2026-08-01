@@ -176,6 +176,13 @@ function _parseConceptSyntax(text, defaultCount) {
                 // le fichier de credentials)
                 hideWidget(node, "_elements_json");
 
+                // Empêcher le feedback loop de hauteur : sans widgets_start_y, la
+                // frontend fait size[1] += widgets_height à chaque computeSize
+                // (cumulatif → node qui grandit indéfiniment, zone invisible de
+                // ~1300px qui bloque les clics). Avec widgets_start_y, le calcul
+                // devient Math.max(size[1], widgets_height + widgets_start_y).
+                node.widgets_start_y = 52;
+
                 // ---- Supprimer la socket d'entrée de _elements_json ----
                 {
                     const slot = node.findInputSlot?.("_elements_json");

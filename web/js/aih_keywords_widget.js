@@ -175,6 +175,13 @@ function debounce(fn, delay) {
                     hideWidget(node, "_keywords_config");
                 }
 
+                // Empêcher le feedback loop de hauteur : sans widgets_start_y, la
+                // frontend fait size[1] += widgets_height à chaque computeSize
+                // (cumulatif → node qui grandit indéfiniment, zone invisible qui
+                // bloque les clics). Avec widgets_start_y, le calcul devient
+                // Math.max(size[1], widgets_height + widgets_start_y).
+                node.widgets_start_y = 52;
+
                 // ---- Masquer le widget seed (forçage de réexécution) ----
                 // Le seed existe dans la node pour que ComfyUI le sérialise
                 // et réexécute la node à chaque run, mais il n'est pas visible.
