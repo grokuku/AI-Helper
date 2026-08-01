@@ -129,6 +129,25 @@ function _parseConceptSyntax(text, defaultCount) {
         async beforeRegisterNodeDef(nodeType, nodeData) {
             if (nodeData.name !== "AIHElementsNode") return; // TODO: this guard could be part of AIH.registerWidget config
 
+            // ---- Restauration par contenu (pattern AGENTS.md) ----
+            // La frontend Vue exclut les widgets cachés (display:none) du mapping
+            // positionnel de widgets_values. _elements_json étant caché, on le
+            // restaure en cherchant sa valeur PAR CONTENU dans data.widgets_values.
+            const origOnConfigure = nodeType.prototype.onConfigure;
+            nodeType.prototype.onConfigure = function(data) {
+                const result = origOnConfigure ? origOnConfigure.call(this, data) : undefined;
+                if (data && data.widgets_values) {
+                    for (var i = 0; i < data.widgets_values.length; i++) {
+                        var val = data.widgets_values[i];
+                        if (typeof val === 'string' && val.indexOf('"elements"') >= 0) {
+                            var ej = this.widgets?.find(w => w.name === "_elements_json");
+                            if (ej) { ej.value = val; break; }
+                        }
+                    }
+                }
+                return result;
+            };
+
             const onNodeCreated = nodeType.prototype.onNodeCreated;
             nodeType.prototype.onNodeCreated = function () {
                 const r = onNodeCreated?.apply(this, arguments);
@@ -160,8 +179,8 @@ function _parseConceptSyntax(text, defaultCount) {
                 let _aihRestored = false;
 
                 // ---- Sync les widgets sérialisés ----
-                function syncElementsWidget() {
-                    if (!_aihRestored) return;  // ne pas écraser avant la restauration
+                function syncElementsWidget(force) {
+                    if (!_aihRestored && !force) return;  // ne pas écraser avant la restauration
                     const w = node.widgets?.find(x => x.name === "_elements_json");
                     if (!w) return;
                     w.value = JSON.stringify({
@@ -437,7 +456,7 @@ function _parseConceptSyntax(text, defaultCount) {
                             });
                         }
                         renderList();
-                        syncElementsWidget();
+                        syncElementsWidget(true);
                         clearDirty();
                         node._aihLoadedPresetName = epPresetSelect.value;
                     } catch (err) {
@@ -460,7 +479,7 @@ function _parseConceptSyntax(text, defaultCount) {
 
                 epPresetSaveBtn.onclick = () => {
                     if (!node._aihDirty) return;
-                    syncElementsWidget(); // s'assurer que _elements_json est à jour
+                    syncElementsWidget(true); // s'assurer que _elements_json est à jour
                     const datalistOptions = _epPresetNames.map(n => '<option value="' + esc(n) + '">').join("");
                     const presetName = node._aihLoadedPresetName || "";
 
@@ -557,9 +576,9 @@ function _parseConceptSyntax(text, defaultCount) {
                 // Peuplement initial
                 populateEpPresets();
 
-                presetSelect.onchange = () => { syncElementsWidget(); markDirty(); };
-                llmCountInput.onchange = () => { syncElementsWidget(); markDirty(); };
-                llmCountInput.oninput = () => { syncElementsWidget(); markDirty(); };
+                presetSelect.onchange = () => { syncElementsWidget(true); markDirty(); };
+                llmCountInput.onchange = () => { syncElementsWidget(true); markDirty(); };
+                llmCountInput.oninput = () => { syncElementsWidget(true); markDirty(); };
 
                 // ---- Peupler le dropdown preset depuis /api/presets ----
                 async function populatePresets() {
@@ -738,7 +757,7 @@ function _parseConceptSyntax(text, defaultCount) {
                             }
                             markDirty();
                             renderList();
-                            syncElementsWidget();
+                            syncElementsWidget(true);
                         };
 
                         row.appendChild(grip);
@@ -761,7 +780,7 @@ function _parseConceptSyntax(text, defaultCount) {
                             item.brain = !item.brain;
                             markDirty();
                             renderList();
-                            syncElementsWidget();
+                            syncElementsWidget(true);
                         };
                         row.appendChild(brainBtn);
 
@@ -804,7 +823,7 @@ function _parseConceptSyntax(text, defaultCount) {
                                 item.text = textInput.value;
                                 updateChoiceBadge();
                                 markDirty();
-                                syncElementsWidget();
+                                syncElementsWidget(true);
                             };
                             row.appendChild(textInput);
                             row.appendChild(choiceBadge);
@@ -825,7 +844,7 @@ function _parseConceptSyntax(text, defaultCount) {
                             hintInput.oninput = function() {
                                 item.hint = this.value;
                                 markDirty();
-                                syncElementsWidget();
+                                syncElementsWidget(true);
                             };
                             row.appendChild(hintInput);
 
@@ -853,7 +872,7 @@ function _parseConceptSyntax(text, defaultCount) {
                             items.splice(idx, 1);
                             markDirty();
                             renderList();
-                            syncElementsWidget();
+                            syncElementsWidget(true);
                         };
                         row.appendChild(del);
                         listEl.appendChild(row);
@@ -1051,7 +1070,7 @@ function _parseConceptSyntax(text, defaultCount) {
                     }
                     dragState = null;
                     if (currentIdx !== startIdx) markDirty();
-                    syncElementsWidget();
+                    syncElementsWidget(true);
                 }
 
 
@@ -1073,7 +1092,7 @@ function _parseConceptSyntax(text, defaultCount) {
                             });
                             markDirty();
                             renderList();
-                            syncElementsWidget();
+                            syncElementsWidget(true);
                         });
                     } catch (err) {
                         showToast("Erreur", "Impossible de charger les filtres : " + err.message);
@@ -1085,7 +1104,7 @@ function _parseConceptSyntax(text, defaultCount) {
                     node._aihElements.push({ type: "text", text: "" });
                     markDirty();
                     renderList();
-                    syncElementsWidget();
+                    syncElementsWidget(true);
                     // Focus le dernier input texte
                     setTimeout(() => {
                         const inputs = listEl.querySelectorAll("input[type='text']");
@@ -1164,11 +1183,11 @@ function _parseConceptSyntax(text, defaultCount) {
                         sfwCb.checked = true; // Forcer au moins SFW
                     }
                 }
-                sfwCb.onchange = () => { validateNsfwCheckboxes(); syncElementsWidget(); markDirty(); };
-                nsfwCb.onchange = () => { validateNsfwCheckboxes(); syncElementsWidget(); markDirty(); };
-                randCb.onchange = () => { syncElementsWidget(); markDirty(); };
-                randN.onchange = () => { syncElementsWidget(); markDirty(); };
-                randN.oninput = () => { syncElementsWidget(); markDirty(); };
+                sfwCb.onchange = () => { validateNsfwCheckboxes(); syncElementsWidget(true); markDirty(); };
+                nsfwCb.onchange = () => { validateNsfwCheckboxes(); syncElementsWidget(true); markDirty(); };
+                randCb.onchange = () => { syncElementsWidget(true); markDirty(); };
+                randN.onchange = () => { syncElementsWidget(true); markDirty(); };
+                randN.oninput = () => { syncElementsWidget(true); markDirty(); };
 
                 // ---- Test generation button (hauteur fixe) ----
                 const genBtn = mkBtn("🔄  Test generation", true);
@@ -1371,7 +1390,7 @@ function _parseConceptSyntax(text, defaultCount) {
                         var data = await apiCall("POST", "generate", payload);
                         var prompt = data.prompt || data.output || "";
                         if (n._resultArea) n._resultArea.value = prompt;
-                        syncElementsWidget();
+                        syncElementsWidget(true);
                         syncApiConfigWidget();
                     } catch (err) {
                         if (n._resultArea) n._resultArea.value = "Erreur : " + err.message;
