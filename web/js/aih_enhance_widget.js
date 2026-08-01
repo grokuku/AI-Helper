@@ -43,7 +43,7 @@
                         if (w.parentEl) w.parentEl.style.display = "none";
                     }
                 };
-                ["template_id", "preset_id", "style_id", "style_shortlist"].forEach(n => hideWidget(node, n));
+                ["template_id", "preset_id", "style_id", "style_shortlist", "output_format"].forEach(n => hideWidget(node, n));
 
                 for (const inputName of ["template_id", "preset_id", "style_id"]) {
                     const slot = node.findInputSlot?.(inputName);
@@ -199,6 +199,20 @@
                 presetSelect.style.flex = "1";
                 presetDiv.appendChild(mkLabel("Preset IA"));
                 presetRow.appendChild(presetSelect);
+
+                // ---- Format (rich/basic) à côté du Preset IA ----
+                const formatSelect = document.createElement("select");
+                Object.assign(formatSelect.style, { width: "90px", padding: "3px 6px", borderRadius: "4px", border: "1px solid #555", background: "#3a3a3e", color: "#ccc", fontSize: "11px", cursor: "pointer" });
+                const fmtRich = document.createElement("option");
+                fmtRich.value = "rich";
+                fmtRich.textContent = "rich";
+                const fmtBasic = document.createElement("option");
+                fmtBasic.value = "basic";
+                fmtBasic.textContent = "basic";
+                formatSelect.appendChild(fmtRich);
+                formatSelect.appendChild(fmtBasic);
+                presetRow.appendChild(formatSelect);
+
                 presetDiv.appendChild(presetRow);
                 container.appendChild(presetDiv);
 
@@ -272,6 +286,7 @@
                     };
                     set("template_id", parseInt(templateSelect.value) || 0);
                     set("preset_id", parseInt(presetSelect.value) || 0);
+                    set("output_format", formatSelect.value || "rich");
                     var sval;
                     if (styleSelect.value === '_random') {
                         sval = -1;  // sentinelle : random persistant
@@ -284,6 +299,7 @@
                 templateSelect.onchange = syncNativeWidgets;
                 presetSelect.onchange = syncNativeWidgets;
                 styleSelect.onchange = syncNativeWidgets;
+                formatSelect.onchange = syncNativeWidgets;
 
                 // ---- Restoration depuis widgets natifs ----
                 function restoreFromNativeWidgets() {
@@ -316,6 +332,16 @@
                             restored = true;
                         } else if (sid === 0 || isNaN(sid)) {
                             styleSelect.value = "0";
+                        }
+                    }
+                    // Format (rich/basic) : restauration directe depuis le widget natif
+                    const outputFormatWidget = node.widgets?.find(x => x.name === "output_format");
+                    if (outputFormatWidget) {
+                        const fmt = outputFormatWidget.value;
+                        if (fmt === "rich" || fmt === "basic") {
+                            formatSelect.value = fmt;
+                        } else {
+                            formatSelect.value = "rich";
                         }
                     }
                     _aihRestored = true;
@@ -418,6 +444,7 @@
                         template_id: parseInt(templateSelect.value) || 0,
                         preset_id: parseInt(presetSelect.value) || null,
                         style_id: styleId,
+                        output_format: formatSelect.value || "rich",
                         special_instructions: specialInstructions,
                     };
                     if (elements.length > 0) {
