@@ -259,12 +259,12 @@ class AIHElementsNode:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                # elements_input en REQUIRED, AVANT seed : ComfyUI crée les
-                # widgets dans l'ordre required puis optional, donc ce widget
-                # s'affiche AU-DESSUS du widget seed dans l'UI.
+                # llm_config en REQUIRED, EN PREMIER : l'ordre required puis
+                # optional détermine l'ordre des sockets d'entrée → ce socket
+                # forceInput s'affiche TOUT EN HAUT.
                 # forceInput : permet de connecter un upstream (STRING). La valeur
                 # peut être None si l'upstream renvoie une sortie vide → durci dans generate().
-                "elements_input": ("STRING", {"default": "", "forceInput": True}),        # forceInput, PAS multiline
+                "llm_config": ("STRING", {"default": "", "forceInput": True}),
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff,
                  "control_after_generate": "randomize"}),
                 # JSON sérialisé par le JS : elements + random_count
@@ -273,10 +273,13 @@ class AIHElementsNode:
                 # ne le sont plus → sans ça, les éléments seraient perdus à la sauvegarde.
                 # Masqué dans l'UI ComfyUI
                 "_elements_json": ("STRING", {"default": "{}", "multiline": True}),
+                # elements_input en REQUIRED, EN DERNIER : socket forceInput TOUT EN BAS
+                # (inversion de l'ordre : llm_config en haut, elements_input en bas).
+                # forceInput : permet de connecter un upstream (STRING). La valeur
+                # peut être None si l'upstream renvoie une sortie vide → durci dans generate().
+                "elements_input": ("STRING", {"default": "", "forceInput": True}),        # forceInput, PAS multiline
             },
-            "optional": {
-                "llm_config": ("STRING", {"default": "", "forceInput": True}),  # seule entrée forceInput, nom d'origine
-            }
+            "optional": {},
         }
 
     RETURN_TYPES = ("STRING", "STRING")
