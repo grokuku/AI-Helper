@@ -119,10 +119,13 @@
 
                 // ---- Intégration DOM Widget ----
                 const domWidget = node.addDOMWidget("diag_ui", "custom", container, {
+                    serialize: false,
                     getValue: () => "",
                     setValue: (v) => {},
                 });
+                domWidget.serialize = false;          // persistance workflow (widgets_values)
                 domWidget.options = domWidget.options || {};
+                domWidget.options.serialize = false;  // prompt API
                 domWidget.options.height = 200;
 
                 // Stocker les refs

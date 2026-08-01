@@ -49,13 +49,18 @@ async function apiCall(method, path, body) {
 
 // Cacher un widget ComfyUI : reste dans node.widgets (sérialisé) mais invisible dans l'UI.
 // IMPORTANT : ne PAS changer widget.type en "hidden" car ComfyUI le
-// désérialiserait à vide. On utilise uniquement widget.hidden = true
-// et on réduit sa hauteur à 0.
+// désérialiserait à vide. On n'utilise PAS non plus le flag hidden du widget
+// car la nouvelle frontend Vue exclut les widgets hidden de widgets_values
+// au chargement (données perdues). On passe par le CSS + computeSize.
 function hideWidget(node, name) {
     const w = node.widgets?.find(x => x.name === name);
     if (w) {
-        w.hidden = true;
+        // NE PAS mettre hidden=true — la nouvelle frontend Vue exclut
+        // les widgets hidden de widgets_values au chargement (données perdues)
         w.computeSize = () => [0, -4]; // hauteur négative = ligne compressée
+        if (w.element) w.element.style.display = "none";
+        if (w.inputEl) w.inputEl.style.display = "none";
+        if (w.parentEl) w.parentEl.style.display = "none";
         return w;
     }
     return null;
@@ -1401,10 +1406,13 @@ function _parseConceptSyntax(text, defaultCount) {
 
                 // Intégrer dans le layout ComfyUI via addDOMWidget
                 const domWidget = node.addDOMWidget("elements_ui", "custom", container, {
+                    serialize: false,
                     getValue: () => "",
                     setValue: (v) => {},
                 });
+                domWidget.serialize = false;          // persistance workflow (widgets_values)
                 domWidget.options = domWidget.options || {};
+                domWidget.options.serialize = false;  // prompt API
                 domWidget.options.height = 300;
 
                 // ---- Taille minimum de la node ----

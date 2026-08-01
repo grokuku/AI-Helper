@@ -253,10 +253,13 @@
                 container.appendChild(resultTextarea);
 
                 const domWidget = node.addDOMWidget("ideogram4_ui", "custom", container, {
+                    serialize: false,
                     getValue: () => "",
                     setValue: (v) => {},
                 });
+                domWidget.serialize = false;          // persistance workflow (widgets_values)
                 domWidget.options = domWidget.options || {};
+                domWidget.options.serialize = false;  // prompt API
 
                 // ---- Hauteur FIXE pour le DOM widget (anti feedback loop) ----
                 // computeSize DOIT retourner une hauteur constante, sinon LiteGraph

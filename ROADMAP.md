@@ -1151,6 +1151,7 @@ Code review complet, classé par priorité :
 - [x] **Templates Ideogram 4 utilisaient `t.prompt_type`** — Remplacé par `t.id`.
 - [x] **Cache TTL pour templates** — `refreshTemplatesIfStale` ajouté.
 - [x] **Debug button XSS** — `textContent` au lieu de `document.write` interpolation.
+- [ ] **Node Prompt Enhancer — fil branché sur `special_instructions` non pris en compte** — Quand on branche un fil (avec un texte) sur l'entrée `special_instructions` d'`AIHEnhanceNode`, la node exécute avec le texte écrit dans le widget, pas celui branché via le fil. Bug connu de la frontend Vue ComfyUI (issue #5692, modèle "Widget Input Socket" RFC #9) : les widgets et les input slots coexistent, et la valeur du widget prime sur celle du fil. Réf : https://github.com/Comfy-Org/ComfyUI_frontend/issues/5692 (fixé dans PR #5834). À vérifier si une future version de ComfyUI_frontend résout le problème, ou trouver un workaround côté node.
 
 ---
 

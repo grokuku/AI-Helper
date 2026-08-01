@@ -790,10 +790,13 @@ function debounce(fn, delay) {
 
                 // ---- Intégration DOM widget ----
                 const domWidget = node.addDOMWidget("keywords_ui", "custom", container, {
+                    serialize: false,
                     getValue: () => "",
                     setValue: (v) => {},
                 });
+                domWidget.serialize = false;          // persistance workflow (widgets_values)
                 domWidget.options = domWidget.options || {};
+                domWidget.options.serialize = false;  // prompt API
                 domWidget.options.height = 340;
 
                 // ---- Taille minimum ----
