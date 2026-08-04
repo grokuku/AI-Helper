@@ -346,6 +346,21 @@ class AIHEnhanceNode:
         if image_base64:
             payload["image_base64"] = image_base64
 
+        # num_ctx (taille de la fenêtre de contexte, spécifique Ollama) —
+        # passthrough vers le backend depuis le llm_config (JSON du node
+        # OpenAI/LM Studio Settings). Le backend ne l'envoie au LLM que si
+        # le preset pointe vers Ollama.
+        num_ctx = 0
+        if llm_config:
+            try:
+                _cfg = json.loads(llm_config) if isinstance(llm_config, str) else llm_config
+                if isinstance(_cfg, dict):
+                    num_ctx = int(_cfg.get("num_ctx", 0) or 0)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                num_ctx = 0
+        if num_ctx > 0:
+            payload["num_ctx"] = num_ctx
+
         headers = {"Content-Type": "application/json"}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"

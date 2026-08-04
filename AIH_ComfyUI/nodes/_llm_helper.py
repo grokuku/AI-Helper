@@ -68,8 +68,12 @@ def _call_lmstudio(config, system_prompt, user_prompt, seed=None, image_base64=N
             "base_url": base_url,
             "api_key": config.get("api_key", ""),
             "model": config.get("model", ""),
-            "max_tokens": config.get("max_tokens", 1000),
+            # max_tokens passé tel quel à _call_openai qui l'omettra s'il est <= 0.
+            "max_tokens": config.get("max_tokens", 0),
             "temperature": config.get("temperature", 0.7),
+            # num_ctx (fenêtre de contexte) — passé à _call_openai qui ne
+            # l'enverra QUE si le base_url pointe vers Ollama (spécifique Ollama).
+            "num_ctx": config.get("num_ctx", 0),
         }
         return _call_openai(http_config, system_prompt, user_prompt, seed, image_base64)
 
@@ -84,7 +88,7 @@ def _call_lmstudio(config, system_prompt, user_prompt, seed=None, image_base64=N
         raise Exception(f"Cannot connect to LM Studio: {e}")
     
     model_key = config.get("model", "").strip() or None
-    max_tokens = int(config.get("max_tokens", 1000))
+    max_tokens = int(config.get("max_tokens", 0) or 0)
     temperature = float(config.get("temperature", 0.7))
     auto_unload = config.get("auto_unload", True)
     unload_delay = int(config.get("unload_delay", 0))
@@ -105,11 +109,15 @@ def _call_lmstudio(config, system_prompt, user_prompt, seed=None, image_base64=N
             chat = lms.Chat(system_prompt)
             chat.add_user_message(user_prompt)
             
-            result = model.respond(chat, config={
+            respond_config = {
                 "temperature": temperature,
-                "maxTokens": max_tokens,
                 "seed": int(seed),
-            })
+            }
+            # maxTokens : limite de réponse explicite. 0/missing → omis pour que
+            # le modèle utilise son propre défaut de sortie.
+            if max_tokens > 0:
+                respond_config["maxTokens"] = max_tokens
+            result = model.respond(chat, config=respond_config)
             
             text = result.content or ""
             # Strip thinking tags
@@ -177,6 +185,67 @@ def _is_vision_error(error_msg, has_image=False):
     return False
 
 
+def _is_ollama_base_url(base_url):
+    """Détecte si l'URL de base pointe vers Ollama (local ou cloud).
+
+    num_ctx est un paramètre SPÉCIFIQUE à Ollama (taille de la fenêtre de
+    contexte). On ne doit l'envoyer QUE si l'URL contient "ollama" ou le
+    port 1143x d'Ollama (ex: http://localhost:11434/v1).
+    """
+    return "ollama" in (base_url or "").lower() or ":1143" in (base_url or "")
+
+
+_model_context_cache = {}  # key: (base_url, model) -> (context_length, fetched_at)
+
+
+def _get_model_context(base_url, api_key, model, cache_ttl=3600):
+    """Interroge l'API pour récupérer la fenêtre de contexte du modèle.
+    Retourne un int (tokens) ou 0 si indisponible. Cache par (base_url, model)."""
+    import time as _time
+    key = (base_url, model)
+    now = _time.time()
+    cached = _model_context_cache.get(key)
+    if cached and now - cached[1] < cache_ttl:
+        return cached[0]
+    ctx = 0
+    try:
+        if requests is None:
+            return 0
+        base = (base_url or "").rstrip("/")
+        is_ollama = "ollama" in base.lower() or ":1143" in base
+        if is_ollama:
+            native_base = base[:-3] if base.endswith("/v1") else base
+            resp = requests.post(f"{native_base}/api/show",
+                                 json={"model": model},
+                                 headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
+                                 timeout=10)
+            if resp.ok:
+                info = resp.json().get("model_info", {})
+                for k, v in info.items():
+                    if "context_length" in k:
+                        ctx = int(v)
+                        break
+        else:
+            resp = requests.get(f"{base}/models",
+                                headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
+                                timeout=10)
+            if resp.ok:
+                data = resp.json()
+                models = data.get("data", []) if isinstance(data, dict) else []
+                for m in models:
+                    if m.get("id") == model:
+                        for k in ("context_length", "max_model_len", "context_window", "max_context_length"):
+                            if m.get(k):
+                                ctx = int(m[k])
+                                break
+                        break
+    except Exception:
+        ctx = 0
+    if ctx > 0:
+        _model_context_cache[key] = (ctx, now)
+    return ctx
+
+
 def _call_openai(config, system_prompt, user_prompt, seed=None, image_base64=None):
     """Appelle une API compatible OpenAI via HTTP."""
     if requests is None:
@@ -185,8 +254,9 @@ def _call_openai(config, system_prompt, user_prompt, seed=None, image_base64=Non
     base_url = config.get("base_url", "").strip().rstrip("/")
     api_key = config.get("api_key", "").strip()
     model = config.get("model", "").strip()
-    max_tokens = int(config.get("max_tokens", 1000))
+    max_tokens = int(config.get("max_tokens", 0) or 0)
     temperature = float(config.get("temperature", 0.7))
+    requested_num_ctx = int(config.get("num_ctx", 0) or 0)
     
     if not base_url:
         raise Exception("base_url is required for OpenAI config")
@@ -206,10 +276,33 @@ def _call_openai(config, system_prompt, user_prompt, seed=None, image_base64=Non
             {"role": "user", "content": user_content},
         ],
         "temperature": temperature,
-        "max_tokens": max_tokens,
     }
+    # max_tokens : limite de réponse explicite. 0/missing → OMIS de la requête
+    # pour que le modèle utilise son propre défaut (certaines APIs rejettent
+    # max_tokens: 0).
+    if max_tokens > 0:
+        payload["max_tokens"] = max_tokens
     
     # Pas de repeat_penalty (problème avec DeepSeek etc)
+    
+    # num_ctx (taille de la fenêtre de contexte) — paramètre SPÉCIFIQUE Ollama.
+    # Ne PAS l'envoyer aux APIs OpenAI / DeepSeek / LM Studio (400 Bad Request).
+    # max_tokens (limite de réponse) est envoyé ci-dessus uniquement si > 0 — les deux coexistent.
+    #
+    # Règle :
+    #   - requested_num_ctx > 0 → override utilisateur explicite (widget num_ctx)
+    #   - sinon (Ollama)        → auto-détection depuis /api/show avec marge de
+    #                             sécurité (ctx - 512, min 4096)
+    #   - sinon                 → pas de num_ctx du tout
+    num_ctx = 0
+    if requested_num_ctx > 0:
+        num_ctx = requested_num_ctx
+    elif _is_ollama_base_url(base_url):
+        ctx = _get_model_context(base_url, api_key, model)
+        if ctx > 0:
+            num_ctx = max(ctx - 512, 4096)
+    if num_ctx > 0 and _is_ollama_base_url(base_url):
+        payload["num_ctx"] = num_ctx
     
     url = f"{base_url}/chat/completions"
     resp = requests.post(url, headers=headers, json=payload, timeout=(10, 300))

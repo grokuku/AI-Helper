@@ -1228,6 +1228,57 @@ def _build_prepared_result(preset, user_id, template_id, template_name, output_f
     }
 
 
+# Cache du contexte modèle (process backend séparé du node ComfyUI).
+_model_context_cache = {}  # key: (base_url, model) -> (context_length, fetched_at)
+
+
+def _get_model_context(base_url, api_key, model, cache_ttl=3600):
+    """Interroge l'API pour récupérer la fenêtre de contexte du modèle.
+    Retourne un int (tokens) ou 0 si indisponible. Cache par (base_url, model)."""
+    import time as _time
+    import requests as _req
+    key = (base_url, model)
+    now = _time.time()
+    cached = _model_context_cache.get(key)
+    if cached and now - cached[1] < cache_ttl:
+        return cached[0]
+    ctx = 0
+    try:
+        base = (base_url or "").rstrip("/")
+        is_ollama = "ollama" in base.lower() or ":1143" in base
+        if is_ollama:
+            native_base = base[:-3] if base.endswith("/v1") else base
+            resp = _req.post(f"{native_base}/api/show",
+                             json={"model": model},
+                             headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
+                             timeout=10)
+            if resp.ok:
+                info = resp.json().get("model_info", {})
+                for k, v in info.items():
+                    if "context_length" in k:
+                        ctx = int(v)
+                        break
+        else:
+            resp = _req.get(f"{base}/models",
+                            headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
+                            timeout=10)
+            if resp.ok:
+                data = resp.json()
+                models = data.get("data", []) if isinstance(data, dict) else []
+                for m in models:
+                    if m.get("id") == model:
+                        for k in ("context_length", "max_model_len", "context_window", "max_context_length"):
+                            if m.get(k):
+                                ctx = int(m[k])
+                                break
+                        break
+    except Exception:
+        ctx = 0
+    if ctx > 0:
+        _model_context_cache[key] = (ctx, now)
+    return ctx
+
+
 def _prepare_enhance(user_id, data):
     """
     Construit le payload LLM a partir des params de la requete.
@@ -1341,6 +1392,29 @@ def _prepare_enhance(user_id, data):
         if not is_local_llm:
             # frequency_penalty uniquement pour les APIs cloud compatibles OpenAI
             llm_request['frequency_penalty'] = 0.5
+
+        # num_ctx (taille de la fenêtre de contexte) — paramètre SPÉCIFIQUE Ollama.
+        # Ne PAS l'envoyer aux APIs OpenAI / DeepSeek / LM Studio (400 Bad Request).
+        # Contrairement à max_tokens (limite de réponse), num_ctx définit la taille
+        # totale du contexte (ex: image 2MP ≈ 75K tokens vision) pour que Ollama
+        # utilise le contexte complet du modèle au lieu de son petit défaut (8K-32K).
+        #
+        # Règle :
+        #   - data['num_ctx'] > 0 → override utilisateur explicite
+        #   - sinon (Ollama)      → auto-détection depuis /api/show avec marge de
+        #                          sécurité (ctx - 512, min 4096)
+        #   - sinon               → pas de num_ctx du tout
+        requested_num_ctx = int(data.get('num_ctx', 0) or 0)
+        num_ctx = 0
+        if requested_num_ctx > 0:
+            num_ctx = requested_num_ctx
+        elif "ollama" in base_url.lower() or ":1143" in base_url:
+            ctx = _get_model_context(base_url, api_key, model)
+            if ctx > 0:
+                num_ctx = max(ctx - 512, 4096)
+        if num_ctx > 0 and ("ollama" in base_url.lower() or ":1143" in base_url):
+            llm_request['num_ctx'] = num_ctx
+
         llm_config = {
             'base_url': base_url,
             'api_key': api_key,

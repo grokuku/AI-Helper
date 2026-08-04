@@ -40,8 +40,30 @@
                     const node = this;
                     try {
                         setupOpenAISettingsNode(node);
+                        setupNumCtxField(node);
                     } catch (err) {
                         console.error("[AIH.OpenAISettings] setup error:", err);
+                    }
+                    return r;
+                };
+
+                // Re-sync le champ DOM num_ctx après chargement d'un workflow :
+                // configure() restaure les widgets natifs APRÈS onNodeCreated, donc
+                // on rafraîchit le champ DOM ici pour refléter la valeur chargée.
+                const onConfigure = nodeType.prototype.onConfigure;
+                nodeType.prototype.onConfigure = function () {
+                    const r = onConfigure ? onConfigure.apply(this, arguments) : undefined;
+                    try {
+                        const node = this;
+                        const numCtxWidget = node.widgets && node.widgets.find(function (w) { return w.name === "num_ctx"; });
+                        const domInput = node._aihNumCtxInput;
+                        if (numCtxWidget && domInput) {
+                            var v = parseInt(numCtxWidget.value, 10);
+                            if (isNaN(v) || v < 0) v = 0;
+                            domInput.value = v;
+                        }
+                    } catch (err) {
+                        console.error("[AIH.OpenAISettings] num_ctx sync error:", err);
                     }
                     return r;
                 };
@@ -301,6 +323,106 @@
         // (This is a secondary visual measure; -webkit-text-security is
         //  widely supported in Chrome/Edge/Safari which are the typical
         //  ComfyUI environments.)
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    // 4. num_ctx widget → labelled DOM field "Context (num_ctx)"
+    //    The native INT widget stays the source of truth (serialized in the
+    //    workflow).  We hide it and render a labelled number input that
+    //    syncs both ways: on load (native → DOM) and on change (DOM → native).
+    // ────────────────────────────────────────────────────────────────
+    function setupNumCtxField(node) {
+        var numCtxWidget = node.widgets && node.widgets.find(function (w) { return w.name === "num_ctx"; });
+        if (!numCtxWidget) return;
+
+        // Guard against double-setup (reload / duplicate node).
+        if (node._aihNumCtxSetup) return;
+        node._aihNumCtxSetup = true;
+
+        // Hide the native INT widget; the labelled DOM field below is the
+        // visible control (same pattern as aih_enhance_widget.js).
+        numCtxWidget.hidden = true;
+        numCtxWidget.computeSize = function () { return [0, -4]; };
+        if (numCtxWidget.element) numCtxWidget.element.style.display = "none";
+        if (numCtxWidget.inputEl) numCtxWidget.inputEl.style.display = "none";
+        if (numCtxWidget.parentEl) numCtxWidget.parentEl.style.display = "none";
+
+        var container = document.createElement("div");
+        Object.assign(container.style, {
+            display: "flex",
+            gap: "4px",
+            alignItems: "center",
+            width: "100%",
+            padding: "2px 6px",
+        });
+
+        var label = document.createElement("label");
+        label.textContent = "Context (num_ctx) · 0 = auto";
+        Object.assign(label.style, {
+            fontSize: "11px",
+            color: "#aaa",
+            whiteSpace: "nowrap",
+        });
+
+        var input = document.createElement("input");
+        input.type = "number";
+        input.min = "0";
+        input.step = "1024";
+        input.value = 0; // 0 = auto-détection depuis l'API (cache 1h) ; >0 = override manuel
+        Object.assign(input.style, {
+            flex: "1",
+            minWidth: "0",
+            padding: "3px 6px",
+            borderRadius: "4px",
+            border: "1px solid #555",
+            background: "#3a3a3e",
+            color: "#ccc",
+            fontSize: "11px",
+            boxSizing: "border-box",
+        });
+        input.title = "Fenêtre de contexte (spécifique Ollama). 0 = auto-détection depuis l'API (recommandé) ; >0 = override manuel (ex: 131072/262144 pour Gemma 4).";
+
+        container.appendChild(label);
+        container.appendChild(input);
+
+        var domWidget = node.addDOMWidget("AIH_NumCtx", "div", container, {
+            serialize: false,
+            hideOnZoom: false,
+        });
+        domWidget.serialize = false;
+        domWidget.options.serialize = false;
+
+        // Keep a ref so onConfigure can re-sync after workflow load.
+        node._aihNumCtxInput = input;
+
+        // Sync: native widget -> DOM field (initial value / default 0 = auto).
+        function syncFromNative() {
+            var v = parseInt(numCtxWidget.value, 10);
+            if (isNaN(v) || v < 0) v = 0;
+            input.value = v;
+        }
+        syncFromNative();
+
+        // Sync: DOM field -> native widget (user typing / change).
+        function writeToNative(v) {
+            numCtxWidget.value = v;
+            if (typeof numCtxWidget.callback === "function") {
+                try { numCtxWidget.callback(v); } catch (e) { console.warn("[AIH.OpenAISettings] num_ctx callback error:", e); }
+            }
+        }
+
+        input.addEventListener("input", function () {
+            var v = parseInt(input.value, 10);
+            if (isNaN(v) || v < 0) v = 0;
+            numCtxWidget.value = v;
+        });
+
+        input.addEventListener("change", function () {
+            var v = parseInt(input.value, 10);
+            if (isNaN(v) || v < 0) v = 0;
+            input.value = v;
+            writeToNative(v);
+        });
     }
 
     // Kick things off
