@@ -1514,38 +1514,9 @@ def _call_llm_internal(llm_request, llm_config):
                 f"[enhance] LLM HTTP {resp.status_code} ERROR "
                 f"url={url!r} body={error_body[:1000]!r}"
             )
-            # Détecter les erreurs liées au support multimodal (image non supportée)
-            _has_image = any(
-                isinstance(m.get('content'), list) and any(p.get('type') == 'image_url' for p in m.get('content', []) if isinstance(p, dict))
-                for m in llm_request.get('messages', [])
-            )
-            if _has_image:
-                _body_lower = error_body.lower()
-                _vision_indicators = ['image', 'vision', 'multimodal', 'content type', 'unsupported content',
-                                     'does not support', 'not support image', 'not a vision model', 'no vision']
-                _has_explicit_vision_error = any(ind in _body_lower for ind in _vision_indicators)
-                # Erreur explicite liée au multimodal
-                if _has_explicit_vision_error:
-                    raise requests.HTTPError(
-                        f"{resp.status_code} — Le modèle ne supporte pas les images (multimodal). "
-                        f"Utilisez un modèle vision comme GPT-4o, Claude 3.5 Sonnet, LLaVA, etc.\n"
-                        f"Response body: {error_body[:500]}",
-                        response=resp
-                    )
-                # Erreur 500 / bad request / internal server error avec image → suggérer multimodal
-                if (str(resp.status_code) == "500" or "bad request" in _body_lower or "internal server error" in _body_lower):
-                    raise requests.HTTPError(
-                        f"{resp.status_code} — Le modèle ne semble pas supporter les images (multimodal). "
-                        f"Utilisez un modèle vision comme GPT-4o, Claude 3.5 Sonnet, LLaVA, etc. "
-                        f"Si votre modèle supporte les images, vérifiez sa configuration.\n"
-                        f"Response body: {error_body[:500]}",
-                        response=resp
-                    )
-            # Inclure le body dans l'exception pour que l'utilisateur voie le vrai message
             _model_name = llm_request.get('model', 'unknown')
             raise requests.HTTPError(
-                f"{resp.status_code} Client Error: Bad Request for url: {url} — "
-                f"{_model_name} response body: {error_body[:500]}",
+                f"{resp.status_code} — {_model_name} response body: {error_body[:500]}",
                 response=resp
             )
         return resp

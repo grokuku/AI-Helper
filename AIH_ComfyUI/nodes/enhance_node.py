@@ -32,9 +32,9 @@ except Exception:
     np = None
 
 
-def _tensor_to_base64(tensor, max_pixels=2_000_000, quality=85):
+def _tensor_to_base64(tensor, max_pixels=1_000_000, quality=85):
     """Convert ComfyUI IMAGE tensor [B,H,W,C] to base64 JPEG string.
-    Takes first image in batch. Auto-resizes if total pixels (W*H) > max_pixels (2MP),
+    Takes first image in batch. Auto-resizes if total pixels (W*H) > max_pixels (1MP),
     keeping the aspect ratio. JPEG (quality 85) is ~10x smaller than PNG — essential
     to keep the LLM API payload under size limits."""
     if PILImage is None or torch is None or np is None:

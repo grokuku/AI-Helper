@@ -309,22 +309,7 @@ def _call_openai(config, system_prompt, user_prompt, seed=None, image_base64=Non
     
     if not resp.ok:
         body = resp.text
-        # Détecter les erreurs liées au support multimodal
-        if image_base64 and _is_vision_error(body, has_image=True):
-            raise Exception(
-                "Le modèle ne semble pas supporter les images (multimodal). "
-                "Utilisez un modèle vision comme GPT-4o, Claude 3.5 Sonnet, LLaVA, etc.\n\n"
-                f"Détail: {body[:500]}"
-            )
-        # Si une image a été envoyée et que l'erreur est 500/bad request/internal server error,
-        # suggérer le problème multimodal même si le message n'est pas explicite
-        if image_base64 and ("500" in str(resp.status_code) or "bad request" in body.lower() or "internal server error" in body.lower()):
-            raise Exception(
-                f"Erreur: Le modèle ne semble pas supporter les images (multimodal). "
-                f"Utilisez un modèle vision comme GPT-4o, Claude 3.5 Sonnet, LLaVA, etc. "
-                f"Détail: {str(body)[:200]}"
-            )
-        raise Exception(f"HTTP {resp.status_code}: {body}")
+        raise Exception(f"HTTP {resp.status_code}: {body[:500]}")
     
     data = resp.json()
     return data.get("choices", [{}])[0].get("message", {}).get("content", "")
