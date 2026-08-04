@@ -195,57 +195,6 @@ def _is_ollama_base_url(base_url):
     return "ollama" in (base_url or "").lower() or ":1143" in (base_url or "")
 
 
-_model_context_cache = {}  # key: (base_url, model) -> (context_length, fetched_at)
-
-
-def _get_model_context(base_url, api_key, model, cache_ttl=3600):
-    """Interroge l'API pour récupérer la fenêtre de contexte du modèle.
-    Retourne un int (tokens) ou 0 si indisponible. Cache par (base_url, model)."""
-    import time as _time
-    key = (base_url, model)
-    now = _time.time()
-    cached = _model_context_cache.get(key)
-    if cached and now - cached[1] < cache_ttl:
-        return cached[0]
-    ctx = 0
-    try:
-        if requests is None:
-            return 0
-        base = (base_url or "").rstrip("/")
-        is_ollama = "ollama" in base.lower() or ":1143" in base
-        if is_ollama:
-            native_base = base[:-3] if base.endswith("/v1") else base
-            resp = requests.post(f"{native_base}/api/show",
-                                 json={"model": model},
-                                 headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
-                                 timeout=10)
-            if resp.ok:
-                info = resp.json().get("model_info", {})
-                for k, v in info.items():
-                    if "context_length" in k:
-                        ctx = int(v)
-                        break
-        else:
-            resp = requests.get(f"{base}/models",
-                                headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
-                                timeout=10)
-            if resp.ok:
-                data = resp.json()
-                models = data.get("data", []) if isinstance(data, dict) else []
-                for m in models:
-                    if m.get("id") == model:
-                        for k in ("context_length", "max_model_len", "context_window", "max_context_length"):
-                            if m.get(k):
-                                ctx = int(m[k])
-                                break
-                        break
-    except Exception:
-        ctx = 0
-    if ctx > 0:
-        _model_context_cache[key] = (ctx, now)
-    return ctx
-
-
 def _call_openai(config, system_prompt, user_prompt, seed=None, image_base64=None):
     """Appelle une API compatible OpenAI via HTTP."""
     if requests is None:
@@ -285,25 +234,21 @@ def _call_openai(config, system_prompt, user_prompt, seed=None, image_base64=Non
     
     # Pas de repeat_penalty (problème avec DeepSeek etc)
     
-    # num_ctx (taille de la fenêtre de contexte) — paramètre SPÉCIFIQUE Ollama.
-    # Ne PAS l'envoyer aux APIs OpenAI / DeepSeek / LM Studio (400 Bad Request).
-    # max_tokens (limite de réponse) est envoyé ci-dessus uniquement si > 0 — les deux coexistent.
-    #
-    # Règle :
-    #   - requested_num_ctx > 0 → override utilisateur explicite (widget num_ctx)
-    #   - sinon (Ollama)        → auto-détection depuis /api/show avec marge de
-    #                             sécurité (ctx - 512, min 4096)
-    #   - sinon                 → pas de num_ctx du tout
-    num_ctx = 0
-    if requested_num_ctx > 0:
-        num_ctx = requested_num_ctx
-    elif _is_ollama_base_url(base_url):
-        ctx = _get_model_context(base_url, api_key, model)
-        if ctx > 0:
-            num_ctx = max(ctx - 512, 4096)
-    if num_ctx > 0 and _is_ollama_base_url(base_url):
-        payload["num_ctx"] = num_ctx
-    
+    # num_ctx : uniquement si l'utilisateur l'a explicitement défini (> 0).
+    # NE PAS auto-détecter : Ollama Cloud utilise déjà son contexte max par défaut,
+    # et Ollama local le configure au niveau du modèle. L'auto-fetch peut renvoyer
+    # une valeur plus petite et OVERRIDE le défaut, causant des débordements.
+    if requested_num_ctx > 0 and _is_ollama_base_url(base_url):
+        payload["num_ctx"] = requested_num_ctx
+
+    # Debug: afficher le payload sans le base64
+    _debug_payload = {k: v for k, v in payload.items() if k != 'messages'}
+    _debug_payload['messages'] = [
+        {**m, 'content': '[multipart with image]' if isinstance(m.get('content'), list) else m.get('content', '')[:200]}
+        for m in payload.get('messages', [])
+    ]
+    print(f"[AIH-DEBUG] _call_openai payload: url={base_url}/chat/completions model={model} keys={list(payload.keys())} num_ctx={payload.get('num_ctx', 'NOT SENT')} max_tokens={payload.get('max_tokens', 'NOT SENT')}")
+
     url = f"{base_url}/chat/completions"
     resp = requests.post(url, headers=headers, json=payload, timeout=(10, 300))
     
