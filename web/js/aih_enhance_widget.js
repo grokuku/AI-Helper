@@ -485,7 +485,13 @@
                         return;
                     }
 
-                    resultTextarea.value = "Enhancement en cours...";
+                    // Vérifier si l'input image est connecté (ne peut pas être envoyé en mode Test)
+                    const imageSlot = node.inputs?.find(i => i.name === "image");
+                    if (imageSlot && imageSlot.link != null) {
+                        resultTextarea.value = "Note: L'image connectée n'est pas envoyée en mode Test. Lancez le workflow pour utiliser l'image.\n\nEnhancement en cours...";
+                    } else {
+                        resultTextarea.value = "Enhancement en cours...";
+                    }
                     try {
                         const resp = await fetch(`${getApiUrl()}/enhance`, {
                             method: "POST", headers: apiHeaders(), body: JSON.stringify(payload),

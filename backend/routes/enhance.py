@@ -1324,7 +1324,7 @@ def _prepare_enhance(user_id, data):
         # ── Construire le message user : multipart si image_base64 fourni ──
         if image_base64:
             user_content = [
-                {'type': 'text', 'text': merged_text},
+                {'type': 'text', 'text': merged_text + "\n\n[An image is provided as visual reference. Incorporate relevant visual elements from the image into the enhanced prompt.]"},
                 {'type': 'image_url', 'image_url': {'url': f'data:image/png;base64,{image_base64}'}},
             ]
         else:
@@ -1448,10 +1448,21 @@ def _call_llm_internal(llm_request, llm_config):
                 _body_lower = error_body.lower()
                 _vision_indicators = ['image', 'vision', 'multimodal', 'content type', 'unsupported content',
                                      'does not support', 'not support image', 'not a vision model', 'no vision']
-                if any(ind in _body_lower for ind in _vision_indicators):
+                _has_explicit_vision_error = any(ind in _body_lower for ind in _vision_indicators)
+                # Erreur explicite liée au multimodal
+                if _has_explicit_vision_error:
                     raise requests.HTTPError(
                         f"{resp.status_code} — Le modèle ne supporte pas les images (multimodal). "
                         f"Utilisez un modèle vision comme GPT-4o, Claude 3.5 Sonnet, LLaVA, etc.\n"
+                        f"Response body: {error_body[:500]}",
+                        response=resp
+                    )
+                # Erreur 500 / bad request / internal server error avec image → suggérer multimodal
+                if (str(resp.status_code) == "500" or "bad request" in _body_lower or "internal server error" in _body_lower):
+                    raise requests.HTTPError(
+                        f"{resp.status_code} — Le modèle ne semble pas supporter les images (multimodal). "
+                        f"Utilisez un modèle vision comme GPT-4o, Claude 3.5 Sonnet, LLaVA, etc. "
+                        f"Si votre modèle supporte les images, vérifiez sa configuration.\n"
                         f"Response body: {error_body[:500]}",
                         response=resp
                     )

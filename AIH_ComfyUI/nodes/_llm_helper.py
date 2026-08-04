@@ -132,8 +132,15 @@ def _call_lmstudio(config, system_prompt, user_prompt, seed=None, image_base64=N
 
 
 def _build_user_content(user_prompt, image_base64):
-    """Construit le contenu du message user : string simple ou multipart avec image."""
+    """Construit le contenu du message user : string simple ou multipart avec image.
+
+    Si une image est fournie, ajoute une instruction contextuelle au text part
+    (si elle n'est pas déjà présente par l'appelant).
+    """
     if image_base64:
+        instruction = "[An image is provided as visual reference. Incorporate relevant visual elements from the image into the enhanced prompt.]"
+        if instruction not in user_prompt:
+            user_prompt = user_prompt + "\n\n" + instruction
         return [
             {"type": "text", "text": user_prompt},
             {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_base64}"}},
@@ -141,16 +148,33 @@ def _build_user_content(user_prompt, image_base64):
     return user_prompt
 
 
-def _is_vision_error(error_msg):
-    """Détecte si une erreur LLM est liée à l'absence de support multimodal."""
+def _is_vision_error(error_msg, has_image=False):
+    """Détecte si une erreur LLM est liée à l'absence de support multimodal.
+
+    Args:
+        error_msg: le message d'erreur (string).
+        has_image: si True, une image a été envoyée dans la requête.
+                   Dans ce cas, des patterns génériques comme "500",
+                   "bad request", "internal server error" sont aussi
+                   considérés comme potentiellement liés au manque de
+                   support multimodal.
+    """
     msg_lower = error_msg.lower()
+    # Patterns explicites — toujours pertinents
     indicators = [
         "image", "vision", "multimodal", "multimodal_capability",
         "content type", "unsupported content", "image_url",
         "does not support", "not support image", "not a vision model",
         "no vision", "can only process text",
     ]
-    return any(ind in msg_lower for ind in indicators)
+    if any(ind in msg_lower for ind in indicators):
+        return True
+    # Patterns contextuels — uniquement si une image a été envoyée
+    if has_image:
+        generic_indicators = ["500", "bad request", "internal server error", "ollama"]
+        if any(ind in msg_lower for ind in generic_indicators):
+            return True
+    return False
 
 
 def _call_openai(config, system_prompt, user_prompt, seed=None, image_base64=None):
@@ -193,11 +217,19 @@ def _call_openai(config, system_prompt, user_prompt, seed=None, image_base64=Non
     if not resp.ok:
         body = resp.text
         # Détecter les erreurs liées au support multimodal
-        if image_base64 and _is_vision_error(body):
+        if image_base64 and _is_vision_error(body, has_image=True):
             raise Exception(
-                "Le modèle ne supporte pas les images (multimodal). "
+                "Le modèle ne semble pas supporter les images (multimodal). "
                 "Utilisez un modèle vision comme GPT-4o, Claude 3.5 Sonnet, LLaVA, etc.\n\n"
                 f"Détail: {body[:500]}"
+            )
+        # Si une image a été envoyée et que l'erreur est 500/bad request/internal server error,
+        # suggérer le problème multimodal même si le message n'est pas explicite
+        if image_base64 and ("500" in str(resp.status_code) or "bad request" in body.lower() or "internal server error" in body.lower()):
+            raise Exception(
+                f"Erreur: Le modèle ne semble pas supporter les images (multimodal). "
+                f"Utilisez un modèle vision comme GPT-4o, Claude 3.5 Sonnet, LLaVA, etc. "
+                f"Détail: {str(body)[:200]}"
             )
         raise Exception(f"HTTP {resp.status_code}: {body}")
     

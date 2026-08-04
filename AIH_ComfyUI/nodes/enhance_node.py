@@ -205,11 +205,11 @@ class AIHEnhanceNode:
                 "special_instructions": ("STRING", {"default": ""}),
             },
             "optional": {
+                # Image optionnelle pour le mode multimodal (LLM vision uniquement)
+                "image": ("IMAGE",),
                 # JSON sérialisé des éléments (connecté à la sortie elements_json du Elements Picker)
                 "elements": ("STRING", {"forceInput": True, "multiline": True, "default": "[]"}),
                 "llm_config": ("STRING", {"forceInput": True}),
-                # Image optionnelle pour le mode multimodal (LLM vision uniquement)
-                "image": ("IMAGE",),
             }
         }
 
@@ -353,6 +353,10 @@ class AIHEnhanceNode:
             # Construire les prompts unifiés
             system_prompt = _build_system_prompt_unified(template, special_instructions)
             user_prompt = _build_user_prompt_unified(combined_text, "", style_text)
+
+            # Instruction contextuelle quand une image est fournie (mode local LLM)
+            if image_base64:
+                user_prompt += "\n\n[An image is provided as visual reference. Incorporate relevant visual elements from the image into the enhanced prompt.]"
 
             enhanced = _llm_helper.call_llm(llm_config, system_prompt, user_prompt, seed=seed, image_base64=image_base64)
             if enhanced:
