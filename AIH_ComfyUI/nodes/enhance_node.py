@@ -32,19 +32,14 @@ except Exception:
     np = None
 
 
-def _tensor_to_base64(tensor, max_pixels=1_000_000, quality=85):
-    """Convert ComfyUI IMAGE tensor [B,H,W,C] to base64 JPEG string.
+def _tensor_to_base64(tensor, max_pixels=1_000_000):
+    """Convert ComfyUI IMAGE tensor [B,H,W,C] to base64 PNG string.
     Takes first image in batch. Auto-resizes if total pixels (W*H) > max_pixels (1MP),
-    keeping the aspect ratio. JPEG (quality 85) is ~10x smaller than PNG — essential
-    to keep the LLM API payload under size limits."""
+    keeping the aspect ratio. PNG format — Ollama Cloud vision models may not accept JPEG."""
     if PILImage is None or torch is None or np is None:
         raise Exception("PIL (Pillow), torch, and numpy are required for image input support")
-    # tensor shape: [B, H, W, C], values [0,1]
     img_array = (tensor[0].cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
     pil_img = PILImage.fromarray(img_array)
-    # JPEG ne supporte pas l'alpha — convertir RGBA/P en RGB
-    if pil_img.mode not in ('RGB', 'L'):
-        pil_img = pil_img.convert('RGB')
     w, h = pil_img.size
     if w * h > max_pixels:
         ratio = (max_pixels / (w * h)) ** 0.5
@@ -52,7 +47,7 @@ def _tensor_to_base64(tensor, max_pixels=1_000_000, quality=85):
         new_h = max(1, int(h * ratio))
         pil_img = pil_img.resize((new_w, new_h), PILImage.LANCZOS)
     buf = io.BytesIO()
-    pil_img.save(buf, format='JPEG', quality=quality)
+    pil_img.save(buf, format='PNG')
     return base64.b64encode(buf.getvalue()).decode('utf-8')
 
 

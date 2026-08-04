@@ -1377,7 +1377,7 @@ def _prepare_enhance(user_id, data):
         if image_base64:
             user_content = [
                 {'type': 'text', 'text': merged_text + "\n\n[An image is provided as visual reference. Incorporate relevant visual elements from the image into the enhanced prompt.]"},
-                {'type': 'image_url', 'image_url': {'url': f'data:image/jpeg;base64,{image_base64}'}},
+                {'type': 'image_url', 'image_url': {'url': f'data:image/png;base64,{image_base64}'}},
             ]
         else:
             user_content = merged_text
