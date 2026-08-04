@@ -323,17 +323,23 @@
                     set("style_id", sval);
                 }
 
-                templateSelect.onchange = syncNativeWidgets;
-                presetSelect.onchange = syncNativeWidgets;
-                styleSelect.onchange = syncNativeWidgets;
-                formatSelect.onchange = syncNativeWidgets;
+                templateSelect.onchange = () => syncNativeWidgets(true);
+                presetSelect.onchange = () => syncNativeWidgets(true);
+                styleSelect.onchange = () => syncNativeWidgets(true);
+                formatSelect.onchange = () => syncNativeWidgets(true);
 
                 // ---- Restoration depuis widgets natifs ----
                 function restoreFromNativeWidgets() {
                     let restored = false;
                     if (templateIdWidget) {
                         const tid = parseInt(templateIdWidget.value) || 0;
-                        if (tid > 0 && [...templateSelect.options].some(o => o.value === String(tid))) {
+                        const currentDropdownVal = parseInt(templateSelect.value) || 0;
+                        if (currentDropdownVal > 0 && currentDropdownVal !== tid) {
+                            // User has selected a different value in the dropdown — respect their choice
+                            templateIdWidget.value = currentDropdownVal;
+                            if (templateIdWidget.callback) templateIdWidget.callback(currentDropdownVal);
+                            restored = true;
+                        } else if (tid > 0 && [...templateSelect.options].some(o => o.value === String(tid))) {
                             templateSelect.value = String(tid);
                             restored = true;
                         } else if (tid === 0) {
@@ -343,7 +349,13 @@
                     }
                     if (presetIdWidget) {
                         const pid = parseInt(presetIdWidget.value) || 0;
-                        if (pid > 0 && [...presetSelect.options].some(o => o.value === String(pid))) {
+                        const currentDropdownVal = parseInt(presetSelect.value) || 0;
+                        if (currentDropdownVal > 0 && currentDropdownVal !== pid) {
+                            // User has selected a different value in the dropdown — respect their choice
+                            presetIdWidget.value = currentDropdownVal;
+                            if (presetIdWidget.callback) presetIdWidget.callback(currentDropdownVal);
+                            restored = true;
+                        } else if (pid > 0 && [...presetSelect.options].some(o => o.value === String(pid))) {
                             presetSelect.value = String(pid);
                             restored = true;
                         } else if (pid === 0) {
@@ -353,7 +365,15 @@
                     }
                     if (styleIdWidget) {
                         const sid = parseInt(styleIdWidget.value);
-                        if (sid === -1 && [...styleSelect.options].some(o => o.value === '_random')) {
+                        const currentDropdownRaw = styleSelect.value;
+                        const currentDropdownVal = currentDropdownRaw === '_random' ? -1 : (parseInt(currentDropdownRaw) || 0);
+                        if (currentDropdownVal !== 0 && currentDropdownVal !== sid && !isNaN(currentDropdownVal)) {
+                            // User has selected a different value in the dropdown — respect their choice
+                            var syncVal = currentDropdownRaw === '_random' ? -1 : currentDropdownVal;
+                            styleIdWidget.value = syncVal;
+                            if (styleIdWidget.callback) styleIdWidget.callback(syncVal);
+                            restored = true;
+                        } else if (sid === -1 && [...styleSelect.options].some(o => o.value === '_random')) {
                             styleSelect.value = '_random';
                             restored = true;
                         } else if (sid > 0 && [...styleSelect.options].some(o => o.value === String(sid))) {
@@ -397,6 +417,9 @@
                     const restored = restoreFromNativeWidgets();
                     if (restored) syncNativeWidgets();
                     else {
+                        // Dropdown couldn't restore from native widget (option not found yet)
+                        // Only update DOM display, DON'T overwrite native widget values
+                        // (delayedRestore will retry and sync when dropdown is populated)
                         templateSelect.value = String(parseInt(templateIdWidget?.value) || 0);
                         presetSelect.value = String(parseInt(presetIdWidget?.value) || 0);
                         // Gérer la sentinelle -1 (random persistant)
@@ -406,7 +429,8 @@
                         } else {
                             styleSelect.value = String(sval || 0);
                         }
-                        syncNativeWidgets();
+                        // NE PAS appeler syncNativeWidgets() ici — cela écraserait les valeurs
+                        // natives restaurées par configure() avec 0 (dropdown non peuplé)
                     }
                     let ra = 0;
                     function delayedRestore() {
@@ -454,7 +478,17 @@
                         // Texte brut
                     }
 
-                    // Résoudre le style aléatoire si la sentinelle -1 est active
+                    // NEW: Fallback sur le widget natif si le dropdown n'est pas encore peuplé
+                    // (async fetch pas terminé au premier clic après reboot ComfyUI)
+                    let templateId = parseInt(templateSelect.value) || 0;
+                    if (templateId === 0 && templateIdWidget) {
+                        templateId = parseInt(templateIdWidget.value) || 0;
+                    }
+                    let presetId = parseInt(presetSelect.value) || 0;
+                    if (presetId === 0 && presetIdWidget) {
+                        presetId = parseInt(presetIdWidget.value) || 0;
+                    }
+                    // Style: si le dropdown n'a que le placeholder, utiliser le widget natif
                     let styleId = parseInt(styleSelect.value) || null;
                     if (styleSelect.value === '_random' || styleId === -1) {
                         var realOptions = Array.from(styleSelect.options)
@@ -464,12 +498,26 @@
                             styleId = realOptions[Math.floor(Math.random() * realOptions.length)];
                         }
                     }
+                    if ((styleId === null || styleId === 0) && styleIdWidget) {
+                        const nativeStyleId = parseInt(styleIdWidget.value);
+                        if (nativeStyleId === -1) {
+                            // Random: need options to pick from, skip if not populated
+                            var realOpts = Array.from(styleSelect.options)
+                                .filter(o => o.value !== '0' && o.value !== '_random' && o.value !== '')
+                                .map(o => parseInt(o.value));
+                            if (realOpts.length > 0) {
+                                styleId = realOpts[Math.floor(Math.random() * realOpts.length)];
+                            }
+                        } else if (nativeStyleId > 0) {
+                            styleId = nativeStyleId;
+                        }
+                    }
 
                     const payload = {
                         text: basePrompt,
                         seed: seedW > 0 ? seedW : null,
-                        template_id: parseInt(templateSelect.value) || 0,
-                        preset_id: parseInt(presetSelect.value) || null,
+                        template_id: templateId,
+                        preset_id: presetId || null,
                         style_id: styleId,
                         output_format: formatSelect.value || "rich",
                         special_instructions: specialInstructions,
