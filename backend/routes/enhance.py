@@ -759,6 +759,7 @@ def _validate_enhance_inputs(data):
         'width': int(data.get('width') or 0),
         'height': int(data.get('height') or 0),
         'output_format': data.get('output_format', 'rich'),
+        'image_base64': data.get('image_base64', ''),
     }
     return template_id, scalars
 
@@ -1258,6 +1259,7 @@ def _prepare_enhance(user_id, data):
     height = scalars['height']
     preset_id = scalars['preset_id']
     output_format_clean = scalars['output_format']
+    image_base64 = scalars['image_base64']
 
     # Debug : collecter les etapes pour le markdown de debug
     debug_sections = []
@@ -1319,11 +1321,19 @@ def _prepare_enhance(user_id, data):
         # pas frequency_penalty et renvoient 400. On ne l'envoie QUE pour les APIs cloud
         # connues (DeepSeek, OpenAI, etc.), pas pour les serveurs locaux.
         is_local_llm = any(h in base_url.lower() for h in ['localhost', '127.0.0.1', '0.0.0.0'])
+        # ── Construire le message user : multipart si image_base64 fourni ──
+        if image_base64:
+            user_content = [
+                {'type': 'text', 'text': merged_text},
+                {'type': 'image_url', 'image_url': {'url': f'data:image/png;base64,{image_base64}'}},
+            ]
+        else:
+            user_content = merged_text
         llm_request = {
             'model': model,
             'messages': [
                 {'role': 'system', 'content': system_prompt},
-                {'role': 'user', 'content': merged_text}
+                {'role': 'user', 'content': user_content}
             ],
             'temperature': 0.3,
         }
@@ -1429,6 +1439,22 @@ def _call_llm_internal(llm_request, llm_config):
                 f"[enhance] LLM HTTP {resp.status_code} ERROR "
                 f"url={url!r} body={error_body[:1000]!r}"
             )
+            # Détecter les erreurs liées au support multimodal (image non supportée)
+            _has_image = any(
+                isinstance(m.get('content'), list) and any(p.get('type') == 'image_url' for p in m.get('content', []) if isinstance(p, dict))
+                for m in llm_request.get('messages', [])
+            )
+            if _has_image:
+                _body_lower = error_body.lower()
+                _vision_indicators = ['image', 'vision', 'multimodal', 'content type', 'unsupported content',
+                                     'does not support', 'not support image', 'not a vision model', 'no vision']
+                if any(ind in _body_lower for ind in _vision_indicators):
+                    raise requests.HTTPError(
+                        f"{resp.status_code} — Le modèle ne supporte pas les images (multimodal). "
+                        f"Utilisez un modèle vision comme GPT-4o, Claude 3.5 Sonnet, LLaVA, etc.\n"
+                        f"Response body: {error_body[:500]}",
+                        response=resp
+                    )
             # Inclure le body dans l'exception pour que l'utilisateur voie le vrai message
             raise requests.HTTPError(
                 f"{resp.status_code} Client Error: Bad Request for url: {url} — "

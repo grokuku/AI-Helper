@@ -7,12 +7,46 @@ Option use_llm :
   - False : Concaténation directe (base_prompt + elements + style) sans LLM
 """
 
+import io
 import json
 import logging
 import re
+import base64
 
 from . import _credentials
 from . import _llm_helper
+
+try:
+    from PIL import Image as PILImage
+except Exception:
+    PILImage = None
+
+try:
+    import torch
+except Exception:
+    torch = None
+
+try:
+    import numpy as np
+except Exception:
+    np = None
+
+
+def _tensor_to_base64(tensor, max_size=1024):
+    """Convert ComfyUI IMAGE tensor [B,H,W,C] to base64 PNG string.
+    Takes first image in batch. Auto-resizes if larger than max_size."""
+    if PILImage is None or torch is None or np is None:
+        raise Exception("PIL (Pillow), torch, and numpy are required for image input support")
+    # tensor shape: [B, H, W, C], values [0,1]
+    img_array = (tensor[0].cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
+    pil_img = PILImage.fromarray(img_array)
+    # Auto-resize if too large
+    if max(pil_img.size) > max_size:
+        ratio = max_size / max(pil_img.size)
+        pil_img = pil_img.resize((int(pil_img.size[0] * ratio), int(pil_img.size[1] * ratio)), PILImage.LANCZOS)
+    buf = io.BytesIO()
+    pil_img.save(buf, format='PNG')
+    return base64.b64encode(buf.getvalue()).decode('utf-8')
 
 
 def _clean_output(text, output_format="rich"):
@@ -174,6 +208,8 @@ class AIHEnhanceNode:
                 # JSON sérialisé des éléments (connecté à la sortie elements_json du Elements Picker)
                 "elements": ("STRING", {"forceInput": True, "multiline": True, "default": "[]"}),
                 "llm_config": ("STRING", {"forceInput": True}),
+                # Image optionnelle pour le mode multimodal (LLM vision uniquement)
+                "image": ("IMAGE",),
             }
         }
 
@@ -182,10 +218,20 @@ class AIHEnhanceNode:
 
     def enhance(self, use_llm=True, seed=0, base_prompt="", template_id=0,
                 preset_id=0, output_format="rich", style_id=0, style_shortlist="[]",
-                special_instructions="", elements="[]", llm_config=None):
+                special_instructions="", elements="[]", llm_config=None, image=None):
         # api_key et api_url lus depuis le fichier de credentials
         api_url = _credentials.get_api_url()
         api_key = _credentials.get_api_key()
+
+        # ── Conversion image tensor → base64 (si fournie et mode LLM) ──
+        # En mode concaténation (use_llm=False), on ignore l'image.
+        image_base64 = None
+        if image is not None and use_llm:
+            try:
+                image_base64 = _tensor_to_base64(image, max_size=1024)
+            except Exception as e:
+                logging.warning(f"[AIH Enhance] Image conversion failed: {e}")
+                image_base64 = None
 
         # Defensive : ComfyUI peut envoyer une string vide pour un INT
         try:
@@ -288,6 +334,8 @@ class AIHEnhanceNode:
             "special_instructions": special_instructions,
             "output_format": output_format,
         }
+        if image_base64:
+            payload["image_base64"] = image_base64
 
         headers = {"Content-Type": "application/json"}
         if api_key:
@@ -306,7 +354,7 @@ class AIHEnhanceNode:
             system_prompt = _build_system_prompt_unified(template, special_instructions)
             user_prompt = _build_user_prompt_unified(combined_text, "", style_text)
 
-            enhanced = _llm_helper.call_llm(llm_config, system_prompt, user_prompt, seed=seed)
+            enhanced = _llm_helper.call_llm(llm_config, system_prompt, user_prompt, seed=seed, image_base64=image_base64)
             if enhanced:
                 enhanced = _clean_output(enhanced, output_format)
                 return {

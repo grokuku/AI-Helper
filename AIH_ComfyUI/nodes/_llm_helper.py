@@ -20,7 +20,7 @@ except Exception:
     requests = None
 
 
-def call_llm(config, system_prompt, user_prompt, seed=None):
+def call_llm(config, system_prompt, user_prompt, seed=None, image_base64=None):
     """
     Appelle un LLM selon le type de config.
     
@@ -29,6 +29,7 @@ def call_llm(config, system_prompt, user_prompt, seed=None):
         system_prompt: str
         user_prompt: str
         seed: int ou None
+        image_base64: str ou None — image encodée en base64 PNG (multimodal)
     
     Returns:
         str (le texte généré) ou None si pas de config (fallback backend)
@@ -46,16 +47,33 @@ def call_llm(config, system_prompt, user_prompt, seed=None):
     llm_type = config.get("type", "")
     
     if llm_type == "lmstudio":
-        return _call_lmstudio(config, system_prompt, user_prompt, seed)
+        return _call_lmstudio(config, system_prompt, user_prompt, seed, image_base64)
     elif llm_type == "openai":
-        return _call_openai(config, system_prompt, user_prompt, seed)
+        return _call_openai(config, system_prompt, user_prompt, seed, image_base64)
     else:
         logging.warning(f"[AIH LLM] Unknown config type: {llm_type}")
         return None
 
 
-def _call_lmstudio(config, system_prompt, user_prompt, seed=None):
-    """Appelle LM Studio via le SDK Python."""
+def _call_lmstudio(config, system_prompt, user_prompt, seed=None, image_base64=None):
+    """Appelle LM Studio via le SDK Python, ou via HTTP pour le multimodal."""
+    # ── Multimodal : utiliser l'API HTTP OpenAI-compatible de LM Studio ──
+    # Le SDK lmstudio ne supporte pas les messages multipart avec images.
+    # LM Studio expose un endpoint OpenAI-compatible sur localhost:1234/v1.
+    if image_base64:
+        base_url = config.get("base_url", "").strip().rstrip("/")
+        if not base_url:
+            base_url = "http://localhost:1234/v1"
+        http_config = {
+            "base_url": base_url,
+            "api_key": config.get("api_key", ""),
+            "model": config.get("model", ""),
+            "max_tokens": config.get("max_tokens", 1000),
+            "temperature": config.get("temperature", 0.7),
+        }
+        return _call_openai(http_config, system_prompt, user_prompt, seed, image_base64)
+
+    # ── Mode texte seul : utiliser le SDK lmstudio comme avant ──
     if lms is None:
         raise Exception("LM Studio SDK (lmstudio) is not installed. Run: pip install lmstudio")
     
@@ -113,7 +131,29 @@ def _call_lmstudio(config, system_prompt, user_prompt, seed=None):
             raise Exception("LM Studio operation timed out after 300 seconds")
 
 
-def _call_openai(config, system_prompt, user_prompt, seed=None):
+def _build_user_content(user_prompt, image_base64):
+    """Construit le contenu du message user : string simple ou multipart avec image."""
+    if image_base64:
+        return [
+            {"type": "text", "text": user_prompt},
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_base64}"}},
+        ]
+    return user_prompt
+
+
+def _is_vision_error(error_msg):
+    """Détecte si une erreur LLM est liée à l'absence de support multimodal."""
+    msg_lower = error_msg.lower()
+    indicators = [
+        "image", "vision", "multimodal", "multimodal_capability",
+        "content type", "unsupported content", "image_url",
+        "does not support", "not support image", "not a vision model",
+        "no vision", "can only process text",
+    ]
+    return any(ind in msg_lower for ind in indicators)
+
+
+def _call_openai(config, system_prompt, user_prompt, seed=None, image_base64=None):
     """Appelle une API compatible OpenAI via HTTP."""
     if requests is None:
         raise Exception("requests is not installed")
@@ -133,11 +173,13 @@ def _call_openai(config, system_prompt, user_prompt, seed=None):
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     
+    user_content = _build_user_content(user_prompt, image_base64)
+    
     payload = {
         "model": model,
         "messages": [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
+            {"role": "user", "content": user_content},
         ],
         "temperature": temperature,
         "max_tokens": max_tokens,
@@ -150,6 +192,13 @@ def _call_openai(config, system_prompt, user_prompt, seed=None):
     
     if not resp.ok:
         body = resp.text
+        # Détecter les erreurs liées au support multimodal
+        if image_base64 and _is_vision_error(body):
+            raise Exception(
+                "Le modèle ne supporte pas les images (multimodal). "
+                "Utilisez un modèle vision comme GPT-4o, Claude 3.5 Sonnet, LLaVA, etc.\n\n"
+                f"Détail: {body[:500]}"
+            )
         raise Exception(f"HTTP {resp.status_code}: {body}")
     
     data = resp.json()
