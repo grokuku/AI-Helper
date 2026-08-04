@@ -29,7 +29,7 @@ def call_llm(config, system_prompt, user_prompt, seed=None, image_base64=None):
         system_prompt: str
         user_prompt: str
         seed: int ou None
-        image_base64: str ou None — image encodée en base64 PNG (multimodal)
+        image_base64: str ou None — image encodée en base64 JPEG (multimodal)
     
     Returns:
         str (le texte généré) ou None si pas de config (fallback backend)
@@ -143,7 +143,7 @@ def _build_user_content(user_prompt, image_base64):
             user_prompt = user_prompt + "\n\n" + instruction
         return [
             {"type": "text", "text": user_prompt},
-            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_base64}"}},
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}},
         ]
     return user_prompt
 
