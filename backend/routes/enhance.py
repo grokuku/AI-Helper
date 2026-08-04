@@ -1322,6 +1322,7 @@ def _prepare_enhance(user_id, data):
         # connues (DeepSeek, OpenAI, etc.), pas pour les serveurs locaux.
         is_local_llm = any(h in base_url.lower() for h in ['localhost', '127.0.0.1', '0.0.0.0'])
         # ── Construire le message user : multipart si image_base64 fourni ──
+        # Format OpenAI objet {'url': ...} pour TOUS les providers.
         if image_base64:
             user_content = [
                 {'type': 'text', 'text': merged_text + "\n\n[An image is provided as visual reference. Incorporate relevant visual elements from the image into the enhanced prompt.]"},

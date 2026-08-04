@@ -32,18 +32,21 @@ except Exception:
     np = None
 
 
-def _tensor_to_base64(tensor, max_size=1024):
+def _tensor_to_base64(tensor, max_pixels=2_000_000):
     """Convert ComfyUI IMAGE tensor [B,H,W,C] to base64 PNG string.
-    Takes first image in batch. Auto-resizes if larger than max_size."""
+    Takes first image in batch. Auto-resizes if total pixels (W*H) > max_pixels (2MP),
+    keeping the aspect ratio."""
     if PILImage is None or torch is None or np is None:
         raise Exception("PIL (Pillow), torch, and numpy are required for image input support")
     # tensor shape: [B, H, W, C], values [0,1]
     img_array = (tensor[0].cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
     pil_img = PILImage.fromarray(img_array)
-    # Auto-resize if too large
-    if max(pil_img.size) > max_size:
-        ratio = max_size / max(pil_img.size)
-        pil_img = pil_img.resize((int(pil_img.size[0] * ratio), int(pil_img.size[1] * ratio)), PILImage.LANCZOS)
+    w, h = pil_img.size
+    if w * h > max_pixels:
+        ratio = (max_pixels / (w * h)) ** 0.5
+        new_w = max(1, int(w * ratio))
+        new_h = max(1, int(h * ratio))
+        pil_img = pil_img.resize((new_w, new_h), PILImage.LANCZOS)
     buf = io.BytesIO()
     pil_img.save(buf, format='PNG')
     return base64.b64encode(buf.getvalue()).decode('utf-8')
@@ -228,7 +231,7 @@ class AIHEnhanceNode:
         image_base64 = None
         if image is not None and use_llm:
             try:
-                image_base64 = _tensor_to_base64(image, max_size=1024)
+                image_base64 = _tensor_to_base64(image)
             except Exception as e:
                 logging.warning(f"[AIH Enhance] Image conversion failed: {e}")
                 image_base64 = None
@@ -242,6 +245,8 @@ class AIHEnhanceNode:
             preset_id = int(preset_id) if preset_id != "" else 0
         except (ValueError, TypeError):
             preset_id = 0
+        # TEMP DEBUG: tracer preset_id reçu de ComfyUI
+        print(f"[AIH-DEBUG] enhance() called: preset_id={preset_id!r} (type={type(preset_id).__name__}) use_llm={use_llm} llm_config={llm_config is not None} image={image is not None}")
         try:
             style_id = int(style_id) if style_id != "" else 0
         except (ValueError, TypeError):
@@ -345,6 +350,8 @@ class AIHEnhanceNode:
         # Le node construit lui-même le system prompt et le user prompt (unifiés avec le backend),
         # fetch le template depuis le backend, puis appelle le LLM local.
         if llm_config:
+            # TEMP DEBUG: mode LLM local
+            print(f"[AIH-DEBUG] local LLM mode: llm_config type={llm_config.get('type') if isinstance(llm_config, dict) else 'parsed?'} model={llm_config.get('model') if isinstance(llm_config, dict) else 'N/A'}")
             # Fetch template depuis le backend
             template = None
             if template_id and template_id > 0:
@@ -367,6 +374,8 @@ class AIHEnhanceNode:
                 }
             # Fallback sur le backend si le LLM local échoue
 
+        # TEMP DEBUG: payload envoyé au backend
+        print(f"[AIH-DEBUG] cloud payload: preset_id={payload.get('preset_id')!r} template_id={payload.get('template_id')!r}")
         # Mode cloud (defaut) : appel streaming vers /api/enhance
         try:
             import requests
