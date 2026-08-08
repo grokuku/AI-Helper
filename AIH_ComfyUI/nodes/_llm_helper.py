@@ -241,14 +241,6 @@ def _call_openai(config, system_prompt, user_prompt, seed=None, image_base64=Non
     if requested_num_ctx > 0 and _is_ollama_base_url(base_url):
         payload["num_ctx"] = requested_num_ctx
 
-    # Debug: afficher le payload sans le base64
-    _debug_payload = {k: v for k, v in payload.items() if k != 'messages'}
-    _debug_payload['messages'] = [
-        {**m, 'content': '[multipart with image]' if isinstance(m.get('content'), list) else m.get('content', '')[:200]}
-        for m in payload.get('messages', [])
-    ]
-    print(f"[AIH-DEBUG] _call_openai payload: url={base_url}/chat/completions model={model} keys={list(payload.keys())} num_ctx={payload.get('num_ctx', 'NOT SENT')} max_tokens={payload.get('max_tokens', 'NOT SENT')}")
-
     url = f"{base_url}/chat/completions"
     resp = requests.post(url, headers=headers, json=payload, timeout=(10, 300))
     

@@ -288,7 +288,7 @@ class AIHElementsNode:
             msg = "Erreur : config JSON invalide"
             return {
                 "ui": {"elements": [msg]},
-                "result": (msg, llm_config)
+                "result": ("", llm_config)
             }
 
         # api_key et api_url lus depuis le fichier de credentials
@@ -447,7 +447,7 @@ class AIHElementsNode:
         if not elements and random_count <= 0:
             return {
                 "ui": {"elements": ["⚠️ Aucun filtre sélectionné. Ajoutez des filtres dans la liste."]},
-                "result": ("⚠️ Aucun filtre sélectionné. Ajoutez des filtres dans la liste.", llm_config)
+                "result": ("", llm_config)
             }
 
         # Construire le payload pour /api/generate

@@ -244,8 +244,6 @@ class AIHEnhanceNode:
             preset_id = int(preset_id) if preset_id != "" else 0
         except (ValueError, TypeError):
             preset_id = 0
-        # TEMP DEBUG: tracer preset_id reçu de ComfyUI
-        print(f"[AIH-DEBUG] enhance() called: preset_id={preset_id!r} (type={type(preset_id).__name__}) use_llm={use_llm} llm_config={llm_config is not None} image={image is not None}")
         try:
             style_id = int(style_id) if style_id != "" else 0
         except (ValueError, TypeError):
@@ -364,8 +362,6 @@ class AIHEnhanceNode:
         # Le node construit lui-même le system prompt et le user prompt (unifiés avec le backend),
         # fetch le template depuis le backend, puis appelle le LLM local.
         if llm_config:
-            # TEMP DEBUG: mode LLM local
-            print(f"[AIH-DEBUG] local LLM mode: llm_config type={llm_config.get('type') if isinstance(llm_config, dict) else 'parsed?'} model={llm_config.get('model') if isinstance(llm_config, dict) else 'N/A'}")
             # Fetch template depuis le backend
             template = None
             if template_id and template_id > 0:
@@ -388,8 +384,6 @@ class AIHEnhanceNode:
                 }
             # Fallback sur le backend si le LLM local échoue
 
-        # TEMP DEBUG: payload envoyé au backend
-        print(f"[AIH-DEBUG] cloud payload: preset_id={payload.get('preset_id')!r} template_id={payload.get('template_id')!r}")
         # Mode cloud (defaut) : appel streaming vers /api/enhance
         try:
             import requests
