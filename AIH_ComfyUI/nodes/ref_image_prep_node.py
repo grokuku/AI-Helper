@@ -151,6 +151,18 @@ def _auto_crop(pil_img, tolerance=10):
     return rgb.crop((left, top, right + 1, bottom + 1))
 
 
+def _resize_to_area(pil_img, target_area):
+    """Redimensionne l'image pour qu'elle ait la zone (aire) donnée en pixels,
+    en préservant le ratio largeur/hauteur."""
+    w, h = pil_img.size
+    if w == 0 or h == 0:
+        return pil_img
+    ratio = w / float(h)
+    new_w = max(1, int(round(math.sqrt(target_area * ratio))))
+    new_h = max(1, int(round(math.sqrt(target_area / ratio))))
+    return pil_img.resize((new_w, new_h), Image.LANCZOS)
+
+
 def _get_font(size):
     """Retourne une police lisible, taille `size`. Fallback load_default()."""
     size = max(8, size)
@@ -289,6 +301,13 @@ class AIHRefImagePrepNode:
             _logger.warning("[AIH RefImagePrep] No image connected — returning black 64×64.")
             return {"ui": {"text": ["⚠️ No image connected"]}, "result": (torch.zeros(1, 64, 64, 3),)}
 
+        # ── Equal area : toutes les images ont la même aire (pixel²) ─
+        # Cela équilibre le « poids visuel » de chaque image quel que soit
+        # son ratio, avant de calculer la disposition en grille.
+        if n >= 2:
+            target_area = (target_size * target_size) // n
+            imgs = [_resize_to_area(img, target_area) for img in imgs]
+
         # ── Cas : 1 seule image → auto-crop + resize direct ──────────
         if n == 1:
             img = imgs[0].convert("RGB")
@@ -390,84 +409,57 @@ class AIHRefImagePrepNode:
             )
 
         if n == 2:
-            # 1×2 horizontal : deux cellules de même hauteur, largeurs proportionnelles
+            # 1×2 horizontal : les deux images ont déjà la même aire
+            # (equal-area resizing). On les place côte à côte avec leurs
+            # dimensions naturelles ; la hauteur de ligne = max des deux.
             w0, h0 = sizes[0]
             w1, h1 = sizes[1]
-            # Hauteur commune = max des hauteurs
-            ch = max(h0, h1)
-            # Largeurs mises à l'échelle pour matcher la hauteur commune
-            cw0 = int(round(w0 * ch / h0)) if h0 else w0
-            cw1 = int(round(w1 * ch / h1)) if h1 else w1
-            total_w = cw0 + cw1 + gap
+            row_h = max(h0, h1)
+            total_w = w0 + gap + w1
             composite_w = total_w
-            composite_h = ch
+            composite_h = row_h
             layout = [
                 (0, 0, 1, 1, 0, 0),
-                (0, 1, 1, 1, cw0 + gap, 0),
+                (0, 1, 1, 1, w0 + gap, 0),
             ]
-            cell_sizes = [(cw0, ch), (cw1, ch)]
+            cell_sizes = [(w0, row_h), (w1, row_h)]
             return layout, composite_w, composite_h, cell_sizes
 
         if n == 3:
-            # 2 en haut + 1 en bas (pleine largeur).
-            # L'image la plus horizontale (ratio w/h le plus élevé) va en bas.
+            # 2 en haut + 1 en bas. Les 3 images ont déjà la même aire
+            # (equal-area resizing). L'image la plus horizontale (ratio w/h
+            # le plus élevé) va en bas. Les dimensions sont adaptatives : on
+            # utilise les dimensions naturelles (post-resize) de chaque image
+            # et on centre les rangées qui sont plus étroites que le composite.
             ratios = [w / float(h) if h else 0.0 for w, h in sizes]
             bottom_idx = int(np.argmax(ratios))
             top_idxs = [i for i in range(3) if i != bottom_idx]
 
-            # Taille de la ligne du bas = pleine largeur du composite.
-            # On choisit la largeur du composite = max(largeurs des images du haut
-            # mises à la même hauteur, largeur de l'image du bas).
-            # Approche : on détermine d'abord la hauteur de la ligne du bas,
-            # puis la largeur du composite, puis la hauteur de la ligne du haut.
-
-            # Image du bas
             bw, bh = sizes[bottom_idx]
-            # Images du haut
             t0w, t0h = sizes[top_idxs[0]]
             t1w, t1h = sizes[top_idxs[1]]
 
-            # Largeur du composite : on prend le max entre la largeur du bas
-            # et la somme des deux largeurs du haut (à hauteur commune).
-            # Pour que les deux images du haut aient la même hauteur, on
-            # calcule leurs largeurs à une hauteur de référence `top_h`.
-            # On veut que cw0 + cw1 + gap = composite_w et que
-            # la ligne du bas fasse composite_w de large.
-            #
-            # Simplification : on calibre sur la ligne du bas.
-            # composite_w = bw
-            # top_h est choisi pour que les deux images du haut
-            # (contain fit dans (composite_w/2, top_h)) gardent un ratio
-            # raisonnable. On prend top_h = composite_w / (ratio moyen du haut).
-            # En pratique, on donne à la ligne du haut une hauteur = bw / 2
-            # pour un rendu équilibré, puis contain fit gère le reste.
-
-            composite_w = bw
-            top_h = bw // 2  # hauteur équilibrée pour la rangée du haut
-
-            # Cellules du haut : chacune (composite_w - gap) / 2 de large
-            top_cell_w = (composite_w - gap) // 2
-            # Hauteur de la cellule du bas : pour préserver le ratio,
-            # on calcule sa hauteur à partir de sa largeur (composite_w)
-            bottom_h = int(round(bh * composite_w / bw)) if bw else bh
-
+            top_w = t0w + gap + t1w
+            composite_w = max(top_w, bw)
+            top_h = max(t0h, t1h)
+            bottom_h = bh
             composite_h = top_h + gap + bottom_h
 
-            # Construire layout dans l'ordre original des images
+            # Centrer la rangée du haut si plus étroite que le composite
+            top_start_x = (composite_w - top_w) // 2 if top_w < composite_w else 0
+            # Centrer l'image du bas si plus étroite que le composite
+            bottom_start_x = (composite_w - bw) // 2 if bw < composite_w else 0
+
             layout = [None] * 3
             cell_sizes = [None] * 3
 
-            # Images du haut : positions
-            x0 = 0
-            x1 = top_cell_w + gap
             for k, idx in enumerate(top_idxs):
-                x = x0 if k == 0 else x1
+                x = top_start_x + (0 if k == 0 else t0w + gap)
                 layout[idx] = (0, k, 1, 1, x, 0)
-                cell_sizes[idx] = (top_cell_w, top_h)
+                cell_sizes[idx] = (t0w if k == 0 else t1w, top_h)
 
-            # Image du bas : pleine largeur
-            layout[bottom_idx] = (1, 0, 1, 2, 0, top_h + gap)
-            cell_sizes[bottom_idx] = (composite_w, bottom_h)
+            layout[bottom_idx] = (1, 0, 1, 2, bottom_start_x, top_h + gap)
+            cell_sizes[bottom_idx] = (bw, bottom_h)
 
             return layout, composite_w, composite_h, cell_sizes
 
