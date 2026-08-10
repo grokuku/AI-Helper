@@ -134,6 +134,10 @@ _preview_mod = _load_module(
     os.path.join(_nodes_dir, "preview_node.py"),
     "AIHPreviewNode"
 )
+_refimgprep_mod = _load_module(
+    os.path.join(_nodes_dir, "ref_image_prep_node.py"),
+    "AIHRefImagePrepNode"
+)
 
 # Charger le module Terminal (utilise par la route WebSocket ci-dessous)
 # NB : ce module ne declare AUCUNE node ComfyUI — le terminal est un
@@ -224,6 +228,11 @@ if _preview_mod and hasattr(_preview_mod, "AIHPreviewNode"):
     cls = _preview_mod.AIHPreviewNode
     NODE_CLASS_MAPPINGS["AIHPreviewNode"] = cls
     NODE_DISPLAY_NAME_MAPPINGS["AIHPreviewNode"] = "AIH Preview"
+
+if _refimgprep_mod and hasattr(_refimgprep_mod, "AIHRefImagePrepNode"):
+    cls = _refimgprep_mod.AIHRefImagePrepNode
+    NODE_CLASS_MAPPINGS["AIH Ref Image Prep"] = cls
+    NODE_DISPLAY_NAME_MAPPINGS["AIH Ref Image Prep"] = "AIH Ref Image Prep"
 
 if _lmstudio_settings_mod and hasattr(_lmstudio_settings_mod, "AIHLMStudioSettingsNode"):
     cls = _lmstudio_settings_mod.AIHLMStudioSettingsNode

@@ -15,12 +15,14 @@ from .nodes.elements_node import AIHElementsNode
 from .nodes.enhance_node import AIHEnhanceNode
 from .nodes.ideogram4_node import AIHIdeogram4Node
 from .nodes.diagnostic_node import AIHDiagnosticNode
+from .nodes.ref_image_prep_node import AIHRefImagePrepNode
 
 NODE_CLASS_MAPPINGS = {
     "AIHElementsNode": AIHElementsNode,
     "AIHEnhanceNode": AIHEnhanceNode,
     "AIHIdeogram4Node": AIHIdeogram4Node,
     "AIHDiagnosticNode": AIHDiagnosticNode,
+    "AIH Ref Image Prep": AIHRefImagePrepNode,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -28,6 +30,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "AIHEnhanceNode": "AIH Prompt Enhancer",
     "AIHIdeogram4Node": "AIH Ideogram 4 Builder",
     "AIHDiagnosticNode": "AIH Diagnostic",
+    "AIH Ref Image Prep": "AIH Ref Image Prep",
 }
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
