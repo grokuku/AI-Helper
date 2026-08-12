@@ -540,6 +540,12 @@
   // ── Modale unique ──
 
   window.openWorkflowManager = function () {
+    if (!document.getElementById('aih-spin-style')) {
+      var spinStyle = document.createElement('style');
+      spinStyle.id = 'aih-spin-style';
+      spinStyle.textContent = '@keyframes aih-spin { to { transform: rotate(360deg); } }';
+      document.head.appendChild(spinStyle);
+    }
     var _m = aihOpenModalV2({
         title: "📤  Workflows",
         width: "680px",
@@ -620,6 +626,7 @@
         return;
       }
 
+      container.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;gap:8px;padding:30px 0;color:#888;font-size:13px;"><span style="display:inline-block;width:16px;height:16px;border:2px solid #555;border-top-color:#6366f1;border-radius:50%;animation:aih-spin 0.8s linear infinite;"></span> Analyse des dépendances...</div>';
       var deps = await detectDependencies(workflowJSON);
       var existingId = null;
 
