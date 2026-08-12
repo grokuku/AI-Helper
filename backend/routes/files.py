@@ -22,7 +22,7 @@ from context import *
 from storage import get_storage, StorageBackend
 
 CHUNK_SIZE = 25 * 1024 * 1024  # 25 MB par chunk
-MAX_FILE_SIZE = 10 * 1024 * 1024 * 1024  # 10 GB max
+MAX_FILE_SIZE = 50 * 1024 * 1024 * 1024  # 50 GB max
 TEMP_DIR = tempfile.gettempdir() + "/aih_uploads"
 os.makedirs(TEMP_DIR, exist_ok=True)
 
