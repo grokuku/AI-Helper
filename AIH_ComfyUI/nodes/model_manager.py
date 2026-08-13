@@ -496,6 +496,12 @@ def download_model_from_server(upload_id, filename, file_type="model", dest_path
     else:
         dest_path = os.path.join(dest_dir, filename)
 
+    # Security: ensure the final path stays within dest_dir
+    dest_real = os.path.realpath(dest_path)
+    dest_dir_real = os.path.realpath(dest_dir)
+    if not (dest_real == dest_dir_real or dest_real.startswith(dest_dir_real + os.sep)):
+        return {'success': False, 'error': 'Invalid destination path'}
+
     # 1. Récupérer la config de download (SFTP direct ou HTTP fallback)
     try:
         info_resp = requests.get(f"{api_url}/files/{upload_id}/download-info",

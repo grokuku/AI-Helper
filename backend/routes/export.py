@@ -9,6 +9,10 @@ def export_md():
     if guard:
         return guard
 
+    user_id = _get_current_user_id()
+    if not (is_admin(user_id) or is_kw_editor(user_id)):
+        return jsonify({'error': 'Accès refusé'}), 403
+
     if not DB_PATH.exists():
         return jsonify({'error': 'Base de données vide'}), 400
 

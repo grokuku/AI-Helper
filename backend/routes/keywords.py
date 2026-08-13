@@ -609,10 +609,12 @@ def export_keywords():
             ORDER BY section_id, subsection_id, id
         """, (user_id,))
     elif scope == 'all':
-        cur.execute("""
-            SELECT * FROM keywords
+        clause, params = _privacy_filter(user_id)
+        cur.execute(f"""
+            SELECT * FROM keywords k
+            WHERE {clause}
             ORDER BY section_id, subsection_id, id
-        """)
+        """, params)
     else:
         # public (par défaut)
         cur.execute("""

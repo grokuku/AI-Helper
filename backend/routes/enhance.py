@@ -1628,9 +1628,20 @@ def _finish_enhance_pass1(user_id, prepared, llm_response, output_format="rich")
         if conn2 is not None:
             conn2.close()
 
-    # Le template BDD peut demander une conversion bbox via son system_prompt.
-    # On la desactive ici — le LLM sort directement du 0-1000 si le template le demande.
+    # Conversion bbox pixels → 0-1000 (Ideogram 4)
+    # Le LLM génère les bboxes en pixels (plus intuitif), l'API Ideogram 4 attend du 0-1000.
+    # convert_bboxes_to_normalized retourne le texte inchangé si non-JSON ou déjà normalisé.
+    output_before = output
+    output_converted = convert_bboxes_to_normalized(output, width, height)
     conversion_debug = None
+    if output_converted != output:
+        conversion_debug = {
+            'width': width,
+            'height': height,
+            'before': output_before,
+            'after': output_converted,
+        }
+        output = output_converted
 
     return {
         'output': output,

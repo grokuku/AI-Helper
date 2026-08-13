@@ -82,6 +82,8 @@ def init_upload():
     data = request.get_json() or {}
 
     filename = (data.get('filename') or '').strip()
+    # Sécurité : ne garder que le basename pour éviter le path traversal
+    filename = os.path.basename(filename.replace('\\', '/'))
     size = int(data.get('size', 0))
     file_type = (data.get('type') or '').strip()  # 'model', 'node', 'screenshot'
 

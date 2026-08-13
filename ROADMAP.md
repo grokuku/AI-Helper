@@ -6,6 +6,56 @@
 
 ---
 
+## 🚀 Session — Audit de sécurité (fix + décisions assumées)
+
+> Numérotation des bugs propre à cette session d'audit (indépendante des rapports d'audit précédents).
+
+### ✅ Fix de sécurité + bugs corrigés
+
+| # | Cible | Problème | Fix |
+|---|-------|----------|-----|
+| **C1** 🔴 | `backend/auth.py` | `_get_jwt_secret()` retombait sur un fallback en dur `"fallback-insecure-key-change-me"`. | Résolution `JWT_SECRET_KEY` → `SECRET_KEY` (env) → `app.secret_key` → fichier `.secret_key` → `RuntimeError`. Serveur Holaf : `SECRET_KEY` déjà configuré dans `.env` → fallback jamais utilisé, aucun token invalidé. |
+| **M1** | `/api/enhance` | Renvoyait 500 au lieu de 400 sur erreur de validation (tuple non sérialisé en ndjson). | Corrigé. |
+| **M3** | export | Fuite des keywords privés via l'export. | `export_keywords` avec `scope='all'` applique `_privacy_filter()` ; `/api/export` restreint aux admins/kw_editors. |
+| **M5** | workflow | `delete_workflow` nettoyait `file_uploads` avec la colonne inexistante `id` (c'est `upload_id`). | Corrigé. |
+| **M8 + Me3** | `model_manager.py`, `files.py` | Path traversal (`../`) dans `download_model_from_server` et le filename d'upload. | Corrigé via `realpath` + `basename`. |
+| **Me1** | `admin.py` | `session['user']` à `None` → `TypeError`. | Corrigé. |
+| **Me4** | `import_export`, `generate`, `auth`, `ideogram` | Fuites de connexions SQLite. | Corrigé (`try/finally`). |
+| **Me6** | `enhance.py` | `conn2` non fermé dans `_finish_enhance_pass1`. | Corrigé. |
+| **Me8** | `files.py` | Fichier temporaire jamais supprimé dans `download_file`. | Corrigé (`call_on_close`). |
+| **M6** | `aih_workflow_share.js` | `localFilesFlat` hors scope dans `showConflictModal`. | Corrigé (passé en paramètre). |
+| **M7** | `aih_workflow_share.js` | `applyNameMap` utilisait `parsed.definition` (singulier) + `node.inputs` au lieu de `parsed.definitions` (pluriel) + `node.widgets_values`. | Corrigé. |
+| **Me7** | `aih_workflow_share.js` | Boucle dupliquée `localBySize`. | Corrigé. |
+
+### ⚠️ Décision assumée (laissé tel quel)
+
+| # | Cible | Vulnérabilité | Raison |
+|---|-------|---------------|--------|
+| **C2** | `/api/files/init`, `/api/files/<id>/download-info` | Mot de passe SFTP renvoyé aux clients. | Retirer le mot de passe casserait l'upload direct via paramiko (le client ComfyUI en a besoin). À revisiter avec clé SSH ou proxy. |
+| **C3** | `/aih/blobby/exec` + WebSocket `/aih/terminal` (`__init__.py`) | RCE shell sans auth. | Utilisateurs en localhost ou derrière un reverse proxy avec auth. |
+| **C4** | `/aih/credentials`, `/aih/openai/keys` | Fuite clés API (routes ComfyUI locales non protégées). | Même raison que C3. |
+
+Justification documentée : risque nul en localhost pur, couvert par le reverse proxy avec auth pour les accès distants.
+
+### ⬜ Bugs restants (identifiés, non corrigés)
+
+| # | Cible | Bug | Impact / action |
+|---|-------|-----|-----------------|
+| **M2** | `enhance.py` | bboxes en pixels vs 0-1000 — conversion désactivée dans `_finish_enhance_pass1` alors que le template Ideogram 4 demande des coordonnées pixels. | Casse potentiellement Ideogram 4 de bout en bout. À corriger avec un test soigné. |
+| **M4** | `backend/routes/files.py` | Endpoints Model Browser (`/api/aih/models/remote` etc.) sans `_login_required`. | Fuite d'info (liste modèles + usernames). |
+| **M9** | `/api/enhance` | Paramètre `seed` ignoré. | Pas de reproductibilité. |
+| **M10** | `enhance.py` | Dernier retry LLM non vérifié (< 50 chars accepté) + passe de validation spatiale sans retry. | Résultats tronqués acceptés silencieusement. |
+| **Me2** | — | Conversions `int()`/`float()` non protégées sur entrées utilisateur. | 500 au lieu de 400. |
+| **Me5** | `enhance.py` | `convert_bboxes_to_normalized` peut crasher sur des bbox non numériques. | 500. |
+| **Me9** | `/models` | Timeout trop court (5s) pour le cold start Ollama. | Listing modèles échoue au premier appel. |
+
+### ✅ Autres changements
+
+- **Limite upload** : `MAX_FILE_SIZE` passé de 10 GB à 50 GB (`backend/routes/files.py`).
+- **UX Partager** : spinner de chargement « Analyse des dépendances... » dans l'onglet Partager (`aih_workflow_share.js`).
+
+---
+
 ## 🚀 Session (29/06/2026) — Renommage FRIA→AIH, Node Keywords & Elements Picker LLM
 
 ### ✅ Refactor global : FRIA → AIH
