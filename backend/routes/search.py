@@ -16,11 +16,17 @@ def semantic_search():
         return rl
 
     q = request.args.get('q', '').strip()
-    limit = int(request.args.get('limit', 50))
+    try:
+        limit = int(request.args.get('limit', 50))
+    except (TypeError, ValueError):
+        return jsonify({'error': 'limit invalide'}), 400
     nsfw = request.args.get('nsfw', '')
     section = request.args.get('section', '').strip()
     subsection = request.args.get('subsection', '').strip()
-    min_confidence = float(request.args.get('confidence', 0))
+    try:
+        min_confidence = float(request.args.get('confidence', 0))
+    except (TypeError, ValueError):
+        return jsonify({'error': 'confidence invalide'}), 400
 
     if not q:
         return jsonify([])

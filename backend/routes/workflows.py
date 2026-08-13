@@ -138,8 +138,14 @@ def list_workflows():
     q = request.args.get('q', '').strip().lower()
     tags_filter = request.args.get('tags', '').strip().lower()
     sort = request.args.get('sort', 'created_at').strip()
-    page = int(request.args.get('page', 1))
-    limit = min(int(request.args.get('limit', 20)), 100)
+    try:
+        page = int(request.args.get('page', 1))
+    except (TypeError, ValueError):
+        return jsonify({'error': 'page invalide'}), 400
+    try:
+        limit = min(int(request.args.get('limit', 20)), 100)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'limit invalide'}), 400
 
     SORT_MAP = {
         'created_at': 'created_at', 'downloads': 'downloads',

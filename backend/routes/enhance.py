@@ -48,6 +48,21 @@ def _clean_output(text, output_format="rich"):
     
     return text
 
+def _coerce_bbox_number(value):
+    """Coerce une valeur bbox (nombre ou string) en float.
+
+    Retourne None si la valeur n'est pas convertible (ex: string non numerique,
+    bool, None). Cela permet de ne jamais laisser remonter un TypeError depuis
+    max()/min()/round() lorsque le LLM renvoie des bboxes en strings.
+    """
+    if isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def convert_bboxes_to_normalized(json_text, width, height):
     """
     Convertit les bboxes du JSON caption de pixels vers 0-1000 normalise.
@@ -78,22 +93,32 @@ def convert_bboxes_to_normalized(json_text, width, height):
     # Global heuristic: if ANY bbox has a value > 1000, assume ALL bboxes are in
     # pixels and convert all of them. This prevents the known bug where the LLM
     # mixes coordinate systems (some pixel-based, some already normalized).
+    # Les valeurs non numeriques sont ignorees pour ne pas lever de TypeError.
     need_convert = False
     for el in elements:
         bbox = el.get("bbox")
-        if bbox and isinstance(bbox, list) and len(bbox) == 4:
-            if max(bbox) > 1000:
-                need_convert = True
-                break
+        if not isinstance(bbox, list) or len(bbox) != 4:
+            continue
+        coerced = [_coerce_bbox_number(v) for v in bbox]
+        if any(v is None for v in coerced):
+            continue
+        if max(coerced) > 1000:
+            need_convert = True
+            break
     if not need_convert:
         return json_text  # All bboxes already in 0-1000
 
     changed = False
     for el in elements:
         bbox = el.get("bbox")
-        if not bbox or not isinstance(bbox, list) or len(bbox) != 4:
+        if not isinstance(bbox, list) or len(bbox) != 4:
             continue
-        y_min, x_min, y_max, x_max = bbox
+        coerced = [_coerce_bbox_number(v) for v in bbox]
+        if any(v is None for v in coerced):
+            # Bbox invalide (string non numerique, bool, etc.) : on skip
+            # l'element sans toucher au JSON d'origine pour cet element.
+            continue
+        y_min, x_min, y_max, x_max = coerced
         # Clamp aux dimensions de l'image
         y_min = max(0, min(y_min, height))
         x_min = max(0, min(x_min, width))
@@ -1899,7 +1924,7 @@ def keywords_llm_process():
         r2_headers = {}
         if api_key:
             r2_headers['Authorization'] = f'Bearer {api_key}'
-        r2 = _req2.get(f'{base_url}/models', headers=r2_headers, timeout=5)
+        r2 = _req2.get(f'{base_url}/models', headers=r2_headers, timeout=30)
         if r2.ok:
             models_data = r2.json()
             all_models = models_data.get('data') or models_data.get('models') or []

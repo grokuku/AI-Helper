@@ -46,7 +46,10 @@ def list_or_create_keywords():
     mine_only = request.args.get('mine', '').strip()  # '1' = mes keywords uniquement
     # Recherche sémantique
     semantic_text = request.args.get('semantic', '').strip()
-    min_confidence = float(request.args.get('min_confidence', 0.0))
+    try:
+        min_confidence = float(request.args.get('min_confidence', 0.0))
+    except (TypeError, ValueError):
+        return jsonify({'error': 'min_confidence invalide'}), 400
 
     conditions = ["1=1"]
     params = []

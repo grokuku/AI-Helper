@@ -37,7 +37,10 @@ def check_file_exists():
         return guard
     data = request.get_json() or {}
 
-    size = int(data.get('size', 0))
+    try:
+        size = int(data.get('size', 0))
+    except (TypeError, ValueError):
+        return jsonify({'error': 'size invalide'}), 400
     head = (data.get('head') or '').strip()
     tail = (data.get('tail') or '').strip()
 
@@ -84,7 +87,10 @@ def init_upload():
     filename = (data.get('filename') or '').strip()
     # Sécurité : ne garder que le basename pour éviter le path traversal
     filename = os.path.basename(filename.replace('\\', '/'))
-    size = int(data.get('size', 0))
+    try:
+        size = int(data.get('size', 0))
+    except (TypeError, ValueError):
+        return jsonify({'error': 'size invalide'}), 400
     file_type = (data.get('type') or '').strip()  # 'model', 'node', 'screenshot'
 
     if not filename or size <= 0:
@@ -154,7 +160,10 @@ def upload_chunk():
     user_id = _get_current_user_id()
 
     upload_id = request.form.get('upload_id', '').strip()
-    chunk_index = int(request.form.get('chunk_index', -1))
+    try:
+        chunk_index = int(request.form.get('chunk_index', -1))
+    except (TypeError, ValueError):
+        return jsonify({'error': 'chunk_index invalide'}), 400
 
     if not upload_id or chunk_index < 0:
         return jsonify({'error': 'upload_id et chunk_index requis'}), 400
@@ -474,8 +483,19 @@ def list_remote_models():
       "limit": int
     }
     """
-    page = request.args.get('page', 1, type=int)
-    limit = min(request.args.get('limit', 50, type=int), 200)
+    guard = _login_required()
+    if guard:
+        return guard
+
+    try:
+        page = int(request.args.get('page', 1))
+    except (TypeError, ValueError):
+        return jsonify({'error': 'page invalide'}), 400
+    try:
+        limit = int(request.args.get('limit', 50))
+    except (TypeError, ValueError):
+        return jsonify({'error': 'limit invalide'}), 400
+    limit = min(limit, 200)
     type_filter = request.args.get('type', '').strip()
     search = request.args.get('search', '').strip()
     sort = request.args.get('sort', 'created_at')
@@ -550,6 +570,9 @@ def list_remote_models():
 @app.route('/api/aih/models/remote/<upload_id>', methods=['GET'])
 def get_remote_model_detail(upload_id):
     """Détail d'un modèle distant spécifique."""
+    guard = _login_required()
+    if guard:
+        return guard
     conn = get_db()
     try:
         row = conn.execute(
@@ -583,6 +606,9 @@ def get_remote_model_detail(upload_id):
 @app.route('/api/aih/models/remote/<upload_id>/download', methods=['POST'])
 def increment_model_download(upload_id):
     """Incrémente le compteur de téléchargements d'un modèle."""
+    guard = _login_required()
+    if guard:
+        return guard
     conn = get_db()
     try:
         conn.execute(
