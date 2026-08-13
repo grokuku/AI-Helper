@@ -250,7 +250,23 @@ def enhance_prompt():
             # et l'a retournee comme dict {'_status': N, 'error': '...'} (sans jsonify
             # car on est dans un Thread sans contexte Flask).
             if isinstance(val, dict) and '_status' in val and 'error' in val:
-                yield json.dumps({'status': 'error', 'error': val['error']}) + '\n'
+                error_chunk = {'status': 'error', 'error': val['error']}
+                if val.get('code') is not None:
+                    error_chunk['code'] = val['code']
+                yield json.dumps(error_chunk) + '\n'
+            elif isinstance(val, tuple):
+                # Securite : _prepare_enhance peut renvoyer (Response, status).
+                # On convertit en erreur ndjson propre plutot que de faire
+                # json.dumps({'status': 'done', **tuple}) -> TypeError -> 500.
+                try:
+                    payload = val[0].get_json() or {}
+                except Exception:
+                    payload = {}
+                yield json.dumps({
+                    'status': 'error',
+                    'error': payload.get('error', 'Erreur de validation'),
+                    'code': val[1],
+                }) + '\n'
             else:
                 yield json.dumps({'status': 'done', **val}) + '\n'
 
@@ -580,8 +596,19 @@ def _prepare_next_validation_pass(session_id, user_id, prepared, next_pass_idx, 
 def _do_enhance(user_id, data):
     """Orchestrateur cloud: prepare + appel LLM interne + finish (passe 1) + passes de validation."""
     prepared = _prepare_enhance(user_id, data)
-    if isinstance(prepared, tuple):  # erreur
-        return prepared
+    if isinstance(prepared, tuple):  # erreur (Response, status)
+        # _do_enhance tourne dans un Thread sans contexte Flask : on convertit
+        # le tuple en dict pur pour que le generator de /api/enhance puisse
+        # le serialiser en ndjson sans TypeError.
+        try:
+            payload = prepared[0].get_json() or {}
+        except Exception:
+            payload = {}
+        return {
+            '_status': prepared[1],
+            'code': prepared[1],
+            'error': payload.get('error', 'Erreur de validation'),
+        }
     try:
         llm_response = _call_llm_internal(prepared['llm_request'], prepared['llm_config'])
     except Exception as e:
@@ -1586,6 +1613,7 @@ def _finish_enhance_pass1(user_id, prepared, llm_response, output_format="rich")
     model = prepared['model']
 
     # Sauvegarde du prompt genere
+    conn2 = None
     try:
         conn2 = get_db()
         conn2.execute(
@@ -1594,9 +1622,11 @@ def _finish_enhance_pass1(user_id, prepared, llm_response, output_format="rich")
             (user_id, prepared['preset_id'], template_id, merged_text, output, prepared['style_id'], model)
         )
         conn2.commit()
-        conn2.close()
     except Exception:
         logging.exception("enhance: generated_prompts save failed (non-bloquant)")
+    finally:
+        if conn2 is not None:
+            conn2.close()
 
     # Le template BDD peut demander une conversion bbox via son system_prompt.
     # On la desactive ici — le LLM sort directement du 0-1000 si le template le demande.

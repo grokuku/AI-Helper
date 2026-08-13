@@ -1285,7 +1285,8 @@
           }
 
           // ── Conflict resolution modal ──
-          function showConflictModal(fileName, localInfo, remoteInfo) {
+          function showConflictModal(fileName, localInfo, remoteInfo, localFilesFlat) {
+            localFilesFlat = localFilesFlat || {};
             return new Promise(function(resolve) {
               var m = aihOpenModalV2({
                 title: "⚠️ Conflit de modèle",
@@ -1347,26 +1348,26 @@
             if (Object.keys(nameMap).length === 0) return;
             var allNodes = [];
             if (parsed.nodes) allNodes = allNodes.concat(parsed.nodes);
-            if (parsed.definition && parsed.definition.subgraphs) {
-              for (var si = 0; si < parsed.definition.subgraphs.length; si++) {
-                if (parsed.definition.subgraphs[si].nodes) {
-                  allNodes = allNodes.concat(parsed.definition.subgraphs[si].nodes);
+            if (parsed.definitions && parsed.definitions.subgraphs) {
+              for (var si = 0; si < parsed.definitions.subgraphs.length; si++) {
+                if (parsed.definitions.subgraphs[si].nodes) {
+                  allNodes = allNodes.concat(parsed.definitions.subgraphs[si].nodes);
                 }
               }
             }
             for (var ni = 0; ni < allNodes.length; ni++) {
               var node = allNodes[ni];
-              if (!node.inputs) continue;
-              for (var widgetKey in node.inputs) {
-                var val = node.inputs[widgetKey];
+              if (!node.widgets_values) continue;
+              for (var wi = 0; wi < node.widgets_values.length; wi++) {
+                var val = node.widgets_values[wi];
                 if (typeof val !== 'string') continue;
                 if (nameMap[val]) {
-                  node.inputs[widgetKey] = nameMap[val];
+                  node.widgets_values[wi] = nameMap[val];
                 } else {
                   var basename = val.split('/').pop();
                   for (var origN in nameMap) {
                     if (origN === basename || origN.split('/').pop() === basename) {
-                      node.inputs[widgetKey] = nameMap[origN];
+                      node.widgets_values[wi] = nameMap[origN];
                       break;
                     }
                   }
@@ -1436,14 +1437,6 @@
                   localFilesFlat[lf.name] = lf;
                 }
               }
-              for (var cat in localFiles) {
-                for (var fi = 0; fi < localFiles[cat].length; fi++) {
-                  var lf = localFiles[cat][fi];
-                  if (!localBySize[lf.size]) localBySize[lf.size] = [];
-                  localBySize[lf.size].push(lf);
-                }
-              }
-
               // Helper: compute fingerprint of a local file via Python
               async function getLocalFingerprint(path) {
                 try {
@@ -1519,7 +1512,8 @@
                     statusEl.textContent = "R\u00e9solution du conflit: " + esc(newPath) + "...";
                     var conflictResult = await showConflictModal(newPath,
                       {size: localFile.size, path: localFile.name},
-                      {size: depSize}
+                      {size: depSize},
+                      localFilesFlat
                     );
                     if (conflictResult.action === 'keep') {
                       // Skip download, use local file

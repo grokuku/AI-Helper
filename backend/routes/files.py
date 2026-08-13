@@ -426,13 +426,28 @@ def download_file(upload_id):
     if not storage.download(row['final_path'], local_tmp):
         return jsonify({'error': 'Échec du téléchargement depuis le stockage'}), 500
 
-    # Stream vers le client
-    return send_file(
-        local_tmp,
-        as_attachment=True,
-        download_name=row['filename'],
-        mimetype='application/octet-stream',
-    )
+    # Stream vers le client, puis supprimer le fichier temporaire une fois la
+    # réponse envoyée (ou en cas d'erreur de send_file) pour éviter
+    # l'accumulation disque.
+    def _cleanup_local_tmp():
+        try:
+            os.remove(local_tmp)
+        except Exception:
+            pass
+
+    try:
+        response = send_file(
+            local_tmp,
+            as_attachment=True,
+            download_name=row['filename'],
+            mimetype='application/octet-stream',
+        )
+    except Exception:
+        _cleanup_local_tmp()
+        raise
+
+    response.call_on_close(_cleanup_local_tmp)
+    return response
 
 
 @app.route('/api/aih/models/remote', methods=['GET'])

@@ -165,6 +165,7 @@ def ideogram_parse():
     if is_valid:
         val_tmpl_id = ctx.get('validation_template_id') or data.get('validation_template_id')
         if val_tmpl_id:
+            val_conn = None
             try:
                 val_conn = get_db()
                 val_row = val_conn.execute(
@@ -173,10 +174,12 @@ def ideogram_parse():
                 ).fetchone()
                 if val_row:
                     validation_system = val_row['system_prompt'] or ''
-                val_conn.close()
             except Exception:
                 logging.exception("ideogram: validation template lookup failed")
                 validation_system = ''
+            finally:
+                if val_conn is not None:
+                    val_conn.close()
 
         if not validation_system:
             validation_system = 'You are a spatial composition expert. You output ONLY corrected JSON with properly placed bounding boxes.'

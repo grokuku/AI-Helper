@@ -40,43 +40,45 @@ def discord_callback():
 
     # Détermination du rôle + sauvegarde
     conn = get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM users WHERE role = 'admin'")
-    admin_count = cur.fetchone()[0]
-    cur.execute("SELECT role FROM users WHERE id = ?", (user_id,))
-    existing = cur.fetchone()
-    if existing:
-        role = existing["role"]  # garde le rôle existant
-    elif admin_count == 0:
-        role = "admin"  # premier utilisateur ou aucun admin → admin
-    else:
-        role = "user"
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM users WHERE role = 'admin'")
+        admin_count = cur.fetchone()[0]
+        cur.execute("SELECT role FROM users WHERE id = ?", (user_id,))
+        existing = cur.fetchone()
+        if existing:
+            role = existing["role"]  # garde le rôle existant
+        elif admin_count == 0:
+            role = "admin"  # premier utilisateur ou aucun admin → admin
+        else:
+            role = "user"
 
-    # Sauvegarde / mise à jour dans la BDD
-    conn.execute("""
-        INSERT INTO users (id, username, display_name, avatar, role, guild_nickname, last_login)
-        VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-        ON CONFLICT(id) DO UPDATE SET
-            username=excluded.username,
-            display_name=excluded.display_name,
-            avatar=excluded.avatar,
-            role=CASE WHEN excluded.role = 'admin' THEN 'admin' ELSE users.role END,
-            guild_nickname=excluded.guild_nickname,
-            last_login=CURRENT_TIMESTAMP
-    """, (
-        user_id,
-        discord_user["username"],
-        display_name,
-        discord_user.get("avatar"),
-        role,
-        guild_nickname,
-    ))
+        # Sauvegarde / mise à jour dans la BDD
+        conn.execute("""
+            INSERT INTO users (id, username, display_name, avatar, role, guild_nickname, last_login)
+            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(id) DO UPDATE SET
+                username=excluded.username,
+                display_name=excluded.display_name,
+                avatar=excluded.avatar,
+                role=CASE WHEN excluded.role = 'admin' THEN 'admin' ELSE users.role END,
+                guild_nickname=excluded.guild_nickname,
+                last_login=CURRENT_TIMESTAMP
+        """, (
+            user_id,
+            discord_user["username"],
+            display_name,
+            discord_user.get("avatar"),
+            role,
+            guild_nickname,
+        ))
 
-    # Chargement des settings utilisateur
-    cur.execute("SELECT settings FROM users WHERE id = ?", (user_id,))
-    row = cur.fetchone()
-    user_settings = json.loads(row["settings"]) if row and row["settings"] else {}
-    conn.close()
+        # Chargement des settings utilisateur
+        cur.execute("SELECT settings FROM users WHERE id = ?", (user_id,))
+        row = cur.fetchone()
+        user_settings = json.loads(row["settings"]) if row and row["settings"] else {}
+    finally:
+        conn.close()
 
     # Chargement de la config Ollama stockée en BDD
     ollama_cfg = _get_ollama_config()

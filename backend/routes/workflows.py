@@ -396,13 +396,13 @@ def delete_workflow(workflow_id):
                     from storage import get_storage
                     storage = get_storage()
                     file_row = conn.execute(
-                        "SELECT file_path FROM file_uploads WHERE id = ?",
+                        "SELECT file_path FROM file_uploads WHERE upload_id = ?",
                         (uid,)
                     ).fetchone()
                     if file_row:
                         storage.delete(file_row["file_path"])
                         deleted_files.append(file_row['file_path'])
-                    conn.execute("DELETE FROM file_uploads WHERE id = ?", (uid,))
+                    conn.execute("DELETE FROM file_uploads WHERE upload_id = ?", (uid,))
                 except Exception:
                     pass
 

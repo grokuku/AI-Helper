@@ -118,12 +118,15 @@ def build_embeddings():
 
     if not is_available():
         return jsonify({'error': 'Serveur Ollama inaccessible. Vérifie la config dans Admin > Ollama.'}), 400
+    conn = None
     try:
         conn = get_db()
         _generate_all_embeddings(conn)
-        conn.close()
         return jsonify({'status': 'ok'})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+    finally:
+        if conn is not None:
+            conn.close()
 
 

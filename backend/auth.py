@@ -15,6 +15,7 @@ Configuration via variables d'environnement (ou .env) :
 import os
 import time
 from functools import wraps
+from pathlib import Path
 
 import jwt as pyjwt
 import requests
@@ -191,9 +192,30 @@ def _get_jwt_secret() -> str:
     global _JWT_SECRET_CACHE
     if _JWT_SECRET_CACHE is not None:
         return _JWT_SECRET_CACHE
-    _JWT_SECRET_CACHE = os.environ.get("JWT_SECRET_KEY",
-                         os.environ.get("SECRET_KEY",
-                         "fallback-insecure-key-change-me"))
+
+    # 1) Variable d'environnement explicite
+    secret = os.environ.get("JWT_SECRET_KEY") or os.environ.get("SECRET_KEY")
+
+    # 2) Clé générée/persistée par extensions.py (app.secret_key)
+    if not secret:
+        try:
+            secret = current_app.secret_key
+        except Exception:
+            secret = None
+
+    # 3) Fichier persistant .secret_key (si pas de contexte Flask actif)
+    if not secret:
+        secret_file = Path(__file__).resolve().parent.parent / '.secret_key'
+        if secret_file.exists():
+            secret = secret_file.read_text().strip()
+
+    if not secret:
+        raise RuntimeError(
+            "JWT secret key introuvable : définissez JWT_SECRET_KEY ou SECRET_KEY, "
+            "ou laissez extensions.py générer le fichier .secret_key"
+        )
+
+    _JWT_SECRET_CACHE = secret
     return _JWT_SECRET_CACHE
 
 

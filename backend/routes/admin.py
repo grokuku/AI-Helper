@@ -24,7 +24,10 @@ def user_settings():
         conn.execute('UPDATE users SET settings = ? WHERE id = ?', (json.dumps(data), user_id))
         conn.commit()
         conn.close()
-        session['user']['settings'] = data
+        # Si l'utilisateur est authentifie via Bearer token, session['user']
+        # est None : on ignore la synchro session (la BDD fait foi).
+        if session.get('user') is not None:
+            session['user']['settings'] = data
         return jsonify({'status': 'ok'})
     cur = conn.execute('SELECT settings FROM users WHERE id = ?', (user_id,))
     row = cur.fetchone()
