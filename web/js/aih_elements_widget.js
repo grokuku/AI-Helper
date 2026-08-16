@@ -1071,10 +1071,11 @@ function _parseConceptSyntax(text, defaultCount) {
 
                     const items = node._aihElements || [];
                     if (currentIdx !== startIdx && currentIdx >= 0 && currentIdx <= items.length) {
-                        let insertIdx = currentIdx;
-                        if (currentIdx > startIdx) insertIdx--;
+                        // currentIdx est déjà calculé sur le DOM réduit (l'élément dragged
+                        // a été retiré). Donc c'est le bon index direct dans le tableau
+                        // après splice(startIdx, 1) — aucun ajustement nécessaire.
                         const [moved] = items.splice(startIdx, 1);
-                        items.splice(insertIdx, 0, moved);
+                        items.splice(currentIdx, 0, moved);
                     }
 
                     // Nettoyer les transitions forcees sur les lignes restantes.
