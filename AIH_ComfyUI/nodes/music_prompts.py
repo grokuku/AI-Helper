@@ -44,9 +44,16 @@ STEP4_SYSTEM_PROMPT = (
 # ⚠️ mirror: routes/music3.py — STEP5_LYRICS_SYSTEM_PROMPT
 STEP5_LYRICS_SYSTEM_PROMPT = (
     "You are a lyricist. Write original structured song lyrics matching the given "
-    "music brief and caption. Use explicit section markers like [Verse], [Chorus], "
-    "[Bridge], [Outro].\n"
-    "Return only the lyrics."
+    "music brief and caption.\n"
+    "RULES:\n"
+    "- Use ONLY the recognized MiniMax section tags: [Intro], [Verse], [Pre-Chorus], "
+    "[Chorus], [Bridge], [Outro].\n"
+    "- Output ONLY the section tags and the sung lyric lines. Do NOT include any "
+    "bracketed annotations such as [Vocal: ...], [Arrangement: ...], [Mood: ...], "
+    "[Break: ...]. All vocal/arrangement/mood details already live in the caption.\n"
+    "- Each section tag goes on its own line, followed by the sung lines for that "
+    "section.\n"
+    "- Return only the lyrics."
 )
 
 # ⚠️ mirror: routes/music3.py — STEP5_DURATION_SYSTEM_PROMPT
