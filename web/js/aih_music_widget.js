@@ -10,6 +10,23 @@
  * connecté. Le bouton de test envoie toujours en mode cloud.
  */
 (function() {
+    // Cacher un widget ComfyUI : reste dans node.widgets (sérialisé) mais invisible dans l'UI.
+    // Pattern identique à aih_elements_widget.js / aih_keywords_widget.js.
+    // hidden=true est sûr : serialize() ne vérifie que serialize===false (pas hidden),
+    // donc le widget reste sérialisé et restauré normalement. Ne PAS mettre serialize=false.
+    function hideWidget(node, name) {
+        const w = node.widgets?.find(x => x.name === name);
+        if (w) {
+            w.hidden = true;
+            w.computeSize = () => [0, -4];
+            if (w.element) w.element.style.display = "none";
+            if (w.inputEl) w.inputEl.style.display = "none";
+            if (w.parentEl) w.parentEl.style.display = "none";
+            return w;
+        }
+        return null;
+    }
+
     function aihBoot() {
         // Attendre que 03_aih_shared.js / 04_aih_widget_base.js aient défini
         // window.AIH avant d'enregistrer l'extension.
@@ -198,6 +215,13 @@
                         widget.serialize = false;
                         widget.options.serialize = false;
                         node.widgets_start_y = 52;
+
+                        // ---- Masquer le widget natif preset_id ----
+                        // Le dropdown DOM "Preset IA" (presetSelect) le pilote déjà et
+                        // reste la seule interface visible. hidden=true garde la
+                        // sérialisation (seul serialize===false l'empêche). Le widget
+                        // natif seed, lui, reste visible (géré par ComfyUI).
+                        hideWidget(node, "preset_id");
 
                         // ---- Largeur minimale (fix layout seed vs sockets) ----
                         // Sans largeur plancher, la node pouvait être trop étroite : le
