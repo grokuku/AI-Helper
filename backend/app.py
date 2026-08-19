@@ -80,6 +80,7 @@ from routes.blobby import *
 from routes.workflows import *
 from routes.files import *
 from routes.preview import *
+from routes.music3 import *
 
 # Initialisation unique de la BDD (schemas + migrations) au demarrage
 from routes.helpers import _init_db

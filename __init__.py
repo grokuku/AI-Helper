@@ -138,6 +138,10 @@ _refimgprep_mod = _load_module(
     os.path.join(_nodes_dir, "ref_image_prep_node.py"),
     "AIHRefImagePrepNode"
 )
+_music_mod = _load_module(
+    os.path.join(_nodes_dir, "music_node.py"),
+    "AIHMusicNode"
+)
 
 # Charger le module Terminal (utilise par la route WebSocket ci-dessous)
 # NB : ce module ne declare AUCUNE node ComfyUI — le terminal est un
@@ -243,6 +247,11 @@ if _openai_settings_mod and hasattr(_openai_settings_mod, "AIHOpenAISettingsNode
     cls = _openai_settings_mod.AIHOpenAISettingsNode
     NODE_CLASS_MAPPINGS["AIHOpenAISettingsNode"] = cls
     NODE_DISPLAY_NAME_MAPPINGS["AIHOpenAISettingsNode"] = "AIH OpenAI Settings"
+
+if _music_mod and hasattr(_music_mod, "AIHMusicNode"):
+    cls = _music_mod.AIHMusicNode
+    NODE_CLASS_MAPPINGS["AIHMusicNode"] = cls
+    NODE_DISPLAY_NAME_MAPPINGS["AIHMusicNode"] = "AIH Music"
 
 # ── Routes HTTP (update + restart) ──────────────────────────────────
 # Ces routes sont appelees par le menu ComfyUI (aih_menu.js) pour

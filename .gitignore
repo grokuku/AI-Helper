@@ -16,6 +16,9 @@ node_modules/
 *.sqlite
 keywords.db
 
+# ── Cache de références MiniMax Music3 (généré) ───────
+backend/data/
+
 # ── Virtual environments ──────────────────────────────
 .venv/
 venv/
