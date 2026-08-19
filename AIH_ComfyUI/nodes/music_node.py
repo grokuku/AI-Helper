@@ -86,6 +86,10 @@ class AIHMusicNode:
                 # Widget natif seed — reproductibilité (même seed -> même sortie).
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff,
                                     "control_after_generate": "randomize"}),
+                # Preset IA backend — sélectionne le model LLM cloud côté serveur.
+                # Ne s'applique qu'au MODE CLOUD (llm_config non connecté). En
+                # MODE LOCAL, le model vient de llm_config et preset_id est ignoré.
+                "preset_id": ("INT", {"default": 0, "min": 0}),
             },
             "optional": {
                 # WIRES uniquement — tout est optionnel.
@@ -98,21 +102,26 @@ class AIHMusicNode:
     RETURN_TYPES = ("STRING", "STRING", "INT")
     RETURN_NAMES = ("caption", "lyrics", "duration_seconds")
 
-    def generate(self, seed=0, musique="", lyrics="", llm_config=None):
+    def generate(self, seed=0, preset_id=0, musique="", lyrics="", llm_config=None):
         # api_url / api_key lus depuis le fichier de credentials local
         api_url = _credentials.get_api_url()
         api_key = _credentials.get_api_key()
 
         if llm_config:
-            return self._generate_local(seed, musique, lyrics, llm_config, api_url, api_key)
-        return self._generate_cloud(seed, musique, lyrics, api_url, api_key)
+            return self._generate_local(seed, preset_id, musique, lyrics, llm_config, api_url, api_key)
+        return self._generate_cloud(seed, preset_id, musique, lyrics, api_url, api_key)
 
     # ── MODE CLOUD ──────────────────────────────────────────────────────
-    def _generate_cloud(self, seed, musique, lyrics, api_url, api_key):
-        """Délègue l'orchestration au backend (POST /api/music3/generate)."""
+    def _generate_cloud(self, seed, preset_id, musique, lyrics, api_url, api_key):
+        """Délègue l'orchestration au backend (POST /api/music3/generate).
+
+        preset_id sélectionne le model backend cloud. Ignoré si <=0.
+        """
         payload = {"musique": musique or "", "lyrics": lyrics or ""}
         if seed and seed > 0:
             payload["seed"] = int(seed)
+        if preset_id and int(preset_id) > 0:
+            payload["preset_id"] = int(preset_id)
         headers = {"Content-Type": "application/json"}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
@@ -152,8 +161,12 @@ class AIHMusicNode:
             return _err(msg)
 
     # ── MODE LOCAL ──────────────────────────────────────────────────────
-    def _generate_local(self, seed, musique, lyrics, llm_config, api_url, api_key):
-        """Orchestrateur LOCAL : miroir du pipeline backend (5 étapes)."""
+    def _generate_local(self, seed, preset_id, musique, lyrics, llm_config, api_url, api_key):
+        """Orchestrateur LOCAL : miroir du pipeline backend (5 étapes).
+
+        preset_id n'est PAS utilisé ici : en mode local le model vient de
+        llm_config. Il n'est conservé que pour la cohérence de signature.
+        """
         brief = {}
         caption = ""
         final_lyrics = ""
