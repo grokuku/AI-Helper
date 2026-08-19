@@ -83,6 +83,16 @@ STEP5_DURATION_SYSTEM_PROMPT = (
     "Return ONLY an integer number of seconds (e.g. 180). No other text."
 )
 
+STEP5_INSTRUMENTAL_LYRICS_SYSTEM_PROMPT = (
+    "You are structuring the lyrics field for a fully INSTRUMENTAL MiniMax Music 3.0 "
+    "track (no vocals at all). Use ONLY the section tags [Intro], [Instrumental], and "
+    "[Outro]. Do NOT use [Verse], [Pre-Chorus], [Chorus], [Bridge], or any vocal-only "
+    "section tag. Do NOT write any sung text.\n"
+    "Output only the bracketed structure, one tag per line. Put an [Instrumental] tag "
+    "for each musical section implied by the brief/caption (typically 4-8 sections). "
+    "Begin with [Intro] and end with [Outro]."
+)
+
 
 # ── Helpers cache / fichiers ───────────────────────────────────────────
 
@@ -265,6 +275,22 @@ def _parse_duration(text):
     return 0
 
 
+def _is_instrumental(brief, musique=""):
+    """Détecte si le morceau est instrumental (pas de voix/chant).
+
+    Sources : description texte, brief (champ vocal / instrumental).
+    """
+    if musique and re.search(r'\binstrumental\b|no\s+vocal|no\s+sing|instrumental-only|sans\s+voix', musique, re.IGNORECASE):
+        return True
+    if isinstance(brief, dict):
+        if brief.get("instrumental") is True:
+            return True
+        v = str(brief.get("vocal") or "").lower()
+        if v in ("instrumental", "none", "no vocals", "none (instrumental)", "n/a", "absent", "aucune"):
+            return True
+    return False
+
+
 # ── Pipeline en 5 étapes ───────────────────────────────────────────────
 
 def _step1_music_brief(user_id, musique, lyrics, seed, preset_id):
@@ -303,20 +329,21 @@ def _step4_caption(user_id, brief, templates_text, seed, preset_id):
     return _call_music_llm(user_id, system, user, seed=seed, temperature=0.2, preset_id=preset_id) or ""
 
 
-def _step5_duration_and_lyrics(user_id, brief, caption, user_lyrics, seed, preset_id):
+def _step5_duration_and_lyrics(user_id, brief, caption, user_lyrics, musique, seed, preset_id):
     """Etape 5 : estime la durée (secondes) et fournit les paroles.
 
     - duration : parse un entier en secondes depuis la réponse (0 par défaut).
-    - lyrics   : si user_lyrics non vide -> retourné tel quel, sinon généré
-      [Verse][Chorus] structuré via LLM.
+    - lyrics   : si instrumental -> structure [Instrumental] sans sections vocales ;
+      sinon si user_lyrics non vide -> conservées ; sinon générées [Verse][Chorus].
     """
     duration = 0
     lyrics = ""
-    # Contexte commun pour l'estimation de durée.
+    # Contexte commun.
     user = (
         f"Brief:\n{json.dumps(brief, ensure_ascii=False)}\n\n"
         f"Caption:\n{caption}"
     )
+    instrumental = _is_instrumental(brief, user_lyrics if not musique else musique)
     # Toujours estimer la durée via un appel LLM dédié (brief + caption).
     try:
         dur_content = _call_music_llm(
@@ -326,8 +353,18 @@ def _step5_duration_and_lyrics(user_id, brief, caption, user_lyrics, seed, prese
     except Exception:
         logging.warning("[music3] step5 duration estimation failed")
         duration = 0
-    # Paroles : si fournies, on les conserve ; sinon on les génère.
-    if user_lyrics and user_lyrics.strip():
+    # Paroles : si instrumental, structure sans sections vocales (le skill : do not add vocals).
+    if instrumental:
+        try:
+            content = _call_music_llm(
+                user_id, STEP5_INSTRUMENTAL_LYRICS_SYSTEM_PROMPT, user, seed=seed, preset_id=preset_id
+            ) or ""
+            lyrics = content.strip()
+        except Exception:
+            logging.warning("[music3] step5 instrumental lyrics failed")
+            lyrics = "[Instrumental]"
+    elif user_lyrics and user_lyrics.strip():
+        # Paroles fournies : on les conserve telles quelles.
         lyrics = user_lyrics
     else:
         try:
@@ -407,7 +444,7 @@ def _run_pipeline(user_id, musique, lyrics, seed=0, preset_id=None):
     # Etape 5 : durée + paroles
     try:
         duration_seconds, final_lyrics = _step5_duration_and_lyrics(
-            user_id, brief, caption, lyrics, seed, preset_id
+            user_id, brief, caption, lyrics, musique, seed, preset_id
         )
     except Exception:
         logging.exception("[music3] step5 (duration/lyrics) failed")

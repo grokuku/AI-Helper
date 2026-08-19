@@ -58,6 +58,19 @@ STEP5_DURATION_SYSTEM_PROMPT = (
     "Return ONLY an integer number of seconds (e.g. 180). No other text."
 )
 
+# ⚠️ mirror: routes/music3.py — STEP5_INSTRUMENTAL_LYRICS_SYSTEM_PROMPT
+# Structure lyrics pour un morceau INSTRUMENTAL : uniquement des tags [Instrumental],
+# AUCUN [Verse]/[Chorus] (sections vocales qui feraient chanter MiniMax).
+STEP5_INSTRUMENTAL_LYRICS_SYSTEM_PROMPT = (
+    "You are structuring the lyrics field for a fully INSTRUMENTAL MiniMax Music 3.0 "
+    "track (no vocals at all). Use ONLY the section tags [Intro], [Instrumental], and "
+    "[Outro]. Do NOT use [Verse], [Pre-Chorus], [Chorus], [Bridge], or any vocal-only "
+    "section tag. Do NOT write any sung text.\n"
+    "Output only the bracketed structure, one tag per line. Put an [Instrumental] tag "
+    "for each musical section implied by the brief/caption (typically 4-8 sections). "
+    "Begin with [Intro] and end with [Outro]."
+)
+
 
 # ── Builders (construction des prompts identiques au backend) ──────────
 # Les prompts system/user assemblés par ces builders répliquent exactement la

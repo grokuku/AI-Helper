@@ -85,6 +85,22 @@ def _split_lines(content):
     return [ln.strip() for ln in content.splitlines() if ln.strip()]
 
 
+def _is_instrumental(brief, musique=""):
+    """Détecte si le morceau est instrumental (pas de voix/chant).
+
+    Sources : description texte, brief (champ vocal / instrumental).
+    """
+    if musique and re.search(r'\binstrumental\b|no\s+vocal|no\s+sing|instrumental-only|sans\s+voix', musique, re.IGNORECASE):
+        return True
+    if isinstance(brief, dict):
+        if brief.get("instrumental") is True:
+            return True
+        v = str(brief.get("vocal") or "").lower()
+        if v in ("instrumental", "none", "no vocals", "none (instrumental)", "n/a", "absent", "aucune"):
+            return True
+    return False
+
+
 class AIHMusicNode:
     CATEGORY = "AIH"
     FUNCTION = "generate"
@@ -231,7 +247,7 @@ class AIHMusicNode:
         # Etape 5 : durée + paroles
         try:
             duration_seconds, final_lyrics = self._step5_duration_lyrics(
-                brief, caption, lyrics, llm_config, seed
+                brief, caption, lyrics, musique, llm_config, seed
             )
         except Exception:
             logging.exception("[AIH LOCAL] step5 (duration/lyrics) failed")
@@ -308,10 +324,11 @@ class AIHMusicNode:
         return content or ""
 
     # Étape 5 — durée + paroles
-    def _step5_duration_lyrics(self, brief, caption, user_lyrics, llm_config, seed=0):
+    def _step5_duration_lyrics(self, brief, caption, user_lyrics, musique, llm_config, seed=0):
         duration = 0
         lyrics = ""
         user = music_prompts.build_step5_user(brief, caption)
+        instrumental = _is_instrumental(brief, musique)
         # Toujours estimer la durée via un appel LLM dédié (brief + caption).
         try:
             dur_content = self._call_llm(
@@ -321,8 +338,21 @@ class AIHMusicNode:
         except Exception:
             logging.warning("[AIH LOCAL] step5 duration estimation failed")
             duration = 0
-        # Paroles : si fournies, on les conserve ; sinon on les génère.
-        if user_lyrics and user_lyrics.strip():
+        # Paroles : si instrumental, on génère une structure sans sections vocales.
+        if instrumental:
+            try:
+                content = self._call_llm(
+                    llm_config,
+                    music_prompts.STEP5_INSTRUMENTAL_LYRICS_SYSTEM_PROMPT,
+                    user,
+                    seed=seed,
+                ) or ""
+                lyrics = content.strip()
+            except Exception:
+                logging.warning("[AIH LOCAL] step5 instrumental lyrics failed")
+                lyrics = "[Instrumental]"
+        elif user_lyrics and user_lyrics.strip():
+            # Paroles fournies : on les conserve telles quelles.
             lyrics = user_lyrics
         else:
             try:
