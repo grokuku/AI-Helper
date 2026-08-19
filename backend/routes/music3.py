@@ -481,6 +481,74 @@ def sync_music3_cache(force=False):
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
+# ── Scheduler in-process (remplace le cron externe) ─────────────────────
+
+def start_music3_refresh_scheduler():
+    """Démarre un thread daemon qui rafraîchit le cache music3 à intervalle régulier.
+
+    Lit la config app_settings :
+      - music3_refresh_enabled        : '1' = activé (défaut), sinon '0' -> le scheduler ne démarre pas.
+      - music3_refresh_interval_hours : intervalle entre les contrôles (défaut 24h).
+
+    Le cache a déjà sa propre date-check interne (sync_music3_cache(force=False)
+    skip si app_settings['music3_cache_last_updated'] < 24h), donc le thread peut
+    appeler sync_music3_cache() sans force : la vraie fréquence de rafraîchissement
+    reste ~24h même si le contrôle est fréquent.
+
+    Réplique le pattern de storage.start_backup_scheduler : thread daemon avec
+    while True + time.sleep + try/except logging.
+    """
+    import threading
+    import time
+
+    interval_hours = 24
+    enabled = '1'
+    try:
+        conn = get_db()
+        try:
+            row = conn.execute(
+                "SELECT value FROM app_settings WHERE key = 'music3_refresh_interval_hours'"
+            ).fetchone()
+            if row and row[0]:
+                try:
+                    interval_hours = int(row[0])
+                except (TypeError, ValueError):
+                    interval_hours = 24
+            row = conn.execute(
+                "SELECT value FROM app_settings WHERE key = 'music3_refresh_enabled'"
+            ).fetchone()
+            if row and row[0]:
+                enabled = row[0]
+        finally:
+            conn.close()
+    except Exception:
+        logging.exception("[music3] failed to read scheduler config, using defaults")
+
+    if enabled != '1':
+        logging.info("[music3] Scheduler disabled (music3_refresh_enabled=0)")
+        return
+
+    if interval_hours <= 0:
+        interval_hours = 24
+
+    def _run():
+        # Refresh immédiat au lancement (respecte la date-check interne <24h)
+        try:
+            sync_music3_cache()
+        except Exception:
+            logging.exception("[music3] initial cache refresh failed")
+        while True:
+            time.sleep(interval_hours * 3600)
+            try:
+                sync_music3_cache()
+            except Exception:
+                logging.exception("[music3] scheduled cache refresh failed")
+
+    t = threading.Thread(target=_run, daemon=True, name="aih-music3-refresh")
+    t.start()
+    logging.info(f"[music3] Scheduler started (every {interval_hours}h)")
+
+
 # ── Endpoints ──────────────────────────────────────────────────────────
 
 @app.route('/api/music3/reference/<path:path>', methods=['GET'])

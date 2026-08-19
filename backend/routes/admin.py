@@ -314,6 +314,51 @@ def admin_backup_now():
         return jsonify({'ok': False, 'error': str(e)}), 500
 
 
+# ── Music3 cache refresh config ───────────────────────────────────────
+
+@app.route('/api/admin/settings/music3', methods=['GET', 'POST'])
+def admin_music3_settings():
+    """Lire / définir la config du scheduler de rafraîchissement du cache music3.
+
+    Clés app_settings :
+      - music3_refresh_enabled        ('1'/'0')
+      - music3_refresh_interval_hours (int, défaut 24)
+    """
+    guard = _admin_required()
+    if guard:
+        return guard
+
+    conn = get_db()
+    try:
+        if request.method == 'POST':
+            data = request.get_json() or {}
+            enabled = 1 if data.get('enabled') else 0
+            interval = int(data.get('interval_hours', 24))
+            for key, val in [('music3_refresh_enabled', str(enabled)), ('music3_refresh_interval_hours', str(interval))]:
+                conn.execute(
+                    "INSERT INTO app_settings (key, value) VALUES (?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (key, val),
+                )
+            conn.commit()
+            return jsonify({'status': 'ok'})
+
+        # GET
+        result = {}
+        for key, default in [('music3_refresh_enabled', '1'), ('music3_refresh_interval_hours', '24')]:
+            row = conn.execute("SELECT value FROM app_settings WHERE key = ?", (key,)).fetchone()
+            result[key.replace('music3_refresh_', '')] = row[0] if row else default
+        result['enabled'] = result.pop('enabled') == '1'
+        result['interval_hours'] = int(result.pop('interval_hours'))
+        # Dernière mise à jour connue du cache
+        row = conn.execute("SELECT value FROM app_settings WHERE key = 'music3_cache_last_updated'").fetchone()
+        result['last_updated'] = row[0] if row else None
+        return jsonify(result)
+    finally:
+        conn.close()
+
+
+
 @app.route('/api/admin/db/clear', methods=['POST'])
 def admin_db_clear():
     """Supprime tous les mots-clés et embeddings de la base (admin seulement).

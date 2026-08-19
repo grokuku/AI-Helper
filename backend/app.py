@@ -107,6 +107,15 @@ try:
 except Exception as e:
     logging.warning(f"Failed to start backup scheduler: {e}")
 
+# Démarrer le scheduler in-process de rafraîchissement du cache music3
+# (remplace le cron externe : tourne dans le même processus / même venv).
+# La config (enabled + interval) est lue par la fonction depuis app_settings.
+try:
+    from routes.music3 import start_music3_refresh_scheduler
+    start_music3_refresh_scheduler()
+except Exception as e:
+    logging.warning(f"Failed to start music3 refresh scheduler: {e}")
+
 # ── Error handlers globaux ────────────────────────────────────────────
 
 @app.errorhandler(400)
