@@ -49,7 +49,10 @@ def _parse_json_strip(text):
 
 
 def _parse_duration(text):
-    """Parse une durée en secondes depuis un texte. 0 si invalide (mirror backend)."""
+    """Parse une durée en secondes depuis un texte. 0 si invalide (mirror backend).
+
+    Accepte 'DURATION: N', 'duration: N', ou un simple entier isolé 30..900.
+    """
     if not text:
         return 0
     m = re.search(r'DURATION\s*[:=]\s*(\d+)', text, re.IGNORECASE)
@@ -64,6 +67,14 @@ def _parse_duration(text):
             return int(m2.group(1))
         except ValueError:
             return 0
+    m3 = re.search(r'(?<!\d)(\d{2,3})(?!\d)', text)
+    if m3:
+        try:
+            val = int(m3.group(1))
+        except ValueError:
+            return 0
+        if 30 <= val <= 900:
+            return val
     return 0
 
 
@@ -93,8 +104,11 @@ class AIHMusicNode:
             },
             "optional": {
                 # WIRES uniquement — tout est optionnel.
-                "musique": ("STRING", {"forceInput": True, "multiline": True, "default": ""}),
-                "lyrics": ("STRING", {"forceInput": True, "multiline": True, "default": ""}),
+                # PAS de multiline sur les forceInput : comme elements_input, ça
+                # force un socket propre et évite le textarea qui chevauche le
+                # widget natif seed.
+                "musique": ("STRING", {"forceInput": True, "default": ""}),
+                "lyrics": ("STRING", {"forceInput": True, "default": ""}),
                 "llm_config": ("STRING", {"forceInput": True}),
             }
         }
@@ -297,27 +311,33 @@ class AIHMusicNode:
     def _step5_duration_lyrics(self, brief, caption, user_lyrics, llm_config, seed=0):
         duration = 0
         lyrics = ""
+        user = music_prompts.build_step5_user(brief, caption)
+        # Toujours estimer la durée via un appel LLM dédié (brief + caption).
+        try:
+            dur_content = self._call_llm(
+                llm_config, music_prompts.STEP5_DURATION_SYSTEM_PROMPT, user, seed=seed
+            ) or ""
+            duration = _parse_duration(dur_content)
+        except Exception:
+            logging.warning("[AIH LOCAL] step5 duration estimation failed")
+            duration = 0
+        # Paroles : si fournies, on les conserve ; sinon on les génère.
         if user_lyrics and user_lyrics.strip():
-            # Paroles fournies : on les conserve telles quelles.
             lyrics = user_lyrics
-            duration = _parse_duration(
-                f"{json.dumps(brief, ensure_ascii=False)} {caption}"
-            )
-            return duration, lyrics
-        # Générer des paroles structurées via LLM.
-        content = self._call_llm(
-            llm_config,
-            music_prompts.STEP5_LYRICS_SYSTEM_PROMPT,
-            music_prompts.build_step5_user(brief, caption),
-            seed=seed,
-        ) or ""
-        duration = _parse_duration(content)
-        # Retirer la ligne de durée des paroles.
-        content = re.sub(
-            r'^DURATION\s*[:=]\s*\d+.*$', '', content,
-            flags=re.MULTILINE | re.IGNORECASE,
-        ).strip()
-        return duration, content
+        else:
+            try:
+                content = self._call_llm(
+                    llm_config, music_prompts.STEP5_LYRICS_SYSTEM_PROMPT, user, seed=seed
+                ) or ""
+                content = re.sub(
+                    r'^DURATION\s*[:=]\s*\d+.*$', '', content,
+                    flags=re.MULTILINE | re.IGNORECASE,
+                ).strip()
+                lyrics = content
+            except Exception:
+                logging.warning("[AIH LOCAL] step5 lyrics generation failed")
+                lyrics = ""
+        return duration, lyrics
 
     # Fallback sans routage : liste les fichiers du cache comme templates.
     def _build_fallback_caption(self, api_url, api_key):

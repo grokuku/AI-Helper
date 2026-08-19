@@ -46,7 +46,16 @@ STEP5_LYRICS_SYSTEM_PROMPT = (
     "You are a lyricist. Write original structured song lyrics matching the given "
     "music brief and caption. Use explicit section markers like [Verse], [Chorus], "
     "[Bridge], [Outro].\n"
-    "Start your response with a line: DURATION: <estimated total seconds as an integer>"
+    "Return only the lyrics."
+)
+
+# ⚠️ mirror: routes/music3.py — STEP5_DURATION_SYSTEM_PROMPT
+STEP5_DURATION_SYSTEM_PROMPT = (
+    "You are a music producer estimating song length. Given the music brief and the "
+    "structured caption (tempo, number of sections, arrangement complexity), estimate "
+    "the total duration in seconds. A standard pop song is 150-240s, an instrumental or "
+    "ambient piece may be 120-300s, an EDM build 200-300s, a short jingle 30-60s.\n"
+    "Return ONLY an integer number of seconds (e.g. 180). No other text."
 )
 
 

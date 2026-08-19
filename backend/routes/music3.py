@@ -72,7 +72,15 @@ STEP5_LYRICS_SYSTEM_PROMPT = (
     "You are a lyricist. Write original structured song lyrics matching the given "
     "music brief and caption. Use explicit section markers like [Verse], [Chorus], "
     "[Bridge], [Outro].\n"
-    "Start your response with a line: DURATION: <estimated total seconds as an integer>"
+    "Return only the lyrics."
+)
+
+STEP5_DURATION_SYSTEM_PROMPT = (
+    "You are a music producer estimating song length. Given the music brief and the "
+    "structured caption (tempo, number of sections, arrangement complexity), estimate "
+    "the total duration in seconds. A standard pop song is 150-240s, an instrumental or "
+    "ambient piece may be 120-300s, an EDM build 200-300s, a short jingle 30-60s.\n"
+    "Return ONLY an integer number of seconds (e.g. 180). No other text."
 )
 
 
@@ -225,7 +233,12 @@ def _parse_json_strip(text):
 
 
 def _parse_duration(text):
-    """Parse une durée en secondes depuis un texte. 0 si invalide."""
+    """Parse une durée en secondes depuis un texte. 0 si invalide.
+
+    Accepte soit un marqueur 'DURATION: N' / 'duration: N', soit un simple entier
+    isolé (le premier nombre 30..900 rencontré, borné pour éviter de lire un id
+    ou un token). Retourne 0 si rien de valide.
+    """
     if not text:
         return 0
     m = re.search(r'DURATION\s*[:=]\s*(\d+)', text, re.IGNORECASE)
@@ -240,6 +253,15 @@ def _parse_duration(text):
             return int(m2.group(1))
         except ValueError:
             return 0
+    # Premier entier isolé (borne réaliste 30..900 s) — le LLM a pu répondre '180' seul.
+    m3 = re.search(r'(?<!\d)(\d{2,3})(?!\d)', text)
+    if m3:
+        try:
+            val = int(m3.group(1))
+        except ValueError:
+            return 0
+        if 30 <= val <= 900:
+            return val
     return 0
 
 
@@ -290,21 +312,34 @@ def _step5_duration_and_lyrics(user_id, brief, caption, user_lyrics, seed, prese
     """
     duration = 0
     lyrics = ""
-    if user_lyrics and user_lyrics.strip():
-        # Paroles fournies par l'utilisateur : on les conserve tell quelles.
-        lyrics = user_lyrics
-        duration = _parse_duration(f"{json.dumps(brief, ensure_ascii=False)} {caption}")
-        return duration, lyrics
-    # Générer des paroles structurées via LLM.
+    # Contexte commun pour l'estimation de durée.
     user = (
         f"Brief:\n{json.dumps(brief, ensure_ascii=False)}\n\n"
         f"Caption:\n{caption}"
     )
-    content = _call_music_llm(user_id, STEP5_LYRICS_SYSTEM_PROMPT, user, seed=seed, preset_id=preset_id) or ""
-    duration = _parse_duration(content)
-    # Retirer la ligne de durée des paroles proprement.
-    content = re.sub(r'^DURATION\s*[:=]\s*\d+.*$', '', content, flags=re.MULTILINE | re.IGNORECASE).strip()
-    return duration, content
+    # Toujours estimer la durée via un appel LLM dédié (brief + caption).
+    try:
+        dur_content = _call_music_llm(
+            user_id, STEP5_DURATION_SYSTEM_PROMPT, user, seed=seed, preset_id=preset_id
+        ) or ""
+        duration = _parse_duration(dur_content)
+    except Exception:
+        logging.warning("[music3] step5 duration estimation failed")
+        duration = 0
+    # Paroles : si fournies, on les conserve ; sinon on les génère.
+    if user_lyrics and user_lyrics.strip():
+        lyrics = user_lyrics
+    else:
+        try:
+            content = _call_music_llm(
+                user_id, STEP5_LYRICS_SYSTEM_PROMPT, user, seed=seed, preset_id=preset_id
+            ) or ""
+            content = re.sub(r'^DURATION\s*[:=]\s*\d+.*$', '', content, flags=re.MULTILINE | re.IGNORECASE).strip()
+            lyrics = content
+        except Exception:
+            logging.warning("[music3] step5 lyrics generation failed")
+            lyrics = ""
+    return duration, lyrics
 
 
 def _build_fallback_caption(brief):
