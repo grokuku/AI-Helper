@@ -2,6 +2,8 @@
 
 import sqlite3
 import json
+import uuid
+from datetime import datetime, timezone
 
 from extensions import DB_PATH
 from db import get_db
@@ -408,6 +410,78 @@ def _migrate_saved_filters(conn):
     cols_filters = [r[1] for r in conn.execute("PRAGMA table_info(saved_filters)").fetchall()]
     if "filter_type" not in cols_filters:
         conn.execute("ALTER TABLE saved_filters ADD COLUMN filter_type TEXT DEFAULT 'simple'")
+
+
+def _migrate_sync(conn):
+    """Migrations de synchronisation client <-> serveur (routes/sync.py).
+
+    Ajoute sur les 5 collections syncables (``keywords``, ``saved_filters``,
+    ``styles``, ``prompt_templates``, ``elements_presets``) les colonnes
+    ``client_id``, ``version``, ``sync_state`` et ``deleted`` si absentes.
+    Ajoute aussi ``updated_at`` sur ``keywords`` (seule table à ne pas l'avoir).
+    Crée ensuite un index unique ``(user_id, client_id)`` sur chaque table,
+    puis backfill des ``client_id`` manquants (uuid4 hex) et des ``updated_at``
+    NULL de ``keywords`` (``created_at`` si dispo, sinon timestamp courant UTC).
+
+    Note: le pattern utilisé suit les migrations existantes du fichier
+    (garde via ``PRAGMA table_info`` avant chaque ``ALTER TABLE ADD COLUMN``).
+
+    Args:
+        conn (sqlite3.Connection): La connexion SQLite active.
+    """
+    sync_tables = [
+        "keywords",
+        "saved_filters",
+        "styles",
+        "prompt_templates",
+        "elements_presets",
+    ]
+
+    # 1. ALTER TABLE ADD COLUMN (idempotent, garde via PRAGMA table_info)
+    for table in sync_tables:
+        cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+
+        for col, ddl in [
+            ("client_id", "TEXT"),
+            ("version", "INTEGER NOT NULL DEFAULT 1"),
+            ("sync_state", "TEXT NOT NULL DEFAULT 'synced'"),
+            ("deleted", "INTEGER NOT NULL DEFAULT 0"),
+        ]:
+            if col not in cols:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
+
+        # keywords n'a pas de colonne updated_at — l'ajouter une seule fois
+        if table == "keywords" and "updated_at" not in cols:
+            conn.execute("ALTER TABLE keywords ADD COLUMN updated_at TEXT")
+
+    # 2. Backfill client_id (uuid4 hex) sur les lignes existantes
+    for table in sync_tables:
+        rows = conn.execute(f"SELECT id FROM {table} WHERE client_id IS NULL").fetchall()
+        for (row_id,) in rows:
+            conn.execute(
+                f"UPDATE {table} SET client_id = ? WHERE id = ?",
+                (uuid.uuid4().hex, row_id),
+            )
+
+    # 3. Backfill updated_at sur keywords (NULL) : created_at si dispo, sinon now
+    now_ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    rows = conn.execute(
+        "SELECT id, created_at FROM keywords WHERE updated_at IS NULL"
+    ).fetchall()
+    for row_id, created_at in rows:
+        conn.execute(
+            "UPDATE keywords SET updated_at = ? WHERE id = ?",
+            (created_at or now_ts, row_id),
+        )
+
+    # 4. Index unique (user_id, client_id) — après backfill, aucune collision
+    for table in sync_tables:
+        user_cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+        if "user_id" in user_cols:
+            conn.execute(
+                f"CREATE UNIQUE INDEX IF NOT EXISTS idx_{table}_user_client "
+                f"ON {table}(user_id, client_id)"
+            )
 
 
 def _run_migrations(conn):
@@ -896,6 +970,7 @@ def _init_db():
         4. Migrations des nouvelles tables
         5. Création des index
         6. Seeds (templates par défaut)
+        7. Migrations de synchronisation (client_id/version/sync_state/deleted)
 
     Raises:
         sqlite3.OperationalError: Si une opération de migration échoue.
@@ -924,6 +999,11 @@ def _init_db():
 
     # 6. Seeds
     _seed_defaults(conn)
+
+    # 7. Migrations de synchronisation (client_id/version/sync_state/deleted).
+    #    Placé après les seeds pour que le backfill couvre aussi les templates
+    #    par défaut insérés ci-dessus (jamais de client_id NULL après init).
+    _migrate_sync(conn)
 
     conn.commit()
     conn.close()

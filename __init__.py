@@ -199,6 +199,82 @@ _model_mgr_mod = _load_module(
     "AIHModelManager"
 )
 
+# ── Store SQLite local + moteur de synchronisation (mode local) ────
+# Chargement défensif : store.py et sync_engine.py ne déclarent AUCUNE
+# node ComfyUI. On les importe par package quand c'est possible (le
+# package AIH_ComfyUI est pré-enregistré dans sys.modules par
+# _load_module, donc `from AIH_ComfyUI import X` n'exécute PAS le
+# __init__.py mort), sinon par chemin absolu via importlib. En cas
+# d'échec, _aih_store_mod/_aih_sync_mod restent None et l'extension
+# continue de fonctionner (juste sans le mode local).
+
+def _load_local_modules():
+    """Importe store.py, sync_engine.py et embedding_engine.py de façon robuste.
+
+    Retourne:
+        tuple: (store_mod, sync_engine_mod, embedding_engine_mod), chacun None
+        si indisponible.
+    """
+    store_mod = None
+    sync_mod = None
+    emb_mod = None
+
+    # 1) Import par package (AIH_ComfyUI est déjà dans sys.modules).
+    try:
+        from AIH_ComfyUI import store as _s
+        store_mod = _s
+    except Exception:
+        store_mod = None
+    try:
+        from AIH_ComfyUI import sync_engine as _se
+        sync_mod = _se
+    except Exception:
+        sync_mod = None
+    try:
+        from AIH_ComfyUI import embedding_engine as _ee
+        emb_mod = _ee
+    except Exception:
+        emb_mod = None
+
+    # 2) Fallback par chemin absolu (tests / runtime non-ComfyUI).
+    if store_mod is None:
+        try:
+            _spath = os.path.join(_base, "AIH_ComfyUI", "store.py")
+            _spec = importlib.util.spec_from_file_location("aih_store", _spath)
+            if _spec is not None and _spec.loader is not None:
+                store_mod = importlib.util.module_from_spec(_spec)
+                _spec.loader.exec_module(store_mod)
+        except Exception:
+            store_mod = None
+    if sync_mod is None:
+        try:
+            _spath = os.path.join(_base, "AIH_ComfyUI", "sync_engine.py")
+            _spec = importlib.util.spec_from_file_location("aih_sync_engine", _spath)
+            if _spec is not None and _spec.loader is not None:
+                sync_mod = importlib.util.module_from_spec(_spec)
+                _spec.loader.exec_module(sync_mod)
+        except Exception:
+            sync_mod = None
+    if emb_mod is None:
+        try:
+            _spath = os.path.join(_base, "AIH_ComfyUI", "embedding_engine.py")
+            _spec = importlib.util.spec_from_file_location("aih_embedding_engine", _spath)
+            if _spec is not None and _spec.loader is not None:
+                emb_mod = importlib.util.module_from_spec(_spec)
+                _spec.loader.exec_module(emb_mod)
+        except Exception:
+            emb_mod = None
+
+    return store_mod, sync_mod, emb_mod
+
+
+_aih_store_mod, _aih_sync_mod, _aih_emb_mod = _load_local_modules()
+
+# Dernier filet : si store a échoué mais que sync_engine est chargé, ce
+# dernier embarque déjà sa propre référence à store (sync_engine.store).
+if _aih_store_mod is None and _aih_sync_mod is not None:
+    _aih_store_mod = getattr(_aih_sync_mod, "store", None)
+
 NODE_CLASS_MAPPINGS = {}
 NODE_DISPLAY_NAME_MAPPINGS = {}
 WEB_DIRECTORY = "web"
@@ -778,10 +854,958 @@ if _routes is not None:
             return await _terminal_mod.websocket_handler(request)
 
         print("[AIH] Terminal WebSocket route registered: GET /aih/terminal (NO PASSWORD)")
+
+    # ── Route statut local (store SQLite + sync engine) ───────────────
+    # GET /aih/local/status → état du mode local. La route doit être
+    # robuste et ne JAMAIS bloquer l'event loop : lectures avec timeout
+    # court, try/except large, et valeurs par défaut si le store échoue.
+    if _aih_store_mod is not None:
+
+        @_routes.get("/aih/local/status")
+        async def _aih_local_status_route(request):
+            """État du mode local (store + sync engine + music3).
+
+            Quand sync_engine.get_sync_status() est dispo (via _aih_sync_mod),
+            on fusionne son JSON (server_reachable, last_sync, pending_sync,
+            conflicts, store_version, music3_last_updated) avec le contrat
+            historique de la route (mode, etc.). Sinon fallback sur le store
+            direct. Ne lève JAMAIS : try/except large + état minimal en
+            dernier recours.
+            """
+            conn = None
+            try:
+                status = {}
+                if _aih_sync_mod is not None and hasattr(
+                    _aih_sync_mod, "get_sync_status"
+                ):
+                    status = _aih_sync_mod.get_sync_status() or {}
+
+                if not status:
+                    # Fallback store direct (sync_engine absent ou à vide).
+                    conn = _aih_store_mod.get_conn()
+                    # Timeout court : la base peut être verrouillée par le
+                    # thread de sync — on ne veut pas bloquer ici.
+                    conn.execute("PRAGMA busy_timeout=1000")
+                    _aih_store_mod.init_store(conn)
+
+                    last_updated = _aih_store_mod.get_meta(conn, "sync.last_updated")
+                    reachable_raw = _aih_store_mod.get_meta(conn, "sync.server_reachable")
+                    schema_raw = _aih_store_mod.get_meta(conn, "schema_version")
+
+                    store_version = 1
+                    if schema_raw:
+                        try:
+                            store_version = int(str(schema_raw).strip())
+                        except (ValueError, TypeError):
+                            store_version = 1
+
+                    if reachable_raw is not None:
+                        server_reachable = str(reachable_raw).strip().lower() in (
+                            "1", "true", "ok", "yes", "reachable"
+                        )
+                    else:
+                        # Pas de flag explicite : une sync réussie
+                        # (sync.last_updated renseigné) implique que le
+                        # serveur a été joignable à ce moment-là.
+                        server_reachable = bool(last_updated)
+
+                    status = {
+                        "server_reachable": server_reachable,
+                        "last_sync": last_updated or None,
+                        "pending_sync": 0,
+                        "conflicts": 0,
+                        "store_version": store_version,
+                        "music3_last_updated": None,
+                    }
+
+                # Fusion avec le contrat JSON historique de la route.
+                return _aio_web.json_response({
+                    "mode": "local",
+                    "server_reachable": bool(status.get("server_reachable", False)),
+                    "last_sync": status.get("last_sync") or None,
+                    "pending_sync": int(status.get("pending_sync") or 0),
+                    "conflicts": int(status.get("conflicts") or 0),
+                    "store_version": int(status.get("store_version") or 1),
+                    "music3_last_updated": status.get("music3_last_updated") or None,
+                })
+            except Exception as e:
+                # Ne jamais casser la route : retour d'un état minimal.
+                return _aio_web.json_response({
+                    "mode": "local",
+                    "server_reachable": False,
+                    "last_sync": None,
+                    "pending_sync": 0,
+                    "conflicts": 0,
+                    "store_version": 1,
+                    "error": str(e),
+                })
+            finally:
+                if conn is not None:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+
+        # ── Routes lecture locale music3 (miroir écrit par sync_engine) ──
+        # GET /aih/local/api/music3/manifest            → manifest.json local
+        # GET /aih/local/api/music3/reference/{path:.*} → contenu texte d'une
+        # référence locale (anti path-traversal). Chemin cohérent avec
+        # sync_engine.sync_music3_local() :
+        #   user_dir = store.get_store_path().parent.parent.parent, puis
+        #   user_dir/aihelper/data/music3/...
+
+        def _aih_music3_paths():
+            """Retourne (music3_dir, refs_dir) ou (None, None) si indispo."""
+            try:
+                store_path = _aih_store_mod.get_store_path()
+                user_dir = store_path.parent.parent.parent
+                music3_dir = os.path.join(user_dir, "aihelper", "data", "music3")
+                return music3_dir, os.path.join(music3_dir, "references")
+            except Exception:
+                return None, None
+
+        @_routes.get("/aih/local/api/music3/manifest")
+        async def _aih_music3_manifest_route(request):
+            """JSON du manifest local music3, ou 404 si absent."""
+            import json as _json
+            try:
+                music3_dir, _refs = _aih_music3_paths()
+                if not music3_dir:
+                    return _aio_web.json_response({"error": "not found"}, status=404)
+                manifest_path = os.path.join(music3_dir, "manifest.json")
+                if not os.path.isfile(manifest_path):
+                    return _aio_web.json_response({"error": "not found"}, status=404)
+                with open(manifest_path, "r", encoding="utf-8") as f:
+                    data = _json.load(f)
+                return _aio_web.json_response(data)
+            except Exception as e:
+                return _aio_web.json_response({"error": str(e)}, status=500)
+
+        @_routes.get("/aih/local/api/music3/reference/{path:.*}")
+        async def _aih_music3_reference_route(request):
+            """Contenu texte d'une référence music3 locale (anti path-traversal).
+
+            Le chemin résolu doit rester sous base.resolve() (sinon 403), et
+            le fichier doit exister (sinon 404). mimetype text/plain.
+            """
+            from pathlib import Path as _Path
+            try:
+                relpath = request.match_info.get("path", "")
+                _music3_dir, refs_dir = _aih_music3_paths()
+                if not refs_dir:
+                    return _aio_web.json_response({"error": "not found"}, status=404)
+                base = _Path(refs_dir).resolve()
+                target = (base / relpath).resolve()
+                # Anti path-traversal : le fichier doit rester sous refs_dir.
+                if os.path.commonpath([str(base), str(target)]) != str(base):
+                    return _aio_web.json_response({"error": "forbidden"}, status=403)
+                if not target.is_file():
+                    return _aio_web.json_response({"error": "not found"}, status=404)
+                with open(target, "r", encoding="utf-8") as f:
+                    content = f.read()
+                return _aio_web.Response(text=content, content_type="text/plain")
+            except Exception as e:
+                return _aio_web.json_response({"error": str(e)}, status=500)
+
+        # ── Recherche sémantique locale (embedding_engine) ────────────
+        # GET  /aih/local/api/search/semantic    → recherche sémantique keywords
+        # GET  /aih/local/api/embeddings/status  → état du moteur (config meta)
+        # POST /aih/local/api/embeddings/build   → lance compute_all en thread
+        # GET  /aih/local/api/embeddings/progress→ progression du build
+        # Le moteur (_aih_emb_mod) est chargé comme store/sync (package d'abord,
+        # chemin absolu en fallback, None si absent) : s'il est absent ou non
+        # prêt, la recherche retombe sur du LIKE SQL et le build renvoie total=0.
+
+        def _aih_embedding_rows(rows):
+            """Rows [{"id", "text"}] pour compute_all depuis le miroir keywords."""
+            out = []
+            for r in rows:
+                if r.get("id") is None:
+                    continue
+                text = " ".join(
+                    filter(None, [r.get("keyword"), r.get("description")])
+                ).strip()
+                out.append({"id": r.get("id"), "text": text})
+            return out
+
+        def _aih_keyword_result(r, score):
+            """Dictionnaire résultat ({id, keyword, description, ..., score})."""
+            return {
+                "id": r.get("id"),
+                "keyword": r.get("keyword") or "",
+                "description": r.get("description") or "",
+                "section_title": r.get("section_title") or "",
+                "subsection_title": r.get("subsection_title") or "",
+                "nsfw": int(r.get("nsfw") or 0),
+                "score": round(float(score or 0.0), 4),
+            }
+
+        def _aih_building_flag(raw):
+            return str(raw or "").strip().lower() in ("1", "true", "ok", "yes")
+
+        def _aih_start_embedding_build(emb_rows):
+            """Lance compute_all('keyword', emb_rows) en thread daemon.
+
+            Marque meta 'embedding.building'='1' et enregistre la progression
+            dans meta 'embedding.progress' (JSON {done,total}). Retourne le
+            nombre de rows à traiter (0 si le moteur est indisponible).
+            """
+            import json as _json
+            import threading as _threading
+            if _aih_store_mod is None or _aih_emb_mod is None:
+                return 0
+            emb_rows = [r for r in (emb_rows or []) if r.get("id") is not None]
+            total = len(emb_rows)
+            if total == 0:
+                return 0
+
+            def _write_progress(conn, done, total):
+                _aih_store_mod.set_meta(
+                    conn, "embedding.progress",
+                    _json.dumps({"done": int(done), "total": int(total)}),
+                )
+
+            def _progress_cb(done, total):
+                try:
+                    conn = _aih_store_mod.get_conn()
+                    try:
+                        _write_progress(conn, done, total)
+                    finally:
+                        conn.close()
+                except Exception:
+                    pass
+
+            def _worker():
+                done = 0
+                try:
+                    if _aih_emb_mod is not None:
+                        done = _aih_emb_mod.compute_all(
+                            "keyword", emb_rows, progress_cb=_progress_cb
+                        ) or 0
+                except Exception:
+                    done = 0
+                finally:
+                    # Toujours lever le flag building + progress final.
+                    try:
+                        conn = _aih_store_mod.get_conn()
+                        try:
+                            _aih_store_mod.set_meta(conn, "embedding.building", "0")
+                            _write_progress(conn, done, total)
+                        finally:
+                            conn.close()
+                    except Exception:
+                        pass
+
+            # Statut "building" immédiat (avant le démarrage du thread).
+            try:
+                conn = _aih_store_mod.get_conn()
+                try:
+                    _aih_store_mod.set_meta(conn, "embedding.building", "1")
+                    _write_progress(conn, 0, total)
+                finally:
+                    conn.close()
+            except Exception:
+                pass
+
+            _t = _threading.Thread(
+                target=_worker, name="aih-embedding-build", daemon=True
+            )
+            _t.start()
+            return total
+
+        @_routes.get("/aih/local/api/search/semantic")
+        async def _aih_local_search_semantic_route(request):
+            """Recherche sémantique locale dans le miroir keywords.
+
+            q obligatoire (400 si vide). Moteur prêt → embedding_engine.search()
+            avec lazy build en arrière-plan ; sinon fallback LIKE SQL (score 0).
+            Filtres nsfw / section appliqués après coup, tri par score desc.
+            """
+            try:
+                q = (request.query.get("q") or "").strip()
+                if not q:
+                    return _aio_web.json_response(
+                        {"error": "q required"}, status=400
+                    )
+                try:
+                    limit = int(request.query.get("limit", 50))
+                except (TypeError, ValueError):
+                    return _aio_web.json_response(
+                        {"error": "limit invalide"}, status=400
+                    )
+                if limit < 0:
+                    limit = 50
+                nsfw = (request.query.get("nsfw") or "").strip()
+                section = (request.query.get("section") or "").strip()
+                try:
+                    min_score = float(
+                        request.query.get("min_confidence")
+                        or request.query.get("confidence")
+                        or 0
+                    )
+                except (TypeError, ValueError):
+                    return _aio_web.json_response(
+                        {"error": "confidence invalide"}, status=400
+                    )
+
+                conn = _aih_store_mod.get_conn()
+                try:
+                    rows = _aih_store_mod.list_mirror(conn, "keywords", {})
+                finally:
+                    conn.close()
+
+                by_id = {}
+                for r in rows:
+                    try:
+                        by_id[int(r.get("id"))] = r
+                    except (TypeError, ValueError):
+                        continue
+
+                results = []
+                eng_ready = bool(
+                    _aih_emb_mod is not None
+                    and getattr(_aih_emb_mod, "is_ready", lambda: False)()
+                )
+
+                if eng_ready:
+                    hits = _aih_emb_mod.search("keyword", q, limit, min_score)
+                    if not hits:
+                        # Build paresseux : aucun embedding pour ce fingerprint ?
+                        fp = _aih_emb_mod.get_fingerprint()
+                        conn = _aih_store_mod.get_conn()
+                        try:
+                            count = conn.execute(
+                                "SELECT COUNT(*) AS c FROM local_embeddings "
+                                "WHERE entity_type = 'keyword' "
+                                "AND model_fingerprint = ?",
+                                (fp,),
+                            ).fetchone()["c"]
+                        finally:
+                            conn.close()
+                        emb_rows = _aih_embedding_rows(rows)
+                        if int(count or 0) == 0 and emb_rows:
+                            _aih_start_embedding_build(emb_rows)
+                            return _aio_web.json_response(
+                                {"building": True, "results": []}
+                            )
+                    for h in hits:
+                        r = by_id.get(h.get("id"))
+                        if r is None:
+                            continue
+                        results.append(_aih_keyword_result(r, h.get("score")))
+                else:
+                    # Fallback : recherche LIKE simple sur le store, score 0.
+                    like = q.lower()
+                    for r in rows:
+                        hay = " ".join(
+                            str(r.get(k) or "")
+                            for k in (
+                                "keyword", "description",
+                                "section_title", "subsection_title",
+                            )
+                        ).lower()
+                        if like in hay:
+                            results.append(_aih_keyword_result(r, 0.0))
+
+                # Filtres nsfw / section (si fournis).
+                if nsfw in ("0", "1"):
+                    target = int(nsfw)
+                    results = [
+                        x for x in results if int(x.get("nsfw") or 0) == target
+                    ]
+                if section:
+                    sections = [s.strip() for s in section.split(",") if s.strip()]
+                    if sections:
+                        results = [
+                            x for x in results
+                            if str(x.get("section_title") or "").strip() in sections
+                            or str(by_id.get(x.get("id"), {}).get("section_id") or "").strip() in sections
+                        ]
+
+                results.sort(key=lambda x: x.get("score") or 0, reverse=True)
+                return _aio_web.json_response(results[:limit])
+            except Exception as e:
+                return _aio_web.json_response({"error": str(e)}, status=500)
+
+        @_routes.get("/aih/local/api/embeddings/status")
+        async def _aih_local_embeddings_status_route(request):
+            """État du moteur d'embeddings local (config meta + compteur)."""
+            import json as _json
+            try:
+                conn = _aih_store_mod.get_conn()
+                try:
+                    total = conn.execute(
+                        "SELECT COUNT(*) AS c FROM local_embeddings"
+                    ).fetchone()["c"]
+                    cfg_raw = _aih_store_mod.get_meta(conn, "embedding.config")
+                    building_raw = _aih_store_mod.get_meta(
+                        conn, "embedding.building", "0"
+                    )
+                finally:
+                    conn.close()
+                cfg = {}
+                if cfg_raw:
+                    try:
+                        cfg = _json.loads(cfg_raw)
+                    except (TypeError, ValueError):
+                        cfg = {}
+                ready = False
+                if _aih_emb_mod is not None:
+                    try:
+                        ready = bool(_aih_emb_mod.is_ready())
+                    except Exception:
+                        ready = False
+                return _aio_web.json_response({
+                    "source": cfg.get("source") if cfg else None,
+                    "model_name": cfg.get("model_name") if cfg else None,
+                    "dim": int(cfg.get("dim") or 0) if cfg else 0,
+                    "fingerprint": cfg.get("fingerprint") if cfg else None,
+                    "ready": ready,
+                    "total": int(total or 0),
+                    "building": _aih_building_flag(building_raw),
+                })
+            except Exception as e:
+                return _aio_web.json_response({"error": str(e)}, status=500)
+
+        @_routes.post("/aih/local/api/embeddings/build")
+        async def _aih_local_embeddings_build_route(request):
+            """Lance compute_all('keyword', rows) en thread daemon (non bloquant)."""
+            try:
+                conn = _aih_store_mod.get_conn()
+                try:
+                    rows = _aih_store_mod.list_mirror(conn, "keywords", {})
+                finally:
+                    conn.close()
+                total = _aih_start_embedding_build(_aih_embedding_rows(rows))
+                return _aio_web.json_response({"started": True, "total": total})
+            except Exception as e:
+                return _aio_web.json_response({"error": str(e)}, status=500)
+
+        @_routes.get("/aih/local/api/embeddings/progress")
+        async def _aih_local_embeddings_progress_route(request):
+            """Progression du build en cours (meta embedding.progress)."""
+            import json as _json
+            try:
+                conn = _aih_store_mod.get_conn()
+                try:
+                    building_raw = _aih_store_mod.get_meta(
+                        conn, "embedding.building", "0"
+                    )
+                    prog_raw = _aih_store_mod.get_meta(conn, "embedding.progress")
+                finally:
+                    conn.close()
+                building = _aih_building_flag(building_raw)
+                done = 0
+                total = 0
+                if prog_raw:
+                    try:
+                        prog = _json.loads(prog_raw)
+                        done = int(prog.get("done") or 0)
+                        total = int(prog.get("total") or 0)
+                    except (TypeError, ValueError):
+                        pass
+                return _aio_web.json_response({
+                    "building": building,
+                    "done": done,
+                    "total": total,
+                })
+            except Exception as e:
+                return _aio_web.json_response({"error": str(e)}, status=500)
+
+        # ── P4 : Frontend local (routes statiques /aih/local/*) ─────────
+        # Le frontend web (frontend/) est servi depuis ComfyUI en mode local :
+        # index + assets css/js + favicon. Anti path-traversal via realpath
+        # containment, try/except large, style aiohttp existant.
+
+        _aih_frontend_dir = os.path.join(_base, "frontend")
+        _aih_frontend_base = os.path.realpath(_aih_frontend_dir)
+
+        def _aih_frontend_file(relpath):
+            """Résout <frontend>/<relpath> (None si absent ou hors base)."""
+            from pathlib import Path as _P
+            try:
+                base = _P(_aih_frontend_base)
+                target = (base / relpath).resolve()
+                if os.path.commonpath([str(base), str(target)]) != str(base):
+                    return None
+                if not target.is_file():
+                    return None
+                return str(target)
+            except Exception:
+                return None
+
+        @_routes.get("/aih/local/")
+        async def _aih_local_index_route(request):
+            """Sert frontend/index.html (assets absolus réécrits en /aih/local/)."""
+            try:
+                idx = os.path.join(_aih_frontend_dir, "index.html")
+                if not os.path.isfile(idx):
+                    return _aio_web.json_response({"error": "not found"}, status=404)
+                with open(idx, "r", encoding="utf-8") as f:
+                    html = f.read()
+                # Le backend Flask sert le frontend à la racine (assets en
+                # absolu /css/... et /js/...) ; ici on les préfixe.
+                html = html.replace('href="/css/', 'href="/aih/local/css/')
+                html = html.replace('src="/js/', 'src="/aih/local/js/')
+                return _aio_web.Response(text=html, content_type="text/html")
+            except Exception as e:
+                return _aio_web.json_response({"error": str(e)}, status=500)
+
+        @_routes.get("/aih/local/css/{path:.*}")
+        async def _aih_local_css_route(request):
+            """Sert un fichier CSS du frontend (mime text/css)."""
+            try:
+                relpath = request.match_info.get("path", "")
+                if not relpath:
+                    return _aio_web.json_response({"error": "not found"}, status=404)
+                path = _aih_frontend_file(os.path.join("css", relpath))
+                if path is None:
+                    return _aio_web.json_response({"error": "not found"}, status=404)
+                with open(path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                return _aio_web.Response(text=content, content_type="text/css")
+            except Exception as e:
+                return _aio_web.json_response({"error": str(e)}, status=500)
+
+        @_routes.get("/aih/local/js/{path:.*}")
+        async def _aih_local_js_route(request):
+            """Sert un fichier JS du frontend (mime application/javascript)."""
+            try:
+                relpath = request.match_info.get("path", "")
+                if not relpath:
+                    return _aio_web.json_response({"error": "not found"}, status=404)
+                path = _aih_frontend_file(os.path.join("js", relpath))
+                if path is None:
+                    return _aio_web.json_response({"error": "not found"}, status=404)
+                with open(path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                return _aio_web.Response(text=content, content_type="application/javascript")
+            except Exception as e:
+                return _aio_web.json_response({"error": str(e)}, status=500)
+
+        @_routes.get("/aih/local/favicon{rest:.*}")
+        async def _aih_local_favicon_route(request):
+            """Sert le favicon du frontend s'il existe (ico/png/svg)."""
+            try:
+                rest = request.match_info.get("rest", "")
+                name = ("favicon" + rest).strip("/") or "favicon.ico"
+                path = _aih_frontend_file(name)
+                if path is None:
+                    return _aio_web.json_response({"error": "not found"}, status=404)
+                with open(path, "rb") as f:
+                    content = f.read()
+                low = name.lower()
+                if low.endswith(".png"):
+                    ctype = "image/png"
+                elif low.endswith(".svg"):
+                    ctype = "image/svg+xml"
+                else:
+                    ctype = "image/x-icon"
+                return _aio_web.Response(body=content, content_type=ctype)
+            except Exception as e:
+                return _aio_web.json_response({"error": str(e)}, status=500)
+
+        # ── P4 : Proxy JSON local (lecture du store) ────────────────────
+        # Endpoints /aih/local/api/* : mêmes contrats JSON que le backend,
+        # mais lus depuis les tables miroirs du store SQLite local.
+
+        def _aih_local_conn():
+            """Ouvre une connexion store (init_store défensif)."""
+            conn = _aih_store_mod.get_conn()
+            try:
+                _aih_store_mod.init_store(conn)
+            except Exception:
+                pass
+            return conn
+
+        def _aih_local_decode(v):
+            """Réhydrate un JSON dict/list stocké en texte (best-effort)."""
+            import json as _json
+            if not isinstance(v, str):
+                return v
+            s = v.strip()
+            if not s or s[0] not in "[{":
+                return v
+            try:
+                d = _json.loads(s)
+            except (TypeError, ValueError):
+                return v
+            return d if isinstance(d, (dict, list)) else v
+
+        def _aih_local_decode_row(row):
+            return {k: _aih_local_decode(v) for k, v in row.items()}
+
+        @_routes.get("/aih/local/api/sections")
+        async def _aih_local_api_sections_route(request):
+            """Liste des sections (dédupliquée sur section_id)."""
+            conn = None
+            try:
+                conn = _aih_local_conn()
+                seen = {}
+                for r in _aih_store_mod.list_mirror(conn, "keywords", {}):
+                    sid = r.get("section_id")
+                    if sid is None or str(sid).strip() == "":
+                        continue
+                    sid = str(sid)
+                    if sid in seen:
+                        seen[sid]["total"] = seen[sid]["total"] + 1
+                        seen[sid]["nsfw_count"] = seen[sid]["nsfw_count"] + int(r.get("nsfw") or 0)
+                    else:
+                        seen[sid] = {
+                            "section_id": sid,
+                            "section_title": r.get("section_title") or "",
+                            "total": 1,
+                            "nsfw_count": int(r.get("nsfw") or 0),
+                        }
+                items = [seen[k] for k in sorted(seen)]
+                return _aio_web.json_response(items)
+            except Exception as e:
+                return _aio_web.json_response({"error": str(e)}, status=500)
+            finally:
+                if conn is not None:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+
+        @_routes.get("/aih/local/api/subsections")
+        async def _aih_local_api_subsections_route(request):
+            """Liste des sous-sections dédupliquées (filtre ?section=)."""
+            conn = None
+            try:
+                section = (request.query.get("section") or "").strip()
+                sections = [s.strip() for s in section.split(",") if s.strip()] if section else None
+                conn = _aih_local_conn()
+                seen = {}
+                for r in _aih_store_mod.list_mirror(conn, "keywords", {}):
+                    sid = r.get("subsection_id")
+                    if sid is None or str(sid).strip() == "":
+                        continue
+                    if sections and str(r.get("section_id") or "").strip() not in sections:
+                        continue
+                    sid = str(sid)
+                    if sid in seen:
+                        seen[sid]["total"] = seen[sid]["total"] + 1
+                    else:
+                        seen[sid] = {
+                            "subsection_id": sid,
+                            "subsection_title": r.get("subsection_title") or "",
+                            "total": 1,
+                        }
+                items = [seen[k] for k in sorted(seen)]
+                return _aio_web.json_response(items)
+            except Exception as e:
+                return _aio_web.json_response({"error": str(e)}, status=500)
+            finally:
+                if conn is not None:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+
+        @_routes.get("/aih/local/api/stats")
+        async def _aih_local_api_stats_route(request):
+            """Statistiques globales (total / nsfw / public)."""
+            conn = None
+            try:
+                conn = _aih_local_conn()
+                rows = _aih_store_mod.list_mirror(conn, "keywords", {})
+                total = len(rows)
+                nsfw = sum(1 for r in rows if int(r.get("nsfw") or 0) == 1)
+                public = sum(1 for r in rows if str(r.get("privacy_status") or "").strip() == "public")
+                sections = set(
+                    str(r.get("section_id") or "").strip()
+                    for r in rows if r.get("section_id") not in (None, "")
+                )
+                subsections = set(
+                    str(r.get("subsection_id") or "").strip()
+                    for r in rows if r.get("subsection_id") not in (None, "")
+                )
+                return _aio_web.json_response({
+                    "total": total,
+                    "nsfw": nsfw,
+                    "nsfw_total": nsfw,
+                    "public": public,
+                    "section_count": len(sections),
+                    "subsection_count": len(subsections),
+                    "generated_total": 0,
+                })
+            except Exception as e:
+                return _aio_web.json_response({"error": str(e)}, status=500)
+            finally:
+                if conn is not None:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+
+        @_routes.get("/aih/local/api/keywords")
+        async def _aih_local_api_keywords_route(request):
+            """Liste des keywords filtrés (q / q_neg / section / subsection / nsfw / limit)."""
+            conn = None
+            try:
+                q = (request.query.get("q") or "").strip().lower()
+                q_neg = (request.query.get("q_neg") or "").strip().lower()
+                nsfw = (request.query.get("nsfw") or "").strip()
+                section = (request.query.get("section") or "").strip()
+                subsection = (request.query.get("subsection") or "").strip()
+                limit_raw = (request.query.get("limit") or "").strip()
+                limit = None
+                if limit_raw:
+                    try:
+                        limit = int(limit_raw)
+                    except (TypeError, ValueError):
+                        return _aio_web.json_response({"error": "limit invalide"}, status=400)
+                    if limit < 0:
+                        limit = None
+                sections = [s.strip() for s in section.split(",") if s.strip()] if section else None
+                subsections = [s.strip() for s in subsection.split(",") if s.strip()] if subsection else None
+
+                conn = _aih_local_conn()
+                out = []
+                for r in _aih_store_mod.list_mirror(conn, "keywords", {}):
+                    kw = r.get("keyword") or ""
+                    desc = r.get("description") or ""
+                    sec_id = str(r.get("section_id") or "").strip()
+                    sec_title = str(r.get("section_title") or "").strip()
+                    sub_id = str(r.get("subsection_id") or "").strip()
+                    sub_title = str(r.get("subsection_title") or "").strip()
+                    kw_nsfw = int(r.get("nsfw") or 0)
+                    hay = " ".join([kw, desc, sec_title, sub_title]).lower()
+                    if q and q not in hay:
+                        continue
+                    if q_neg and q_neg in hay:
+                        continue
+                    if nsfw in ("0", "1") and kw_nsfw != int(nsfw):
+                        continue
+                    if sections and sec_id not in sections and sec_title not in sections:
+                        continue
+                    if subsections and sub_id not in subsections and sub_title not in subsections:
+                        continue
+                    out.append({
+                        "id": r.get("id"),
+                        "keyword": kw,
+                        "description": desc,
+                        "section_id": sec_id,
+                        "section_title": sec_title,
+                        "subsection_id": sub_id,
+                        "subsection_title": sub_title,
+                        "nsfw": kw_nsfw,
+                        "privacy_status": r.get("privacy_status") or "public",
+                        "user_id": r.get("user_id"),
+                    })
+                out.sort(key=lambda x: (x["section_id"], x["subsection_id"], x["keyword"]))
+                if limit is not None:
+                    out = out[:limit]
+                return _aio_web.json_response(out)
+            except Exception as e:
+                return _aio_web.json_response({"error": str(e)}, status=500)
+            finally:
+                if conn is not None:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+
+        @_routes.get("/aih/local/api/filters")
+        async def _aih_local_api_filters_route(request):
+            """Liste des saved_filters (exclut les deleted)."""
+            conn = None
+            try:
+                conn = _aih_local_conn()
+                rows = _aih_store_mod.list_mirror(conn, "saved_filters", {})
+                return _aio_web.json_response([_aih_local_decode_row(r) for r in rows])
+            except Exception as e:
+                return _aio_web.json_response({"error": str(e)}, status=500)
+            finally:
+                if conn is not None:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+
+        @_routes.get("/aih/local/api/elements-presets")
+        async def _aih_local_api_elements_presets_route(request):
+            """Liste des elements_presets."""
+            conn = None
+            try:
+                conn = _aih_local_conn()
+                rows = _aih_store_mod.list_mirror(conn, "elements_presets", {})
+                return _aio_web.json_response([_aih_local_decode_row(r) for r in rows])
+            except Exception as e:
+                return _aio_web.json_response({"error": str(e)}, status=500)
+            finally:
+                if conn is not None:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+
+        @_routes.get("/aih/local/api/styles")
+        async def _aih_local_api_styles_route(request):
+            """Liste des styles."""
+            conn = None
+            try:
+                conn = _aih_local_conn()
+                rows = _aih_store_mod.list_mirror(conn, "styles", {})
+                return _aio_web.json_response([_aih_local_decode_row(r) for r in rows])
+            except Exception as e:
+                return _aio_web.json_response({"error": str(e)}, status=500)
+            finally:
+                if conn is not None:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+
+        @_routes.get("/aih/local/api/prompts/templates")
+        async def _aih_local_api_prompts_templates_route(request):
+            """Liste des prompt_templates."""
+            conn = None
+            try:
+                conn = _aih_local_conn()
+                rows = _aih_store_mod.list_mirror(conn, "prompt_templates", {})
+                return _aio_web.json_response([_aih_local_decode_row(r) for r in rows])
+            except Exception as e:
+                return _aio_web.json_response({"error": str(e)}, status=500)
+            finally:
+                if conn is not None:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+
+        # ── P5 : Écritures en attente / conflits (outbox + miroirs) ────
+        # GET /aih/local/api/sync/outbox    → ops locales (pending/conflict/error)
+        # GET /aih/local/api/sync/conflicts → lignes miroir en conflit
+        # GET /aih/local/api/sync/retry     → flush manuel immédiat de l'outbox
+
+        @_routes.get("/aih/local/api/sync/outbox")
+        async def _aih_local_sync_outbox_route(request):
+            """Liste les écritures locales en attente (outbox, max 200).
+
+            Contrat : {"items": [{id, entity_type, entity_client_id, op, status,
+            attempts, last_error, created_at, client_updated_at}], "count": N}.
+            Lecture directe de la table outbox via get_conn (pas list_mirror,
+            qui ne connaît pas cette table).
+            """
+            conn = None
+            try:
+                conn = _aih_local_conn()
+                rows = conn.execute(
+                    "SELECT id, entity_type, entity_client_id, op, status, "
+                    "attempts, last_error, created_at, client_updated_at "
+                    "FROM outbox ORDER BY created_at DESC, id DESC LIMIT 200"
+                ).fetchall()
+                items = [dict(r) for r in rows]
+                return _aio_web.json_response({"items": items, "count": len(items)})
+            except Exception as e:
+                return _aio_web.json_response({"error": str(e)}, status=500)
+            finally:
+                if conn is not None:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+
+        @_routes.get("/aih/local/api/sync/conflicts")
+        async def _aih_local_sync_conflicts_route(request):
+            """Liste les lignes miroir en conflit (toutes tables, agrégées).
+
+            Contrat : {"items": [{table, client_id, id, sync_state,
+            updated_at}], "count": N}. Chaque table est traitée en try/except :
+            une table absente ou sans colonnes n'arrête pas la route.
+            """
+            conn = None
+            try:
+                conn = _aih_local_conn()
+                items = []
+                tables = getattr(_aih_store_mod, "MIRROR_TABLES", ()) or ()
+                for table in tables:
+                    try:
+                        rows = conn.execute(
+                            f"SELECT client_id, id, sync_state, updated_at "
+                            f"FROM {table} WHERE sync_state = 'conflict'"
+                        ).fetchall()
+                    except Exception:
+                        continue  # table absente / schéma différent
+                    for r in rows:
+                        items.append({
+                            "table": table,
+                            "client_id": r["client_id"],
+                            "id": r["id"],
+                            "sync_state": r["sync_state"],
+                            "updated_at": r["updated_at"],
+                        })
+                return _aio_web.json_response({"items": items, "count": len(items)})
+            except Exception as e:
+                return _aio_web.json_response({"error": str(e)}, status=500)
+            finally:
+                if conn is not None:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+
+        @_routes.get("/aih/local/api/sync/retry")
+        async def _aih_local_sync_retry_route(request):
+            """Force un flush manuel immédiat de l'outbox (sync_engine).
+
+            Appelle sync_engine.flush_outbox(api_url, api_key) dans un executor
+            (le flush est synchrone/urllib → on ne bloque pas l'event loop).
+            Retourne {"sent", "applied", "conflicts", "errors"} (+ auth/error).
+            """
+            try:
+                if _aih_sync_mod is None:
+                    return _aio_web.json_response(
+                        {"error": "sync_engine indisponible"}, status=500
+                    )
+                api_url = api_key = None
+                if hasattr(_aih_sync_mod, "_load_credentials"):
+                    try:
+                        api_url, api_key = _aih_sync_mod._load_credentials()
+                    except Exception:
+                        api_url = api_key = None
+                if not api_url or not api_key:
+                    return _aio_web.json_response(
+                        {"error": "credentials absentes (api_key / api_url non configurés)"},
+                        status=400,
+                    )
+                import asyncio as _aio
+                import functools as _ft
+                loop = _aio.get_event_loop()
+                result = await loop.run_in_executor(
+                    None,
+                    _ft.partial(_aih_sync_mod.flush_outbox, api_url, api_key, 200),
+                )
+                if not isinstance(result, dict):
+                    result = {"sent": 0, "applied": 0, "conflicts": 0, "errors": 0}
+                return _aio_web.json_response(result)
+            except Exception as e:
+                return _aio_web.json_response({"error": str(e)}, status=500)
+
+        print("[AIH] Local status route registered: GET /aih/local/status")
+        print("[AIH] Local sync routes registered: GET /aih/local/api/sync/outbox, GET /aih/local/api/sync/conflicts, GET /aih/local/api/sync/retry")
+        print("[AIH] Music3 local routes registered: GET /aih/local/api/music3/manifest, GET /aih/local/api/music3/reference/*")
+        print("[AIH] Local frontend routes registered: GET /aih/local/, GET /aih/local/css/*, GET /aih/local/js/*, GET /aih/local/favicon*")
+        print("[AIH] Local proxy routes registered: GET /aih/local/api/sections, /aih/local/api/subsections, /aih/local/api/stats, /aih/local/api/keywords, /aih/local/api/filters, /aih/local/api/elements-presets, /aih/local/api/styles, /aih/local/api/prompts/templates")
+        print("[AIH] Local semantic routes registered: GET /aih/local/api/search/semantic, GET /aih/local/api/embeddings/status, POST /aih/local/api/embeddings/build, GET /aih/local/api/embeddings/progress")
 else:
     # Si les routes ne sont pas enregistrees, on ne fait rien de plus
     # (l'item "Update" du menu ne fonctionnera pas, mais l'extension
     # reste chargee pour les nodes)
     pass
+
+# ── Démarrage du moteur de sync (mode local) ───────────────────────
+# Thread daemon lancé en fin de chargement du module (le serveur aiohttp
+# est déjà initialisé à ce stade dans ComfyUI). Non bloquant : en cas
+# d'échec on logge simplement un warning, l'extension reste chargée.
+if _aih_sync_mod is not None:
+    try:
+        _aih_sync_mod.start_sync_engine()
+        logging.info("[AIH] Sync engine started (local store mode)")
+    except Exception as _e:
+        logging.warning(f"[AIH] Sync engine start failed: {_e}")
+
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]

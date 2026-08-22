@@ -1,5 +1,10 @@
 
-    const API = '/api';
+    let API = '/api';
+    let LOCAL_MODE = false;      // page servie par ComfyUI (backend indisponible)
+    let localStatus = null;      // dernier statut {server_reachable, pending_sync, ...}
+    let apiFailCount = 0;        // echecs consecutifs de fetch vers le backend
+    let localPollTimer = null;   // timer du polling du badge local
+    let localPollStarted = false; // guard: listener visibilitychange ajoute une seule fois
     let allKeywords = [];
     let sectionsList = [];
     let currentUser = null;
@@ -41,6 +46,119 @@
     const enhOutput = $('enhance-output');
 
     let hiddenKWs = {};  // { id: true } — mots-cles masques localement
+
+    // === Mode local (page servie par ComfyUI, backend indisponible) ===
+    async function detectLocalMode() {
+      try {
+        const res = await fetch('/aih/local/status', { signal: AbortSignal.timeout(1500) });
+        return res.ok;
+      } catch (e) { /* silencieux → mode backend par defaut */ }
+      return false;
+    }
+
+    function applyLocalMode() {
+      window.LOCAL_MODE = true;   // flag lisible par les autres scripts (call-time guards)
+      currentUser = { id: 'local', display_name: 'Local', role: 'user', local: true };
+      // Masquer les elements "mode complet" (login, user, admin, membres, preview,
+      // presets IA / upload / partage)
+      ['btn-login', 'user-info', 'btn-admin', 'btn-members', 'tab-btn-preview', 'tab-preview',
+       'enhance-preset', 'empty-import-btn', 'presets-list'].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el) el.classList.add('hidden');
+      });
+      injectLocalBadge();
+      startLocalPolling();
+    }
+
+    function injectLocalBadge() {
+      if (document.getElementById('aih-mode-badge')) return;
+      var badge = document.createElement('span');
+      badge.id = 'aih-mode-badge';
+      badge.style.cssText = 'font-size:11px;font-weight:500;padding:3px 8px;border-radius:6px;background:rgba(0,0,0,.25);white-space:nowrap;';
+      var userArea = document.getElementById('user-area');
+      if (userArea && userArea.parentNode) userArea.parentNode.insertBefore(badge, userArea);
+      else if (document.querySelector('header')) document.querySelector('header').appendChild(badge);
+      updateLocalBadge(localStatus);
+    }
+
+    function startLocalPolling() {
+      refreshLocalStatus();
+      if (localPollTimer) clearInterval(localPollTimer);
+      localPollTimer = setInterval(refreshLocalStatus, 10000);
+      if (!localPollStarted) {
+        localPollStarted = true;
+        document.addEventListener('visibilitychange', function() {
+          if (document.visibilityState === 'visible') refreshLocalStatus();
+        });
+      }
+    }
+
+    async function refreshLocalStatus() {
+      if (!LOCAL_MODE) return;
+      try {
+        const res = await fetch('/aih/local/status', { signal: AbortSignal.timeout(1500) });
+        if (!res.ok) throw new Error('status ' + res.status);
+        localStatus = await res.json();
+      } catch (e) {
+        localStatus = { server_reachable: false, pending_sync: 0 };
+      }
+      updateLocalBadge(localStatus);
+    }
+
+    function updateLocalBadge(status) {
+      var badge = document.getElementById('aih-mode-badge');
+      if (!badge || !status) return;
+      if (status.server_reachable) {
+        badge.textContent = '🟢 Local — synchro OK';
+        badge.style.color = '#86efac';
+        badge.style.border = '1px solid rgba(134,239,172,.45)';
+      } else if ((status.pending_sync || 0) > 0) {
+        badge.textContent = '🟠 Local — ' + status.pending_sync + ' écritures en attente';
+        badge.style.color = '#fcd34d';
+        badge.style.border = '1px solid rgba(252,211,77,.45)';
+      } else {
+        badge.textContent = '🔴 Hors ligne';
+        badge.style.color = '#fca5a5';
+        badge.style.border = '1px solid rgba(252,165,165,.45)';
+      }
+    }
+
+    async function enterLocalMode() {
+      if (LOCAL_MODE) return;
+      const ok = await detectLocalMode();  // re-probe
+      if (!ok) { apiFailCount = 0; return; }  // toujours indisponible → on retentera
+      LOCAL_MODE = true;
+      API = '/aih/local/api';
+      applyLocalMode();
+      try { await checkData(); } catch (e) {}
+      if (typeof loadEnhancerConfig === 'function') loadEnhancerConfig();
+      if (typeof loadEPState === 'function') loadEPState();
+    }
+
+    // Wrapper fetch : compte les echecs des appels vers l'API backend, puis bascule
+    // en mode local apres 3 echecs consecutifs (le probe local ne compte jamais).
+    (function() {
+      const origFetch = window.fetch.bind(window);
+      window.fetch = function(input, init) {
+        const url = typeof input === 'string' ? input : (input && input.url) || '';
+        return origFetch(input, init).then(function(res) {
+          if (!LOCAL_MODE && url.indexOf('/api') === 0) {
+            if (res.ok) apiFailCount = 0;
+            else {
+              apiFailCount++;
+              if (apiFailCount >= 3) enterLocalMode();
+            }
+          }
+          return res;
+        }, function(err) {
+          if (!LOCAL_MODE && url.indexOf('/api') === 0) {
+            apiFailCount++;
+            if (apiFailCount >= 3) enterLocalMode();
+          }
+          throw err;
+        });
+      };
+    })();
 
     async function safeJson(res) {
       try { return await res.json(); } catch(e) { return { error: 'Erreur serveur ' + res.status }; }
@@ -99,7 +217,7 @@
       if (tab === 'style') loadStylesTab();
       if (tab === 'template') loadTemplatesTab();
       if (tab === 'keywords') kwLoadList();
-      if (tab === 'preview') previewStart();
+      if (tab === 'preview' && typeof previewStart === 'function') previewStart();
     }
 
     /* ── Theme system ── */
@@ -130,7 +248,9 @@
     document.addEventListener('DOMContentLoaded', initThemeUI);
 
     async function initApp() {
-      await checkAuth();
+      LOCAL_MODE = await detectLocalMode();  // probe non-bloquant (timeout 1500ms, catch silencieux)
+      if (LOCAL_MODE) applyLocalMode();
+      else await checkAuth();
       searchInput?.addEventListener('input', () => { clearTimeout(textTimer); textTimer = setTimeout(applyFilters, 300); });
       semanticInput?.addEventListener('input', () => { clearTimeout(semanticTimer); semanticTimer = setTimeout(applyFilters, 400); });
       searchNegInput?.addEventListener('input', () => { clearTimeout(textTimer); textTimer = setTimeout(applyFilters, 300); });
@@ -169,7 +289,10 @@
         confNum.addEventListener('change', function() { confSlider.value = this.value; applyConfidence(); });
       }
       if (currentUser) await checkData();
-      if (currentUser) { loadEnhancerConfig(); loadEPState(); }
+      if (currentUser) {
+        if (typeof loadEnhancerConfig === 'function') loadEnhancerConfig();
+        if (typeof loadEPState === 'function') loadEPState();
+      }
     }
 
     // --- Reset functions ---

@@ -260,7 +260,12 @@ class AIHMusicNode:
         }
 
     def _fetch_ref(self, api_url, api_key, relpath):
-        """GET {api_url}/music3/reference/{relpath} — retourne le texte ou ''."""
+        """GET {api_url}/music3/reference/{relpath} — retourne le texte ou ''.
+
+        Fallback local : si le GET backend échoue (backend down), lit le
+        fichier .md depuis le cache local syncé (local_source.read_music_ref_local),
+        pour que le mode LOCAL de la node fonctionne offline.
+        """
         try:
             import requests
             headers = {}
@@ -272,6 +277,18 @@ class AIHMusicNode:
                 return r.text
         except Exception as e:
             logging.warning(f"[AIH Music] reference fetch failed ({relpath}): {e}")
+        # Fallback local (offline) : import try/except, str|None.
+        try:
+            from . import local_source
+        except Exception:
+            local_source = None
+        if local_source is not None:
+            try:
+                content = local_source.read_music_ref_local(relpath)
+                if content:
+                    return content
+            except Exception as e:
+                logging.warning(f"[AIH Music] local reference read failed ({relpath}): {e}")
         return ""
 
     def _call_llm(self, llm_config, system_prompt, user_prompt, seed=0):

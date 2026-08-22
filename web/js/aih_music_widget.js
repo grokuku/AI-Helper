@@ -279,7 +279,21 @@
                                 const d = parseInt(data.duration_seconds) || 0;
                                 durationDiv.textContent = `Durée: ${d} s`;
                             } catch (err) {
-                                captionTa.value = "Erreur: " + err.message;
+                                // Fallback local : si le backend cloud est injoignable,
+                                // vérifier que le mode LOCAL de la node est disponible
+                                // (références syncées / store local peuplé).
+                                try {
+                                    const lresp = await fetch("/aih/local/api/music3/manifest");
+                                    if (lresp.ok) {
+                                        const manifest = await lresp.json().catch(() => null);
+                                        const hasRefs = manifest && Array.isArray(manifest.files) && manifest.files.length > 0;
+                                        captionTa.value = hasRefs
+                                            ? "Backend indisponible — le test button cloud ne marche pas offline. Utilisez le mode LOCAL : connectez llm_config sur la node (références locales prêtes)."
+                                            : "Backend indisponible — utilisez le mode LOCAL (connectez llm_config) ou vérifiez /aih/local/status.";
+                                        return;
+                                    }
+                                } catch {}
+                                captionTa.value = "Backend indisponible — utilisez le mode LOCAL (connectez llm_config) ou vérifiez /aih/local/status.";
                             }
                         };
 

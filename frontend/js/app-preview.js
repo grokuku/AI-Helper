@@ -17,6 +17,7 @@
     /* ── Cycle de vie de l'onglet ── */
 
     function previewStart() {
+      if (LOCAL_MODE) { previewShowError('Indisponible en mode local'); return; }
       previewState.active = true;
       previewShowLoading();
       previewLoad();              // premier chargement immédiat
@@ -41,6 +42,7 @@
     }
 
     function previewRefreshNow() {
+      if (LOCAL_MODE) return;
       previewShowLoading();
       previewLoad();
     }
@@ -68,7 +70,7 @@
     /* ── Chargement de la liste des images ── */
 
     async function previewLoad() {
-      if (!previewState.active) return;
+      if (LOCAL_MODE || !previewState.active) return;
       try {
         var key = await previewGetApiKey();
         if (!key) {

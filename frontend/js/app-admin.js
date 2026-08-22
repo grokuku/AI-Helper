@@ -200,6 +200,7 @@
 
     // === Panneau Admin ===
     function toggleAdmin() {
+      if (LOCAL_MODE) { showModal('Admin', 'Indisponible en mode local', 'error'); return; }
       var panel = document.getElementById('admin-panel');
       var isOpen = !panel.classList.contains('hidden');
       panel.classList.toggle('hidden');
@@ -232,6 +233,7 @@
     }
 
     function toggleMembers() {
+      if (LOCAL_MODE) { showModal('Membres', 'Indisponible en mode local', 'error'); return; }
       var panel = document.getElementById('members-panel');
       panel.classList.remove('hidden');
       loadMembersList();
@@ -312,6 +314,7 @@
     }
 
     async function loadApiKey() {
+      if (LOCAL_MODE) return;
       var nameEl = document.getElementById('settings-username');
       if (currentUser) nameEl.textContent = currentUser.display_name || currentUser.username;
       var input = document.getElementById('settings-api-key');
@@ -331,6 +334,7 @@
     }
 
     async function regenerateApiKey() {
+      if (LOCAL_MODE) { showModal('API Key', 'Indisponible en mode local', 'error'); return; }
       if (!confirm('Regénérer la clé API ? L\'ancienne clé ne fonctionnera plus.')) return;
       var statusEl = document.getElementById('settings-key-status');
       statusEl.className = 'text-xs mt-2 text-amber-500';
@@ -1088,6 +1092,7 @@
     });
     // === Import / Export ===
     function openImport() {
+      if (LOCAL_MODE) { showModal('Import', 'Indisponible en mode local', 'error'); return; }
       var el = document.getElementById('modal-import');
       el.classList.remove('hidden');
       el.classList.add('flex');
@@ -1117,6 +1122,7 @@
     }
 
     async function sendImport(file) {
+      if (LOCAL_MODE) { showImportStatus(false, 'Indisponible en mode local'); return; }
       $('import-loading').classList.remove('hidden');
       $('import-status').classList.add('hidden');
       const fd = new FormData();
@@ -1142,6 +1148,7 @@
     }
 
     async function doExport() {
+      if (LOCAL_MODE) { showModal('Export', 'Indisponible en mode local', 'error'); return; }
       try {
         const res = await fetch(`${API}/export`);
         if (!res.ok) throw new Error(await res.text());

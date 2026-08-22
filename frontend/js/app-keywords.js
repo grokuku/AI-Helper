@@ -382,7 +382,7 @@
 
     // Persistance Elements Picker
     async function saveEPState() {
-      if (!currentUser) return;
+      if (LOCAL_MODE || !currentUser) return;   // /settings indisponible en local
       var s = currentUser.settings || {};
       s.genElements = genElements.map(function(e){ return {type: e.type, filterId: e.filterId, text: e.text, filterName: e.filterName}; });
       try {
@@ -482,6 +482,7 @@
 
     // Generation
     async function genGenerate() {
+      if (LOCAL_MODE) { showModal('Generateur', 'Indisponible en mode local', 'error'); return; }
       var items = [];
       for (var i = 0; i < genElements.length; i++) {
         var el = genElements[i];
@@ -802,7 +803,7 @@ document.addEventListener('mouseup', function() {
 });
 
 function kwSaveColWidths() {
-    if (!currentUser) return;
+    if (LOCAL_MODE || !currentUser) return;   // /settings indisponible en local
     var headers = document.querySelectorAll('#kw-table-header-row th');
     var widths = {};
     var labels = ['checkbox', 'keyword', 'description', 'section', 'subsection', 'nsfw', 'status', 'actions'];
@@ -1048,6 +1049,7 @@ function renderKwList(keywords) {
 // ── Inline save (lit les champs de la ligne) ──
 
 async function kwInlineSave(kwId) {
+    if (LOCAL_MODE) { showModal('Mot-clé', 'Modification indisponible en mode local', 'error'); return; }
     var keyword = document.getElementById('kw-row-kw-' + kwId).value.trim();
     var description = document.getElementById('kw-row-desc-' + kwId).value.trim();
     var section_id = document.getElementById('kw-row-secid-' + kwId).value.trim();
@@ -1079,6 +1081,7 @@ async function kwInlineSave(kwId) {
 // ── Quick review (approve/reject without editing) ──
 
 async function kwQuickReview(kwId, action) {
+    if (LOCAL_MODE) { showModal('Mot-clé', 'Validation indisponible en mode local', 'error'); return; }
     try {
         var res = await fetch(API + '/keywords/' + kwId + '/review', {
             method: 'POST',
@@ -1098,6 +1101,7 @@ async function kwQuickReview(kwId, action) {
 // ── Inline review (approve/reject with edits from the row) ──
 
 async function kwInlineReview(kwId, action) {
+    if (LOCAL_MODE) { showModal('Mot-clé', 'Validation indisponible en mode local', 'error'); return; }
     var edits = {};
     var kwEl = document.getElementById('kw-row-kw-' + kwId);
     if (!kwEl) { kwQuickReview(kwId, action); return; }
@@ -1217,6 +1221,7 @@ function kwSelectInverse() {
 }
 
 async function kwBulkDelete() {
+    if (LOCAL_MODE) { showModal('Mot-clé', 'Suppression indisponible en mode local', 'error'); return; }
     var ids = Array.from(kwSelectedIds);
     if (ids.length === 0) return;
     showConfirm('Confirmer', 'Supprimer ' + ids.length + ' mot' + (ids.length > 1 ? 's' : '') + '-clé' + (ids.length > 1 ? 's' : '') + ' ?', async function(ok) {
@@ -1238,6 +1243,7 @@ async function kwBulkDelete() {
 // ── Bulk validate ──
 
 async function kwBulkValidate() {
+    if (LOCAL_MODE) { showModal('Mot-clé', 'Validation indisponible en mode local', 'error'); return; }
     // Filtrer les sélectionnés qui sont en attente
     var pendingIds = [];
     kwCurrentList.forEach(function(k) {
@@ -1269,6 +1275,7 @@ async function kwBulkValidate() {
 // ── Duplicate checker ──
 
 async function kwCheckDuplicates() {
+    if (LOCAL_MODE) { showModal('Mot-clé', 'Vérification des doublons indisponible en mode local', 'error'); return; }
     var keyword = document.getElementById('kw-modal-keyword').value.trim();
     if (!keyword) {
         showModal('Info', 'Entre d\'abord un mot-clé pour vérifier les doublons', 'info');
@@ -1325,6 +1332,7 @@ function kwCloseAddModal() {
 }
 
 async function kwModalSave() {
+    if (LOCAL_MODE) { showModal('Mot-clé', 'Création/modification indisponible en mode local', 'error'); return; }
     var keyword = document.getElementById('kw-modal-keyword').value.trim();
     var description = document.getElementById('kw-modal-desc').value.trim();
     var section_id = document.getElementById('kw-modal-section-id').value.trim();
@@ -1378,6 +1386,7 @@ function kwModalDelete() {
 // ── KW Editor status ──
 
 async function checkKwEditorStatus() {
+    if (LOCAL_MODE) { isKwEditor = false; return; }   // pas de review en local
     try {
         var res = await fetch(API + '/keywords/pending');
         if (res.status === 403) {
@@ -1506,6 +1515,7 @@ function _saveBiPrefs() {
 }
 
 async function loadBiPresets() {
+    if (LOCAL_MODE) return;   // /presets indisponible en local
     try {
         var res = await fetch(API + '/presets');
         if (!res.ok) {
@@ -1555,6 +1565,7 @@ function _nsfwLevelLabel(level) {
 }
 
 async function biGenerateKeywords() {
+    if (LOCAL_MODE) { showModal('Generation IA', 'Indisponible en mode local', 'error'); return; }
     var instruction = document.getElementById('bi-gen-instruction').value.trim();
     var presetId = document.getElementById('bi-gen-preset').value;
     var nsfwLevel = document.getElementById('bi-gen-nsfw').value || 'sfw';
@@ -1713,6 +1724,14 @@ function kwBulkFileSelected(event) {
         // Si la conversion LLM est activee
         var llmCb = document.getElementById('bi-llm-convert');
         if (llmCb && llmCb.checked) {
+            if (LOCAL_MODE) {
+                showModal('Conversion LLM', 'Indisponible en mode local', 'error');
+                llmCb.checked = false;
+                biToggleLLM();
+                _bulkFileContent = text;
+                _parseAndShowPreview(text);
+                return;
+            }
             var presetId = document.getElementById('bi-llm-preset').value;
             var nsfwLevel = document.getElementById('bi-llm-nsfw').value || 'sfw';
 
@@ -2041,6 +2060,7 @@ async function _bulkCheckDuplicates() {
 }
 
 async function kwBulkConfirm() {
+    if (LOCAL_MODE) { showModal('Import', 'Import indisponible en mode local', 'error'); return; }
     if (!_bulkParsedLines || _bulkParsedLines.length === 0) {
         showModal('Erreur', 'Sélectionne d\'abord un fichier', 'error');
         return;
@@ -2095,6 +2115,7 @@ async function kwBulkConfirm() {
 // ── Scan des doublons ─────────────────────────────────────────
 
 async function kwOpenDuplicateScan() {
+    if (LOCAL_MODE) { showModal('Doublons', 'Scan indisponible en mode local', 'error'); return; }
     // Afficher la progression inline
     var progressDiv = document.getElementById('kw-scan-progress');
     var statusEl = document.getElementById('kw-scan-status');
@@ -2249,6 +2270,7 @@ function _showScanResults(html) {
 // ── Export ──────────────────────────────────────────────────────
 
 function kwExport() {
+    if (LOCAL_MODE) { showModal('Export', 'Indisponible en mode local', 'error'); return; }
     // Utiliser les checkboxes pour déterminer le scope d'export
     var mineOnly = document.getElementById('kw-filter-mine').checked;
     var scope = mineOnly ? 'mine' : 'public';

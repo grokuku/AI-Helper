@@ -62,6 +62,7 @@
     }
 
     async function saveCurrentFilter() {
+      if (LOCAL_MODE) { showModal('Filtre', 'Sauvegarde indisponible en mode local', 'error'); return; }
       if (!loadedFilterId) return;
       var config = getFilterConfig();
       try {
@@ -85,6 +86,7 @@
     }
 
     async function saveFilter() {
+      if (LOCAL_MODE) { showModal('Filtre', 'Sauvegarde indisponible en mode local', 'error'); return; }
       var name = document.getElementById('save-filter-name').value.trim();
       if (!name) { showModal('Filtre', 'Donne un nom au filtre', 'error'); return; }
       var cat = document.getElementById('save-filter-cat').value.trim();
@@ -123,6 +125,7 @@
     }
 
     function loadFilterIntoPanel(filterId) {
+      if (LOCAL_MODE) { showModal('Filtre', 'Apercu indisponible en mode local', 'error'); return; }
       fetch(API + '/filters/' + filterId + '/preview').then(function(res){
         return res.json();
       }).then(function(data){
@@ -155,6 +158,7 @@
     // -- Presets --
 
     function toggleMergedSettings() {
+      if (LOCAL_MODE) { showModal('Parametres', 'Indisponible en mode local', 'error'); return; }
       var m = document.getElementById('modal-user-settings');
       var open = !m.classList.contains('hidden');
       if (open) { closeMergedSettings(); return; }
@@ -180,6 +184,7 @@
     }
 
     async function _loadApiKeySettings() {
+      if (LOCAL_MODE) return;   // /auth/* indisponible en local
       var keyEl = document.getElementById('settings-api-key');
       var userEl = document.getElementById('settings-username');
       try {
@@ -259,6 +264,7 @@
     }
 
     async function loadPresets() {
+      if (LOCAL_MODE) return;   // /presets indisponible en local
       try {
         var res = await fetch(API + '/presets');
         if (!res.ok) {
@@ -308,6 +314,7 @@
     }
 
     function editPreset(id) {
+      if (LOCAL_MODE) return;
       // Charger dans le formulaire (besoin de refaire un fetch)
       fetch(API + '/presets').then(function(r){ return r.json(); }).then(function(ps){
         var p = ps.find(function(x){ return x.id === id; });
@@ -324,6 +331,7 @@
     }
 
     async function savePreset() {
+      if (LOCAL_MODE) { showModal('Preset', 'Indisponible en mode local', 'error'); return; }
       var name = document.getElementById('preset-form-name').value.trim();
       var url = document.getElementById('preset-form-url').value.trim();
       var key = document.getElementById('preset-form-key').value.trim();
@@ -360,6 +368,7 @@
     }
 
     async function dupPreset(id) {
+      if (LOCAL_MODE) { showModal('Preset', 'Indisponible en mode local', 'error'); return; }
       try {
         var res = await fetch(API + '/presets/' + id + '/duplicate', { method: 'POST' });
         if (!res.ok) throw await safeJson(res);
@@ -371,6 +380,7 @@
     }
 
     async function delPreset(id) {
+      if (LOCAL_MODE) { showModal('Preset', 'Indisponible en mode local', 'error'); return; }
       showConfirm('Supprimer', 'Supprimer ce preset ?', async function(ok){
         if (!ok) return;
         try {
@@ -382,6 +392,7 @@
     }
 
     async function fetchModelsForForm() {
+      if (LOCAL_MODE) { showModal('Modeles', 'Indisponible en mode local', 'error'); return; }
       var url = document.getElementById('preset-form-url').value.trim();
       var key = document.getElementById('preset-form-key').value.trim();
       var isClient = document.getElementById('preset-form-client').checked;
@@ -571,6 +582,7 @@
     }
 
     async function deleteTemplateTab(id) {
+      if (LOCAL_MODE) { showModal('Template', 'Suppression indisponible en mode local', 'error'); return; }
       if (!confirm('Supprimer ce template ?')) return;
       try {
         var res = await fetch(API + '/prompts/templates/' + id, { method: 'DELETE' });
@@ -583,6 +595,7 @@
     }
 
     async function saveTemplateTab() {
+      if (LOCAL_MODE) { showModal('Template', 'Sauvegarde indisponible en mode local', 'error'); return; }
       var name = document.getElementById('tmpl-name').value.trim();
       var fmt = document.getElementById('tmpl-format').value;
       var sys = document.getElementById('tmpl-system-prompt').value;
@@ -700,6 +713,7 @@
     }
 
     async function mfCreateUnion() {
+      if (LOCAL_MODE) { showModal('Union', 'Indisponible en mode local', 'error'); return; }
       var ids = Object.keys(mfSelected).map(Number);
       if (ids.length < 2) { showModal('Union', 'Selectionne au moins 2 filtres', 'error'); return; }
       showPrompt('Union', 'Nom du filtre compose (union) :', 'Union: ...', async function(name) {
@@ -770,6 +784,7 @@
     }
 
     async function refreshFilterCache(id) {
+      if (LOCAL_MODE) { showModal('Cache', 'Indisponible en mode local', 'error'); return; }
       try {
         var r = await fetch(API + '/filters/' + id + '/refresh', { method: 'POST' });
         if (!r.ok) throw await safeJson(r);
@@ -781,6 +796,7 @@
     }
 
     function renameFilter(id) {
+      if (LOCAL_MODE) { showModal('Filtre', 'Indisponible en mode local', 'error'); return; }
       showPrompt('Renommer', 'Nouveau nom :', '', async function(name) {
         if (!name) return;
         try {
@@ -799,6 +815,7 @@
     }
 
     function deleteMFFilter(id) {
+      if (LOCAL_MODE) { showModal('Filtre', 'Suppression indisponible en mode local', 'error'); return; }
       showConfirm('Supprimer', 'Supprimer ce filtre ?', async function(ok) {
         if (!ok) return;
         try {
@@ -813,6 +830,7 @@
     }
 
     async function previewFilterCache(filterId) {
+      if (LOCAL_MODE) return;   // /filters/:id/preview indisponible en local
       try {
         var r = await fetch(API + '/filters/' + filterId + '/preview');
         if (!r.ok) return;
@@ -867,6 +885,7 @@
     }
 
     async function saveStyleTab() {
+      if (LOCAL_MODE) { showModal('Style', 'Sauvegarde indisponible en mode local', 'error'); return; }
       var name = document.getElementById('t-style-form-name').value.trim();
       var text = document.getElementById('t-style-form-text').value.trim();
       var neg = document.getElementById('t-style-form-neg').value.trim();
@@ -894,6 +913,7 @@
     }
 
     function delStyle(id) {
+      if (LOCAL_MODE) { showModal('Style', 'Suppression indisponible en mode local', 'error'); return; }
       showConfirm('Supprimer', 'Supprimer ce style ?', async function(ok){
         if (!ok) return;
         try {
@@ -919,6 +939,7 @@
      * Retourne: { output, negative_prompt, model_used, debug_md }
      */
     async function callEnhanceLocalLLM(params) {
+      if (LOCAL_MODE) throw { error: 'Indisponible en mode local' };
       var baseUrl = (params.base_url || '').replace(/\/+$/, '');
       if (!baseUrl) throw { error: 'URL du LLM local manquante' };
 
@@ -1009,6 +1030,7 @@
     }
 
     async function doEnhance() {
+      if (LOCAL_MODE) { showModal('Enhance', 'Generation indisponible en mode local', 'error'); return; }
       var text = document.getElementById('enhance-input').value.trim();
       var presetId = document.getElementById('enhance-preset').value;
       var outputFormat = document.getElementById('enhance-format').value || 'rich';
@@ -1145,3 +1167,176 @@
         showModal('Erreur', (err.error || 'Erreur de generation'), 'error');
       }
     }
+
+    // === P5 : Sync local (écritures en attente / conflits) ===
+    // Bouton discret "🔄 Sync" dans la barre quand le frontend est servi en
+    // mode local (window.LOCAL_MODE posé par app-core.js). Ouvre une modale
+    // listant l'outbox (status pending/conflict/error + last_error) avec un
+    // bouton "Forcer le sync" → GET /aih/local/api/sync/retry.
+
+    (function() {
+      var injected = false;
+
+      function injectSyncButton() {
+        if (injected || !window.LOCAL_MODE) return false;
+        if (document.getElementById('aih-sync-btn')) { injected = true; return true; }
+        // Point d'insertion : à côté du badge de mode local (avant user-area),
+        // sinon dans le header en dernier recours.
+        var userArea = document.getElementById('user-area');
+        var parent = userArea && userArea.parentNode ? userArea.parentNode : (document.querySelector('header') || document.body);
+        var ref = userArea || null;
+        var btn = document.createElement('button');
+        btn.id = 'aih-sync-btn';
+        btn.type = 'button';
+        btn.textContent = '🔄 Sync';
+        btn.title = 'Écritures locales en attente / conflits';
+        btn.style.cssText = 'font-size:11px;font-weight:500;padding:3px 8px;border-radius:6px;' +
+          'background:rgba(0,0,0,.25);border:1px solid rgba(148,163,184,.4);color:#cbd5e1;' +
+          'cursor:pointer;white-space:nowrap;';
+        btn.addEventListener('click', openSyncModal);
+        parent.insertBefore(btn, ref);
+        injected = true;
+        return true;
+      }
+
+      // La détection du mode local est asynchrone (probe /aih/local/status) :
+      // on réessaie jusqu'à ce que window.LOCAL_MODE soit posé (ou que le badge
+      // d'app-core apparaisse), puis on arrête le timer.
+      function waitForLocalMode() {
+        if (injectSyncButton()) return;
+        var tries = 0;
+        var timer = setInterval(function() {
+          tries++;
+          if (injectSyncButton() || tries > 25) clearInterval(timer);
+        }, 400);
+      }
+
+      function buildSyncModal() {
+        var existing = document.getElementById('aih-sync-modal');
+        if (existing) return existing;
+        var overlay = document.createElement('div');
+        overlay.id = 'aih-sync-modal';
+        overlay.className = 'hidden fixed inset-0 z-[70] flex items-center justify-center bg-slate-900/40 backdrop-blur-sm';
+        overlay.innerHTML =
+          '<div class="bg-white border border-slate-200 rounded-xl shadow-2xl overflow-hidden dark:bg-slate-800 dark:border-slate-700" style="width:520px;max-width:92vw;position:relative;">' +
+          '  <div id="aih-sync-modal-header" class="border-b border-slate-200 bg-slate-50 px-5 py-3 flex items-center justify-between cursor-grab dark:border-slate-700 dark:bg-slate-800/80 select-none">' +
+          '    <span class="text-sm font-semibold text-slate-800 dark:text-slate-200">Sync local</span>' +
+          '    <button onclick="closeSyncModal()" class="text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 transition p-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700">&times;</button>' +
+          '  </div>' +
+          '  <div id="aih-sync-modal-body" class="p-4 overflow-y-auto space-y-2" style="max-height:55vh;"></div>' +
+          '  <div class="flex justify-end gap-2 px-5 py-3 border-t border-slate-200 dark:border-slate-700">' +
+          '    <button onclick="closeSyncModal()" class="px-3 py-1.5 text-sm text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200">Fermer</button>' +
+          '    <button id="aih-sync-force-btn" onclick="forceSync()" class="px-3 py-1.5 text-sm font-medium bg-indigo-600 text-white rounded-md hover:bg-indigo-500">Forcer le sync</button>' +
+          '  </div>' +
+          '</div>';
+        document.body.appendChild(overlay);
+        if (typeof makeModalDraggable === 'function') {
+          try { makeModalDraggable('aih-sync-modal-header', 'aih-sync-modal'); } catch (e) {}
+        }
+        return overlay;
+      }
+
+      function openSyncModal() {
+        var overlay = buildSyncModal();
+        overlay.classList.remove('hidden');
+        overlay.classList.add('flex');
+        loadSyncData();
+      }
+
+      function closeSyncModal() {
+        var overlay = document.getElementById('aih-sync-modal');
+        if (overlay) { overlay.classList.add('hidden'); overlay.classList.remove('flex'); }
+      }
+
+      async function loadSyncData() {
+        var body = document.getElementById('aih-sync-modal-body');
+        if (!body) return;
+        body.innerHTML = '<p class="text-xs text-slate-400">Chargement...</p>';
+        try {
+          var outRes = await fetch('/aih/local/api/sync/outbox');
+          var outData = outRes.ok ? await outRes.json() : { items: [], count: 0, error: 'HTTP ' + outRes.status };
+          var cfRes = await fetch('/aih/local/api/sync/conflicts');
+          var cfData = cfRes.ok ? await cfRes.json() : { items: [], count: 0, error: 'HTTP ' + cfRes.status };
+          renderSyncModal(outData, cfData);
+        } catch (e) {
+          body.innerHTML = '<p class="text-xs text-red-400">Erreur: ' + escapeHtml(e.message || e) + '</p>';
+        }
+      }
+
+      function renderSyncModal(outData, cfData) {
+        var body = document.getElementById('aih-sync-modal-body');
+        if (!body) return;
+        var items = (outData && outData.items) || [];
+        var conflicts = (cfData && cfData.items) || [];
+        var html = '';
+        html += '<div class="text-xs font-semibold text-slate-700 dark:text-slate-300">Outbox — ' + items.length + ' opération(s)</div>';
+        if (items.length === 0) {
+          html += '<p class="text-xs text-slate-400">Aucune écriture en attente.</p>';
+        } else {
+          items.forEach(function(it) {
+            html += '<div class="p-2 rounded-md bg-slate-50 dark:bg-slate-700/40 border border-slate-200 dark:border-slate-600">' +
+              '<div class="flex items-center justify-between gap-2 flex-wrap">' +
+              '<span class="text-xs font-medium text-slate-700 dark:text-slate-200">' + escapeHtml(it.entity_type) + '</span>' +
+              statusBadge(it.status) +
+              '</div>' +
+              '<div class="text-[11px] text-slate-400 mt-0.5">' +
+              escapeHtml(it.op) + ' · ' + escapeHtml(it.entity_client_id || '') +
+              (it.created_at ? ' · ' + escapeHtml(it.created_at) : '') +
+              '</div>' +
+              (it.last_error ? '<div class="text-[11px] text-rose-500 mt-1">' + escapeHtml(it.last_error) + '</div>' : '') +
+              '</div>';
+          });
+        }
+        html += '<div class="text-xs font-semibold text-slate-700 dark:text-slate-300 mt-3">Conflits — ' + conflicts.length + '</div>';
+        if (conflicts.length === 0) {
+          html += '<p class="text-xs text-slate-400">Aucun conflit.</p>';
+        } else {
+          conflicts.forEach(function(c) {
+            html += '<div class="p-2 rounded-md bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/50">' +
+              '<div class="flex items-center justify-between gap-2 flex-wrap">' +
+              '<span class="text-xs font-medium text-amber-700 dark:text-amber-300">' + escapeHtml(c.table) + ' #' + escapeHtml(c.id) + '</span>' +
+              '<span class="text-[10px] font-medium text-amber-600 dark:text-amber-400">conflict</span>' +
+              '</div>' +
+              '<div class="text-[11px] text-amber-600/80 dark:text-amber-400/70 mt-0.5">' + escapeHtml(c.client_id || '') + (c.updated_at ? ' · ' + escapeHtml(c.updated_at) : '') + '</div>' +
+              '</div>';
+          });
+        }
+        body.innerHTML = html;
+      }
+
+      function statusBadge(status) {
+        var s = (status || '').toLowerCase();
+        var cls = 'text-slate-600 bg-slate-200 dark:text-slate-300 dark:bg-slate-600';
+        if (s === 'pending') cls = 'text-amber-700 bg-amber-100 dark:text-amber-300 dark:bg-amber-900/40';
+        else if (s === 'conflict' || s === 'error') cls = 'text-rose-700 bg-rose-100 dark:text-rose-300 dark:bg-rose-900/40';
+        else if (s === 'applied') cls = 'text-emerald-700 bg-emerald-100 dark:text-emerald-300 dark:bg-emerald-900/40';
+        return '<span class="text-[10px] font-medium px-1.5 py-0.5 rounded ' + cls + '">' + escapeHtml(status || '?') + '</span>';
+      }
+
+      async function forceSync() {
+        var btn = document.getElementById('aih-sync-force-btn');
+        if (btn) { btn.disabled = true; btn.textContent = 'Sync en cours...'; }
+        try {
+          var res = await fetch('/aih/local/api/sync/retry');
+          var data = await res.json().catch(function(){ return { error: 'HTTP ' + res.status }; });
+          loadSyncData();
+          if (typeof showModal === 'function') {
+            showModal('Sync', data.error ? ('Erreur: ' + data.error) : ('Envoyées: ' + (data.sent||0) + ' · Appliquées: ' + (data.applied||0) + ' · Conflits: ' + (data.conflicts||0) + ' · Erreurs: ' + (data.errors||0)), data.error ? 'error' : 'success');
+          }
+        } catch (e) {
+          if (typeof showModal === 'function') showModal('Sync', 'Erreur: ' + (e.message || e), 'error');
+        } finally {
+          if (btn) { btn.disabled = false; btn.textContent = 'Forcer le sync'; }
+        }
+      }
+
+      // Exposer pour les handlers inline des boutons de la modale.
+      window.closeSyncModal = closeSyncModal;
+      window.forceSync = forceSync;
+
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', waitForLocalMode);
+      } else {
+        waitForLocalMode();
+      }
+    })();
