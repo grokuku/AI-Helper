@@ -2,6 +2,7 @@
 
 import os
 import sqlite3
+import logging
 
 from cryptography.fernet import Fernet
 
@@ -69,3 +70,40 @@ def decrypt_api_key(encrypted):
     if not encrypted:
         return ''
     return _get_encryption_key().decrypt(encrypted.encode()).decode()
+
+
+def decrypt_with_lazy_migration(stored, setting_key):
+    """Déchiffre une valeur sensible stockée en base (ex: mot de passe SFTP),
+    avec migration paresseuse des anciennes valeurs stockées en clair.
+
+    - Si ``stored`` est vide → retourne ``''``.
+    - Si ``stored`` est un token Fernet (préfixe ``gAAAA``) → on le déchiffre.
+    - Sinon, ``stored`` est une valeur en clair héritée : on la chiffre, on la
+      persiste en base, puis on retourne la valeur en clair.
+
+    Args:
+        stored (str): La valeur stockée dans ``app_settings``.
+        setting_key (str): La clé ``app_settings`` à migrer le cas échéant.
+
+    Returns:
+        str: La valeur en clair.
+    """
+    if not stored:
+        return ''
+    if stored.startswith('gAAAA'):
+        return decrypt_api_key(stored)
+    # Valeur en clair héritée → la chiffrer et la persister (lazy-migration)
+    encrypted = encrypt_api_key(stored)
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        conn.execute(
+            "INSERT INTO app_settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (setting_key, encrypted),
+        )
+        conn.commit()
+        conn.close()
+        logging.warning(f"[crypto] Migration : {setting_key} chiffré en clair → token Fernet")
+    except Exception:
+        pass
+    return stored

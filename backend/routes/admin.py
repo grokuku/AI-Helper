@@ -1,5 +1,7 @@
 """Routes admin for AI-Helper backend."""
 
+import logging
+
 from context import *
 
 
@@ -215,7 +217,16 @@ def admin_sftp_settings():
                 val = data.get(key.replace('sftp_', ''), default)
                 if val == '' and key == 'sftp_password':
                     continue  # ne pas écraser le mot de passe si vide
-                if val != '':
+                if key == 'sftp_password':
+                    # Jamais stocké en clair : chiffré avec Fernet (comme les clés API)
+                    encrypted = encrypt_api_key(str(val))
+                    if encrypted:
+                        conn.execute(
+                            "INSERT INTO app_settings (key, value) VALUES (?, ?) "
+                            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                            (key, encrypted),
+                        )
+                elif val != '':
                     conn.execute("INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, str(val)))
             conn.commit()
             # Recharger le storage
@@ -247,8 +258,9 @@ def admin_sftp_test():
         # Test simple : lister le dossier racine
         files = storage.list_dir('')
         return jsonify({'ok': True, 'backend': backend, 'files_count': len(files)})
-    except Exception as e:
-        return jsonify({'ok': False, 'error': str(e)}), 500
+    except Exception:
+        logging.exception("[admin/sftp] Test de connexion SFTP en échec")
+        return jsonify({'ok': False, 'error': 'Connexion SFTP impossible'}), 500
 
 
 # ── Backup config ─────────────────────────────────────────────────────

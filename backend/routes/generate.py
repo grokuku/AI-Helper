@@ -9,6 +9,7 @@ def generate_prompt():
     guard = _login_required()
     if guard:
         return guard
+    user_id = _get_current_user_id()
     rl = _check_rate_limit("generate", max_calls=30, window_seconds=60)
     if rl:
         return rl
@@ -48,20 +49,26 @@ def generate_prompt():
             if elem.get('type') == 'filter' and elem.get('id'):
                 kind = 'filter'
                 hint = elem.get('hint', '').strip()
+                # C4 : n'utiliser le filtre que s'il appartient à l'utilisateur
+                # ou est public. Sinon, ignorer silencieusement (aucun nom en debug).
                 finfo = cur.execute(
-                    "SELECT name, (SELECT COUNT(*) FROM filter_cache WHERE filter_id = ?) as cnt FROM saved_filters WHERE id = ?",
-                    (elem['id'], elem['id'])
-                ).fetchone()
-                # Charger TOUS les keyword_ids du filtre, puis choisir en Python (déterministe)
-                cur.execute(
-                    "SELECT keyword_id FROM filter_cache WHERE filter_id = ?",
+                    "SELECT name, user_id, is_public FROM saved_filters WHERE id = ?",
                     (elem['id'],)
-                )
-                all_kids = [r['keyword_id'] for r in cur.fetchall()]
-                if all_kids:
-                    kid = rng.choice(all_kids)
-                if finfo:
-                    debug.append({'source': f"filtre '{finfo['name']}' (cache: {finfo['cnt']})", 'picked': bool(kid)})
+                ).fetchone()
+                if finfo and (finfo['user_id'] == user_id or finfo['is_public']):
+                    # Charger TOUS les keyword_ids du filtre, puis choisir en Python (déterministe)
+                    cur.execute(
+                        "SELECT keyword_id FROM filter_cache WHERE filter_id = ?",
+                        (elem['id'],)
+                    )
+                    all_kids = [r['keyword_id'] for r in cur.fetchall()]
+                    if all_kids:
+                        kid = rng.choice(all_kids)
+                    cnt = cur.execute(
+                        "SELECT COUNT(*) FROM filter_cache WHERE filter_id = ?",
+                        (elem['id'],)
+                    ).fetchone()[0]
+                    debug.append({'source': f"filtre '{finfo['name']}' (cache: {cnt})", 'picked': bool(kid)})
 
             elif elem.get('type') == 'text' and elem.get('text'):
                 kind = 'semantic'

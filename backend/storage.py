@@ -414,7 +414,8 @@ def get_storage() -> StorageBackend:
                 if key == 'sftp_port':
                     sftp_port = int(row[0])
                 elif key == 'sftp_password':
-                    sftp_password = row[0]
+                    from security.crypto import decrypt_with_lazy_migration
+                    sftp_password = decrypt_with_lazy_migration(row[0], 'sftp_password')
                 else:
                     val = row[0]
                     if key == 'sftp_host': sftp_host = val

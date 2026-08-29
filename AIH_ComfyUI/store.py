@@ -8,6 +8,12 @@ elements_presets) rapatriés par sync_engine.py.
 Emplacement de la base : <ComfyUI>/user/default/aih/data/aihelper.db
 (même mécanisme de user dir que _get_aih_user_dir() du __init__.py racine).
 
+Variable d'environnement ``AIH_STORE_DIR`` : si définie, elle force
+l'emplacement du store (ex: tests, hors runtime ComfyUI) et surcharge
+toutes les autres résolutions. Sans elle et hors ComfyUI (folder_paths
+non importable), le store est déclaré indisponible : get_store_path() /
+get_conn() lèvent une RuntimeError sans rien créer sur disque.
+
 Tables créées par init_store() :
 - Une table miroir par collection : client_id (PRIMARY KEY), id, version,
   sync_state (DEFAULT 'synced'), deleted (DEFAULT 0), updated_at + les
@@ -54,29 +60,53 @@ _MIRROR_BASE_COLUMNS = {
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
-def _get_aih_user_dir():
-    """Dossier user/default/aih de ComfyUI (même mécanisme que __init__.py).
+def _resolve_store_dir():
+    """Résout le dossier racine du store AIH.
+
+    Ordre de priorité :
+      a) Variable d'environnement ``AIH_STORE_DIR`` → utilisée telle quelle
+         (permet de forcer un emplacement, y compris hors ComfyUI).
+      b) ``folder_paths`` importable (runtime ComfyUI) → user/default/aih
+         de ComfyUI (comportement historique inchangé).
+      c) Sinon (import direct hors ComfyUI) → RuntimeError explicite, SANS
+         créer de dossier ni de base : aucun artefact ne doit apparaître dans
+         le user-dir par défaut (<repo>/user → /projects/user).
 
     Retourne:
-        str: Chemin absolu vers user/default/aih.
+        str: Chemin absolu du dossier racine du store.
+
+    Lève:
+        RuntimeError: Hors runtime ComfyUI et sans ``AIH_STORE_DIR``.
     """
+    env_dir = os.environ.get("AIH_STORE_DIR")
+    if env_dir:
+        return env_dir
     try:
         import folder_paths
         user_dir = folder_paths.get_user_directory()
     except Exception:
-        # Fallback : dossier user/ à côté de la racine du repo (= custom_nodes/)
-        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        user_dir = os.path.join(os.path.dirname(here), "user")
+        raise RuntimeError(
+            "Store AIH indisponible hors de ComfyUI — définis AIH_STORE_DIR "
+            "pour forcer un emplacement"
+        )
     return os.path.join(user_dir, "default", "aih")
 
 
 def get_store_path():
     """Chemin du fichier SQLite local.
 
+    Résout le dossier via ``_resolve_store_dir()`` (env AIH_STORE_DIR →
+    user-dir ComfyUI → RuntimeError hors ComfyUI). Les parents ne sont
+    créés QUE si le store est réellement disponible (cas a/b).
+
     Retourne:
-        Path: {user_dir}/aihelper/data/aihelper.db, avec les parents créés.
+        Path: {store_dir}/data/aihelper.db, avec les parents créés.
+
+    Lève:
+        RuntimeError: Store indisponible (hors ComfyUI sans AIH_STORE_DIR).
+            Aucun dossier ni fichier n'est alors créé.
     """
-    data_dir = os.path.join(_get_aih_user_dir(), "data")
+    data_dir = os.path.join(_resolve_store_dir(), "data")
     os.makedirs(data_dir, exist_ok=True)
     return Path(data_dir) / "aihelper.db"
 

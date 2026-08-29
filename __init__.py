@@ -180,12 +180,24 @@ _openai_settings_mod = _load_module(
 )
 
 # Migrer les credentials vers le sous-dossier aih/
+# Ne PAS créer de dossier/fichier hors du runtime ComfyUI : on n'exécute
+# le makedirs + la migration QUE si le runtime ComfyUI est détecté
+# (folder_paths importable — même critère que store.py _resolve_store_dir),
+# OU si l'ancien artefact à migrer (aih_credentials.json dans le user-dir
+# de repli) existe déjà.
 try:
+    try:
+        import folder_paths  # noqa: F401 — runtime ComfyUI
+        _aih_in_comfyui = True
+    except Exception:
+        _aih_in_comfyui = False
+
     _aih_dir = _get_aih_user_dir()
-    os.makedirs(_aih_dir, exist_ok=True)
     _old_creds = os.path.join(os.path.dirname(_aih_dir), "aih_credentials.json")
     _new_creds = os.path.join(_aih_dir, "credentials.json")
-    _migrate_to_aih_subfolder(_old_creds, _new_creds)
+    if _aih_in_comfyui or os.path.isfile(_old_creds):
+        os.makedirs(_aih_dir, exist_ok=True)
+        _migrate_to_aih_subfolder(_old_creds, _new_creds)
 except Exception as _e:
     logging.warning(f"[AIH] Credentials migration failed: {_e}")
 

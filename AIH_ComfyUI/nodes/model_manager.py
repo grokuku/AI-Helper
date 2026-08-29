@@ -291,83 +291,34 @@ def upload_model_to_server(filepath, file_type="model", on_progress=None):
         return {'success': False, 'error': f'Init failed: {e}'}
 
     upload_id = init_data['upload_id']
-    sftp_config = init_data.get('sftp')  # None si storage local
 
-    # 3. Upload du fichier
-    if sftp_config:
-        # ── Mode direct SFTP : paramiko sftp.put() ──
-        # Un seul handle, un seul flux, pas de round-trips HTTP par chunk
-        _upload_progress[filepath] = {
-            'chunk': 0, 'total': 1,
-            'speed_mbs': 0.0, 'start': time.time(), 'last_chunk_time': time.time(),
-            'bytes_sent': 0, 'bytes_total': size,
-        }
-        try:
-            import paramiko
-            ssh = paramiko.SSHClient()
-            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            if sftp_config.get('key_path'):
-                ssh.connect(sftp_config['host'], port=sftp_config['port'],
-                            username=sftp_config['username'],
-                            key_filename=sftp_config['key_path'], timeout=15)
-            else:
-                ssh.connect(sftp_config['host'], port=sftp_config['port'],
-                            username=sftp_config['username'],
-                            password=sftp_config['password'], timeout=15)
-            sftp = ssh.open_sftp()
-            sftp.sftp_chunk_size = 2 * 1024 * 1024  # 2MB buffer
-
-            full_remote = sftp_config['base_path'].rstrip('/') + '/' + sftp_config['remote_path']
-
-            # Creer les dossiers parents
-            remote_dir = "/".join(full_remote.split("/")[:-1])
-            _sftp_mkdir_p(sftp, remote_dir)
-
-            # Callback de progression
-            def _cb(sent, total):
+    # 3. Upload du fichier — toujours via le backend Flask (les octets transitent
+    # par le backend, quel que soit le storage : local ou SFTP). Aucun credential
+    # SFTP n'est jamais exposé au client.
+    chunk_size = init_data['chunk_size']
+    total_chunks = init_data['total_chunks']
+    _upload_progress[filepath] = {'chunk': 0, 'total': total_chunks, 'speed_mbs': 0.0, 'start': time.time(), 'last_chunk_time': time.time()}
+    try:
+        with open(filepath, 'rb') as f:
+            for i in range(total_chunks):
+                chunk = f.read(chunk_size)
+                resp = requests.post(f"{api_url}/files/chunk", data={
+                    'upload_id': upload_id,
+                    'chunk_index': str(i),
+                }, files={'data': (filename, chunk)}, headers=auth_headers, timeout=300)
+                if not resp.ok:
+                    _upload_progress.pop(filepath, None)
+                    return {'success': False, 'error': f'Chunk {i} failed: HTTP {resp.status_code} {resp.text[:200]}'}
                 now = time.time()
-                elapsed = now - _upload_progress[filepath]['start']
-                speed = (sent / 1048576) / elapsed if elapsed > 0 else 0
-                _upload_progress[filepath].update({
-                    'bytes_sent': sent,
-                    'speed_mbs': round(speed, 1),
-                    'chunk': sent,  # reuse pour le percent
-                    'total': total,
-                })
-
-            sftp.put(filepath, full_remote, callback=_cb)
-            sftp.close()
-            ssh.close()
-            logging.info(f"[AIH] Direct SFTP upload OK: {filename} → {full_remote}")
-        except Exception as e:
-            _upload_progress.pop(filepath, None)
-            return {'success': False, 'error': f'SFTP upload failed: {e}'}
-    else:
-        # ── Mode chunked via Flask (storage local) ──
-        chunk_size = init_data['chunk_size']
-        total_chunks = init_data['total_chunks']
-        _upload_progress[filepath] = {'chunk': 0, 'total': total_chunks, 'speed_mbs': 0.0, 'start': time.time(), 'last_chunk_time': time.time()}
-        try:
-            with open(filepath, 'rb') as f:
-                for i in range(total_chunks):
-                    chunk = f.read(chunk_size)
-                    resp = requests.post(f"{api_url}/files/chunk", data={
-                        'upload_id': upload_id,
-                        'chunk_index': str(i),
-                    }, files={'data': (filename, chunk)}, headers=auth_headers, timeout=300)
-                    if not resp.ok:
-                        _upload_progress.pop(filepath, None)
-                        return {'success': False, 'error': f'Chunk {i} failed: HTTP {resp.status_code} {resp.text[:200]}'}
-                    now = time.time()
-                    chunk_elapsed = now - _upload_progress[filepath].get('last_chunk_time', now)
-                    chunk_mb = chunk_size / 1048576
-                    speed = chunk_mb / chunk_elapsed if chunk_elapsed > 0 else 0
-                    _upload_progress[filepath].update({'chunk': i + 1, 'speed_mbs': round(speed, 1), 'last_chunk_time': now})
-                    if on_progress:
-                        on_progress(i + 1, total_chunks)
-        except Exception as e:
-            _upload_progress.pop(filepath, None)
-            return {'success': False, 'error': f'Chunk upload failed: {e}'}
+                chunk_elapsed = now - _upload_progress[filepath].get('last_chunk_time', now)
+                chunk_mb = chunk_size / 1048576
+                speed = chunk_mb / chunk_elapsed if chunk_elapsed > 0 else 0
+                _upload_progress[filepath].update({'chunk': i + 1, 'speed_mbs': round(speed, 1), 'last_chunk_time': now})
+                if on_progress:
+                    on_progress(i + 1, total_chunks)
+    except Exception as e:
+        _upload_progress.pop(filepath, None)
+        return {'success': False, 'error': f'Chunk upload failed: {e}'}
 
     # 4. Complete
     _upload_progress.pop(filepath, None)
@@ -400,26 +351,6 @@ def get_download_progress(upload_id):
         'percent': pct,
         'speed_mbs': p['speed_mbs'],
     }
-
-
-def _sftp_mkdir_p(sftp, remote_dir):
-    """Cree les dossiers parents recursivement sur SFTP."""
-    if not remote_dir or remote_dir == "/":
-        return
-    dirs_to_create = []
-    current = remote_dir
-    while current and current != "/":
-        try:
-            sftp.stat(current)
-            break
-        except IOError:
-            dirs_to_create.append(current)
-            current = "/".join(current.split("/")[:-1])
-    for d in reversed(dirs_to_create):
-        try:
-            sftp.mkdir(d)
-        except Exception:
-            pass
 
 
 def get_upload_progress(filepath):
@@ -502,7 +433,7 @@ def download_model_from_server(upload_id, filename, file_type="model", dest_path
     if not (dest_real == dest_dir_real or dest_real.startswith(dest_dir_real + os.sep)):
         return {'success': False, 'error': 'Invalid destination path'}
 
-    # 1. Récupérer la config de download (SFTP direct ou HTTP fallback)
+    # Vérifier que le fichier est disponible et récupérer sa taille
     try:
         info_resp = requests.get(f"{api_url}/files/{upload_id}/download-info",
                                  headers=auth_headers, timeout=30)
@@ -514,85 +445,40 @@ def download_model_from_server(upload_id, filename, file_type="model", dest_path
     except Exception as e:
         return {'success': False, 'error': f'Download-info failed: {e}'}
 
-    sftp_cfg = info.get('sftp')
-    file_size = info.get('size', 0)
+    # Téléchargement TOUJOURS via le backend Flask (stream HTTP). Le client n'a
+    # jamais accès aux credentials SFTP — les octets transitent par le backend.
+    try:
+        resp = requests.get(f"{api_url}/files/{upload_id}/download",
+                           headers=auth_headers, stream=True, timeout=600)
+        if not resp.ok:
+            try: err_msg = resp.text[:200]
+            except: err_msg = ''
+            return {'success': False, 'error': f'HTTP {resp.status_code}: {err_msg}'}
 
-    if sftp_cfg:
-        # ── Mode direct SFTP : paramiko sftp.get() ──
+        total = int(resp.headers.get('Content-Length', 0))
         _download_progress[upload_id] = {
-            'bytes_recv': 0, 'bytes_total': file_size,
+            'bytes_recv': 0, 'bytes_total': total,
             'speed_mbs': 0.0, 'start': time.time(), 'last_time': time.time(),
         }
-        try:
-            import paramiko
-            ssh = paramiko.SSHClient()
-            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            if sftp_cfg.get('key_path'):
-                ssh.connect(sftp_cfg['host'], port=sftp_cfg['port'],
-                            username=sftp_cfg['username'],
-                            key_filename=sftp_cfg['key_path'], timeout=15)
-            else:
-                ssh.connect(sftp_cfg['host'], port=sftp_cfg['port'],
-                            username=sftp_cfg['username'],
-                            password=sftp_cfg['password'], timeout=15)
-            sftp = ssh.open_sftp()
-            sftp.sftp_chunk_size = 2 * 1024 * 1024
 
-            full_remote = sftp_cfg['base_path'].rstrip('/') + '/' + sftp_cfg['remote_path']
-
-            # Callback de progression
-            def _dl_cb(sent, total):
+        received = 0
+        with open(dest_path, 'wb') as f:
+            for chunk in resp.iter_content(chunk_size=CHUNK_SIZE):
+                f.write(chunk)
+                received += len(chunk)
                 now = time.time()
-                elapsed = now - _download_progress[upload_id]['start']
-                speed = (sent / 1048576) / elapsed if elapsed > 0 else 0
+                chunk_elapsed = now - _download_progress[upload_id].get('last_time', now)
+                chunk_mb = len(chunk) / 1048576
+                speed = chunk_mb / chunk_elapsed if chunk_elapsed > 0 else 0
                 _download_progress[upload_id].update({
-                    'bytes_recv': sent,
+                    'bytes_recv': received,
                     'speed_mbs': round(speed, 1),
+                    'last_time': now,
                 })
 
-            sftp.get(full_remote, dest_path, callback=_dl_cb)
-            sftp.close()
-            ssh.close()
-            _download_progress.pop(upload_id, None)
-            logging.info(f"[AIH] Direct SFTP download OK: {full_remote} → {dest_path}")
-            return {'success': True, 'path': dest_path}
-        except Exception as e:
-            _download_progress.pop(upload_id, None)
-            return {'success': False, 'error': f'SFTP download failed: {e}'}
-    else:
-        # ── Mode HTTP fallback (storage local) ──
-        try:
-            resp = requests.get(f"{api_url}/files/{upload_id}/download",
-                               headers=auth_headers, stream=True, timeout=600)
-            if not resp.ok:
-                try: err_msg = resp.text[:200]
-                except: err_msg = ''
-                return {'success': False, 'error': f'HTTP {resp.status_code}: {err_msg}'}
-
-            total = int(resp.headers.get('Content-Length', 0))
-            _download_progress[upload_id] = {
-                'bytes_recv': 0, 'bytes_total': total,
-                'speed_mbs': 0.0, 'start': time.time(), 'last_time': time.time(),
-            }
-
-            received = 0
-            with open(dest_path, 'wb') as f:
-                for chunk in resp.iter_content(chunk_size=CHUNK_SIZE):
-                    f.write(chunk)
-                    received += len(chunk)
-                    now = time.time()
-                    chunk_elapsed = now - _download_progress[upload_id].get('last_time', now)
-                    chunk_mb = len(chunk) / 1048576
-                    speed = chunk_mb / chunk_elapsed if chunk_elapsed > 0 else 0
-                    _download_progress[upload_id].update({
-                        'bytes_recv': received,
-                        'speed_mbs': round(speed, 1),
-                        'last_time': now,
-                    })
-
-            _download_progress.pop(upload_id, None)
-            logging.info(f"[AIH] Downloaded {filename} → {dest_path}")
-            return {'success': True, 'path': dest_path}
-        except Exception as e:
-            _download_progress.pop(upload_id, None)
-            return {'success': False, 'error': str(e)}
+        _download_progress.pop(upload_id, None)
+        logging.info(f"[AIH] Downloaded {filename} → {dest_path}")
+        return {'success': True, 'path': dest_path}
+    except Exception as e:
+        _download_progress.pop(upload_id, None)
+        return {'success': False, 'error': str(e)}

@@ -46,6 +46,17 @@ Optimise un prompt via LLM avec paramètres de génération :
 3. Dans ComfyUI → AIH → Paramètres
 4. Coller la clé API
 
+### Variable d'environnement `AIH_STORE_DIR`
+
+Le store SQLite local (store.py) résout son emplacement, dans cet ordre :
+`AIH_STORE_DIR` (variable d'environnement) → user-dir de ComfyUI
+(`folder_paths`, runtime) → sinon **indisponible** (hors ComfyUI, l'import
+ou l'ouverture du store lève une `RuntimeError` sans rien créer sur disque,
+pour ne pas générer d'artefacts dans `/projects/user`).
+
+Définir `AIH_STORE_DIR` (ex: `/tmp/aih_store`) force l'emplacement du store,
+notamment hors runtime ComfyUI (tests, import direct).
+
 ## Dépendances
 
 - `requests`

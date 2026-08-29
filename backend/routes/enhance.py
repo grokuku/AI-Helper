@@ -885,13 +885,26 @@ def _resolve_ep_filter_keyword(cur, elem):
     Recupere les keyword_ids lies au filtre via filter_cache, puis pioche un
     mot-cle au hasard parmi eux.
 
+    C4 : le filtre n'est utilise QUE s'il appartient a l'utilisateur courant
+    (user_id = ?) ou est public (is_public = 1). Sinon, on ignore silencieusement
+    l'element (aucun nom/mot-cle renvoye).
+
     Args:
         cur: curseur sqlite3 reutilisable.
         elem (dict): element EP de type 'filter' (doit contenir 'id').
 
     Returns:
-        str|None: un mot-cle choisi au hasard, ou None si aucun trouve.
+        str|None: un mot-cle choisi au hasard, ou None si aucun trouve ou non autorise.
     """
+    user_id = _get_current_user_id()
+    row = cur.execute(
+        "SELECT user_id, is_public FROM saved_filters WHERE id = ?",
+        (elem['id'],)
+    ).fetchone()
+    if not row:
+        return None
+    if not (row['user_id'] == user_id or row['is_public']):
+        return None
     cur.execute("SELECT keyword_id FROM filter_cache WHERE filter_id = ?", (elem['id'],))
     kids = [r[0] for r in cur.fetchall()]
     if not kids:
@@ -1100,8 +1113,10 @@ def _build_merged_text(text, ordered_ep_results, rand_text, style_text):
 def _resolve_preset(conn, preset_id, user_id):
     """Resout le preset IA a utiliser (par id ou fallback personnel/global).
 
-    Si `preset_id` est fourni, on le charge directement. Sinon, on retombe sur
-    le premier preset personnel ou global disponible.
+    Si `preset_id` est fourni, on le charge uniquement s'il appartient a
+    l'utilisateur courant ou est global (C5 : jamais la cle API d'un preset
+    prive d'autrui). Un preset inaccessible est traite exactement comme un
+    preset inexistant (fallback, puis erreur) pour eviter l'enumeration d'ids.
 
     Args:
         conn: connexion sqlite3 active.
@@ -1113,9 +1128,13 @@ def _resolve_preset(conn, preset_id, user_id):
     """
     preset = None
     if preset_id:
-        preset = conn.execute("SELECT * FROM ai_presets WHERE id = ?", (preset_id,)).fetchone()
+        # C5 : propriete obligatoire — preset personnel ou global uniquement
+        preset = conn.execute(
+            "SELECT * FROM ai_presets WHERE id = ? AND (user_id = ? OR is_global = 1)",
+            (preset_id, user_id)
+        ).fetchone()
     if not preset:
-        # Fallback : premier preset personnel dispo
+        # Fallback : premier preset personnel ou global dispo
         preset = conn.execute(
             "SELECT * FROM ai_presets WHERE user_id = ? OR is_global = 1 ORDER BY is_global DESC LIMIT 1",
             (user_id,)

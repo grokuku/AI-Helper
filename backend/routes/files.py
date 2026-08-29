@@ -19,7 +19,7 @@ import logging
 import tempfile
 import secrets
 from context import *
-from storage import get_storage, StorageBackend
+from storage import get_storage
 
 CHUNK_SIZE = 25 * 1024 * 1024  # 25 MB par chunk
 MAX_FILE_SIZE = 50 * 1024 * 1024 * 1024  # 50 GB max
@@ -103,29 +103,13 @@ def init_upload():
     upload_id = secrets.token_urlsafe(16)
     total_chunks = (size + CHUNK_SIZE - 1) // CHUNK_SIZE
 
-    # Verifier si le storage backend supporte l'ecriture directe (pas de temp local)
-    storage = get_storage()
-    remote_path = ""
+    # Les octets transitent TOUJOURS par le backend Flask (quel que soit le
+    # backend de stockage, local ou SFTP). On écrit dans un fichier temporaire
+    # local, puis complete_upload pousse le fichier vers le storage via
+    # SFTPStorage. Le client n'a jamais besoin des credentials SFTP.
     temp_path = os.path.join(TEMP_DIR, f"{upload_id}.tmp")
-    sftp_config = None
-
-    if type(storage).__name__ == 'SFTPStorage':
-        # Direct SFTP : le Python client uploade directement via paramiko
-        remote_path = f"workflows/{file_type}s/{upload_id}/{filename}"
-        temp_path = ""
-        sftp_config = {
-            'host': storage.host,
-            'port': storage.port,
-            'username': storage.user,
-            'password': storage.password,
-            'key_path': storage.key_path,
-            'base_path': storage.base_path,
-            'remote_path': remote_path,
-        }
-    else:
-        # Mode local : temp file pour ecriture atomique
-        with open(temp_path, 'wb') as f:
-            pass
+    with open(temp_path, 'wb') as f:
+        pass
 
     conn = get_db()
     try:
@@ -134,21 +118,18 @@ def init_upload():
                                        chunk_size, total_chunks, temp_path, final_path)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (upload_id, user_id, filename, size, file_type,
-              CHUNK_SIZE, total_chunks, temp_path, remote_path))
+              CHUNK_SIZE, total_chunks, temp_path, ""))
         conn.commit()
     finally:
         conn.close()
 
     logging.info(f"[files] Init upload {upload_id}: {filename} ({size} bytes, {total_chunks} chunks)")
 
-    resp_data = {
+    return jsonify({
         'upload_id': upload_id,
         'chunk_size': CHUNK_SIZE,
         'total_chunks': total_chunks,
-    }
-    if sftp_config:
-        resp_data['sftp'] = sftp_config
-    return jsonify(resp_data)
+    })
 
 
 @app.route('/api/files/chunk', methods=['POST'])
@@ -356,33 +337,15 @@ def download_info(upload_id):
             return jsonify({'error': 'Upload pas finalisé'}), 400
         if not row['final_path']:
             return jsonify({'error': 'Chemin de stockage manquant'}), 500
+        # Jamais de credentials SFTP exposés : le download passe par le backend
+        # (endpoint /api/files/<id>/download) qui stream via le storage abstrait.
+        return jsonify({
+            'filename': row['filename'],
+            'size': row['size'],
+            'file_path': row['final_path'],
+        })
     finally:
         conn.close()
-
-    storage = get_storage()
-    if type(storage).__name__ == 'SFTPStorage':
-        # Pas de verification d'existence ici (SFTP stat = round-trip lent)
-        # Si le fichier n'existe pas, sftp.get() cote ComfyUI le dira
-        return jsonify({
-            'sftp': {
-                'host': storage.host,
-                'port': storage.port,
-                'username': storage.user,
-                'password': storage.password,
-                'key_path': storage.key_path,
-                'base_path': storage.base_path,
-                'remote_path': row['final_path'],
-            },
-            'filename': row['filename'],
-            'size': row['size'],
-        })
-    else:
-        # Storage local : pas de SFTP, fallback sur download HTTP classique
-        return jsonify({
-            'sftp': None,
-            'filename': row['filename'],
-            'size': row['size'],
-        })
 
 
 @app.route('/api/files/<upload_id>/fingerprint', methods=['GET'])

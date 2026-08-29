@@ -32,9 +32,16 @@ def filters():
         filter_id = cur.lastrowid
 
         # Si c'est une union, enregistrer les membres dans filter_unions
+        # C3 : seuls les membres appartenant à l'utilisateur OU publics sont autorisés.
         if filter_type == 'union':
-            member_ids = data.get('union_member_ids', [])
-            for mid in member_ids:
+            member_ids = data.get('union_member_ids', []) or []
+            if member_ids:
+                ph = ','.join('?' for _ in member_ids)
+                cur.execute(f"SELECT id FROM saved_filters WHERE id IN ({ph}) AND (user_id = ? OR is_public = 1)", member_ids + [user_id])
+                allowed_members = [r['id'] for r in cur.fetchall()]
+            else:
+                allowed_members = []
+            for mid in allowed_members:
                 cur.execute("INSERT OR IGNORE INTO filter_unions (union_filter_id, member_filter_id) VALUES (?, ?)", (filter_id, mid))
 
         conn.commit()
@@ -43,7 +50,7 @@ def filters():
             # Pour les unions, on ajoute les infos nécessaires à la config pour rebuild
             if filter_type == 'union':
                 config['filter_type'] = 'union'
-                config['union_member_ids'] = data.get('union_member_ids', [])
+                config['union_member_ids'] = allowed_members
             _rebuild_filter_cache(cur, filter_id, config, user_id)
         conn.commit()
         conn.close()
@@ -120,9 +127,16 @@ def single_filter(filter_id):
     cur.execute("UPDATE saved_filters SET name=?, category=?, nsfw=?, is_public=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", vals)
 
     # Gérer les membres d'une union
+    allowed_members = []
     if 'union_member_ids' in data:
+        member_ids = data['union_member_ids'] or []
+        if member_ids:
+            # C3 : seuls les membres appartenant à l'utilisateur OU publics sont autorisés.
+            ph = ','.join('?' for _ in member_ids)
+            cur.execute(f"SELECT id FROM saved_filters WHERE id IN ({ph}) AND (user_id = ? OR is_public = 1)", member_ids + [user_id])
+            allowed_members = [r['id'] for r in cur.fetchall()]
         cur.execute("DELETE FROM filter_unions WHERE union_filter_id = ?", (filter_id,))
-        for mid in data['union_member_ids']:
+        for mid in allowed_members:
             cur.execute("INSERT OR IGNORE INTO filter_unions (union_filter_id, member_filter_id) VALUES (?, ?)", (filter_id, mid))
         # Mettre à jour le filter_type selon la nouvelle config
         if data.get('filter_type') == 'union':
@@ -135,7 +149,7 @@ def single_filter(filter_id):
     if config and isinstance(config, dict):
         if data.get('filter_type') == 'union':
             config['filter_type'] = 'union'
-            config['union_member_ids'] = data.get('union_member_ids', [])
+            config['union_member_ids'] = allowed_members
         cur.execute("UPDATE saved_filters SET config = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (json.dumps(config), filter_id))
         cur.execute("DELETE FROM filter_cache WHERE filter_id = ?", (filter_id,))
         _rebuild_filter_cache(cur, filter_id, config, user_id)
@@ -190,15 +204,31 @@ def _rebuild_filter_cache(cur, filter_id, config, user_id=None):
     # Si c'est un filtre composé (union), merger les caches des membres
     filter_type = config.get('filter_type', 'simple')
     if filter_type == 'union':
-        member_ids = config.get('union_member_ids', [])
+        member_ids = config.get('union_member_ids', []) or []
         if member_ids:
-            # Récupérer les keyword_ids de chaque membre et les unir (déduplication automatique par PRIMARY KEY)
+            # C3 : ne merger que les membres appartenant à l'utilisateur OU publics.
+            # Sinon, ignorer le membre (et purger la ligne filter_unions correspondante)
+            # au lieu de copier son keyword_id (fuite d'autres utilisateurs)
             ph = ','.join('?' for _ in member_ids)
-            cur.execute(f"""
-                INSERT OR IGNORE INTO filter_cache (filter_id, keyword_id)
-                SELECT ?, keyword_id FROM filter_cache
-                WHERE filter_id IN ({ph})
-            """, [filter_id] + member_ids)
+            if user_id:
+                cur.execute(f"SELECT id FROM saved_filters WHERE id IN ({ph}) AND (user_id = ? OR is_public = 1)", member_ids + [user_id])
+            else:
+                # Pas d'utilisateur connu : seuls les membres publics sont autorisés
+                cur.execute(f"SELECT id FROM saved_filters WHERE id IN ({ph}) AND is_public = 1", member_ids)
+            allowed = [r['id'] for r in cur.fetchall()]
+            # Purger les lignes filter_unions pointant vers des membres non autorisés
+            unauthorized = [m for m in member_ids if m not in allowed]
+            if unauthorized:
+                up_ph = ','.join('?' for _ in unauthorized)
+                cur.execute(f"DELETE FROM filter_unions WHERE union_filter_id = ? AND member_filter_id IN ({up_ph})", [filter_id] + unauthorized)
+            if allowed:
+                # Récupérer les keyword_ids de chaque membre autorisé et les unir (déduplication par PRIMARY KEY)
+                a_ph = ','.join('?' for _ in allowed)
+                cur.execute(f"""
+                    INSERT OR IGNORE INTO filter_cache (filter_id, keyword_id)
+                    SELECT ?, keyword_id FROM filter_cache
+                    WHERE filter_id IN ({a_ph})
+                """, [filter_id] + allowed)
         return
 
     # Filtre simple : construction de la requête
@@ -348,22 +378,38 @@ def preview_filter(filter_id):
     """
     guard = _login_required()
     if guard: return guard
+    user_id = _get_current_user_id()
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT k.keyword FROM filter_cache fc JOIN keywords k ON k.id = fc.keyword_id WHERE fc.filter_id = ? LIMIT 20", (filter_id,))
-    keywords = [r['keyword'] for r in cur.fetchall()]
-    cur.execute("SELECT COUNT(*) FROM filter_cache WHERE filter_id = ?", (filter_id,))
-    total = cur.fetchone()[0]
-    cur.execute("SELECT name, config, filter_type FROM saved_filters WHERE id = ?", (filter_id,))
+    # C2 : contrôle de propriété — l'aperçu n'est accessible que si le filtre
+    # appartient à l'utilisateur courant OU est public.
+    cur.execute("SELECT name, config, filter_type FROM saved_filters WHERE id = ? AND (user_id = ? OR is_public = 1)", (filter_id, user_id))
     info = cur.fetchone()
+    if not info:
+        conn.close()
+        return jsonify({'error': 'Not found'}), 404
+    cur.execute("""
+        SELECT k.keyword FROM filter_cache fc
+        JOIN keywords k ON k.id = fc.keyword_id
+        JOIN saved_filters sf ON sf.id = fc.filter_id
+        WHERE fc.filter_id = ? AND (sf.user_id = ? OR sf.is_public = 1)
+        LIMIT 20
+    """, (filter_id, user_id))
+    keywords = [r['keyword'] for r in cur.fetchall()]
+    cur.execute("""
+        SELECT COUNT(*) FROM filter_cache fc
+        JOIN saved_filters sf ON sf.id = fc.filter_id
+        WHERE fc.filter_id = ? AND (sf.user_id = ? OR sf.is_public = 1)
+    """, (filter_id, user_id))
+    total = cur.fetchone()[0]
     result = {
-        'name': info['name'] if info else '',
+        'name': info['name'],
         'total': total,
         'keywords': keywords,
-        'filter_type': info['filter_type'] if info else 'simple',
-        'config': json.loads(info['config']) if info and isinstance(info['config'], str) else (info['config'] if info else {})
+        'filter_type': info['filter_type'],
+        'config': json.loads(info['config']) if isinstance(info['config'], str) else info['config']
     }
-    if info and info['filter_type'] == 'union':
+    if info['filter_type'] == 'union':
         cur.execute("""
             SELECT fu.member_filter_id, sf.name
             FROM filter_unions fu

@@ -384,7 +384,9 @@
         emptyTitle.textContent = 'Base de donnees vide';
         emptyDesc.innerHTML = 'Aucun mot-cle pour le moment. Importe un fichier .md pour commencer.';
         emptyBtn.classList.add('hidden');
-        emptyImportBtn.classList.remove('hidden');
+        const canImport = currentUser && (currentUser.role === 'admin' || currentUser.role === 'kw_editor');
+        if (canImport) emptyImportBtn.classList.remove('hidden');
+        else emptyImportBtn.classList.add('hidden');
       } else {
         emptyTitle.textContent = 'Connexion requise';
         emptyDesc.textContent = 'Connecte-toi avec Discord pour acceder aux mots-cles.';

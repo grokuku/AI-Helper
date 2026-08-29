@@ -202,8 +202,16 @@ def list_preset_models(preset_id):
     """
     guard = _login_required()
     if guard: return guard
+    user_id = _get_current_user_id()
     conn = get_db()
-    row = conn.execute("SELECT * FROM ai_presets WHERE id = ?", (preset_id,)).fetchone()
+    # C5 : propriete obligatoire — preset personnel de l'utilisateur ou global.
+    # Sinon, un preset prive d'autrui serait sonde via {base_url}/models avec
+    # sa cle API dechiffree. Un preset inaccessible = preset inexistant (404)
+    # pour eviter l'enumeration d'ids.
+    row = conn.execute(
+        "SELECT * FROM ai_presets WHERE id = ? AND (user_id = ? OR is_global = 1)",
+        (preset_id, user_id)
+    ).fetchone()
     if not row:
         conn.close()
         return jsonify({'error': 'Not found'}), 404

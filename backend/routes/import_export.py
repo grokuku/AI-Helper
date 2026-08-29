@@ -11,12 +11,16 @@ def import_md():
     Returns:
         flask.Response: JSON avec le nombre de mots-clés importés, mis à jour et doublons ignorés.
     """
+    delete_after = False
+    tmp = None
     try:
         guard = _login_required()
         if guard:
             return guard
 
         user_id = _get_current_user_id()
+        if not (is_admin(user_id) or is_kw_editor(user_id)):
+            return jsonify({'error': 'Import réservé aux éditeurs de mots-clés'}), 403
 
         if not is_available():
             return jsonify({'error': 'Serveur Ollama inaccessible. Vérifie la configuration dans Admin > Ollama.'}), 400
@@ -99,7 +103,7 @@ def import_md():
         return jsonify({'error': str(e)}), 500
     finally:
         try:
-            if delete_after and tmp.exists():
+            if delete_after and tmp is not None and tmp.exists():
                 tmp.unlink()
         except Exception:
             logging.exception("import_export: tmp file cleanup failed")

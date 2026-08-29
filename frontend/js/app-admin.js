@@ -1129,8 +1129,13 @@
       fd.append('file', file);
       try {
         const res = await fetch(`${API}/import`, { method: 'POST', body: fd });
+        if (!res.ok) {
+          let msg = `Erreur ${res.status}`;
+          try { const e = await res.json(); if (e && e.error) msg = e.error; } catch (_) {}
+          throw new Error(msg);
+        }
         const data = await res.json();
-        if (!res.ok || data.error) throw new Error(data.error || `Erreur ${res.status}`);
+        if (data.error) throw new Error(data.error);
         showImportStatus(true, data.message || `${data.imported} importes` + (data.updated ? `, ${data.updated} mis a jour` : '') + (data.duplicates_skipped ? `, ${data.duplicates_skipped} ignores` : '') + '.');
         await checkData();
       } catch (err) {
