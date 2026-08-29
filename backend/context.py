@@ -21,7 +21,7 @@ from auth import make_discord_session, check_whitelist_access, get_user_guilds, 
 
 from routes.helpers import (
     _login_required, _admin_required, _get_current_user_id, _authenticate_via_token,
-    _sync_session_user, get_db, _init_db, _row_get,
+    _sync_session_user, _bootstrap_role, get_db, _init_db, _row_get,
     encrypt_api_key, decrypt_api_key, is_admin, is_kw_editor, _kw_editor_required,
     _privacy_filter, _regenerate_keyword_embedding, _generate_all_embeddings,
     _get_ollama_config, _check_rate_limit, _require_json,
@@ -40,7 +40,7 @@ __all__ = [
     'get_user_info', 'avatar_url', 'get_logged_user',
     'create_jwt', 'create_refresh_token', 'verify_jwt', 'jwt_required',
     '_login_required', '_admin_required', '_get_current_user_id',
-    '_authenticate_via_token', '_sync_session_user',
+    '_authenticate_via_token', '_sync_session_user', '_bootstrap_role',
     'get_db', '_init_db', '_row_get',
     'encrypt_api_key', 'decrypt_api_key', 'is_admin', 'is_kw_editor', '_kw_editor_required', '_privacy_filter', '_regenerate_keyword_embedding', '_generate_all_embeddings',
     '_get_ollama_config', '_check_rate_limit', '_require_json',

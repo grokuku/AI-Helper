@@ -329,11 +329,13 @@ def enhance_prepare():
         import logging
         logging.warning(f"[enhance/prepare] session={session_id} user={user_id} preset='{prepared['preset_name']}' is_client_side=1 -> awaiting_llm")
 
+        # Sécurité : on ne renvoie JAMAIS llm_config (contient la clé API
+        # décryptée) au client. Le frontend ne consomme que session_id +
+        # llm_request (cf. app-filters.js callEnhanceLocalLLM).
         return jsonify({
             'status': 'awaiting_llm',
             'session_id': session_id,
             'llm_request': prepared['llm_request'],
-            'llm_config': prepared['llm_config'],
             'debug_meta': {
                 'preset_id': prepared['preset_id'],
                 'preset_name': prepared['preset_name'],
@@ -602,12 +604,13 @@ def _prepare_next_validation_pass(session_id, user_id, prepared, next_pass_idx, 
         validation_examples=prepared.get('validation_examples')
     )
     # Note : on NE sauve pas le llm_request en BDD (regenerable a partir de current_output)
+    # Sécurité : on ne renvoie JAMAIS llm_config (contient la clé API décryptée)
+    # au client. Le frontend ne consomme que session_id + llm_request + pass.
     return jsonify({
         'status': 'awaiting_validation',
         'session_id': session_id,
         'pass': next_pass_idx,
         'llm_request': llm_request,
-        'llm_config': prepared['llm_config'],
         'debug_meta': {
             'preset_name': prepared['preset_name'],
             'is_client_side': True,
@@ -685,6 +688,12 @@ def _save_enhance_session(user_id, prepared):
     # Stocker le session_id DANS le payload aussi (pour qu'il survive au aller-retour BDD)
     prepared = dict(prepared)
     prepared['session_id'] = session_id
+    # Sécurité : ne JAMAIS persister la clé API décryptée en clair dans
+    # enhance_sessions. On garde preset_id (déjà présent) et on re-décrypte
+    # via decrypt_api_key au chargement (_load_enhance_session).
+    if isinstance(prepared.get('llm_config'), dict):
+        prepared['llm_config'] = dict(prepared['llm_config'])
+        prepared['llm_config'].pop('api_key', None)
     expires_at = (datetime.utcnow() + timedelta(seconds=ENHANCE_SESSION_TTL)).strftime('%Y-%m-%d %H:%M:%S')
     conn = get_db()
     try:
@@ -721,9 +730,34 @@ def _load_enhance_session(session_id, user_id):
                 raise ValueError('Session expiree')
         except ValueError:
             raise  # propager notre propre erreur
-        return json.loads(row['payload_json'])
+        payload = json.loads(row['payload_json'])
+        # Re-décrypter la clé API au chargement (jamais persistée en clair).
+        _rehydrate_llm_config(conn, payload)
+        return payload
     finally:
         conn.close()
+
+
+def _rehydrate_llm_config(conn, prepared):
+    """Re-injecte la clé API décryptée dans llm_config d'une session chargée.
+
+    La clé n'est jamais persistée en clair dans enhance_sessions : on stocke
+    preset_id et on re-décrypte ici au moment de l'utilisation (finish / passes
+    de validation). Si la clé est déjà présente (mode cloud, pas de session),
+    on ne fait rien.
+    """
+    preset_id = prepared.get('preset_id')
+    llm_config = prepared.get('llm_config')
+    if not preset_id or not isinstance(llm_config, dict):
+        return
+    if llm_config.get('api_key'):
+        return  # déjà présent
+    row = conn.execute(
+        "SELECT api_key_encrypted FROM ai_presets WHERE id = ?",
+        (preset_id,)
+    ).fetchone()
+    if row:
+        llm_config['api_key'] = decrypt_api_key(row['api_key_encrypted'])
 
 
 def _delete_enhance_session(session_id):

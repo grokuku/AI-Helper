@@ -295,3 +295,96 @@ class TestLoginAdminRequired:
             result = _admin_required()
             assert result is not None
             assert result[1] == 403
+
+
+# ── Modèle admin fail-closed + bootstrap par env ──────────────────────
+
+
+class TestAdminFailClosed:
+    """Tests du modèle admin fail-closed et du bootstrap AIH_ADMIN_DISCORD_IDS."""
+
+    def test_is_admin_false_when_no_admin_in_db(self, app):
+        """Aucun admin en BDD → is_admin() retourne False (fail-closed)."""
+        from security.auth import is_admin
+        from db import get_db
+
+        conn = get_db()
+        conn.execute("DELETE FROM users")
+        conn.execute(
+            "INSERT OR REPLACE INTO users (id, username, role) VALUES (?, ?, ?)",
+            ("plain-user", "plain", "user"),
+        )
+        conn.commit()
+        conn.close()
+
+        assert is_admin("plain-user") is False
+        assert is_admin("nonexistent") is False
+
+    def test_is_admin_false_when_no_users_at_all(self, app):
+        """BDD vide → is_admin() retourne False (aucun admin par défaut)."""
+        from security.auth import is_admin
+        from db import get_db
+
+        conn = get_db()
+        conn.execute("DELETE FROM users")
+        conn.commit()
+        conn.close()
+
+        assert is_admin("anyone") is False
+
+    def test_bootstrap_role_grants_admin_from_env(self, app, monkeypatch):
+        """ID Discord dans AIH_ADMIN_DISCORD_IDS → rôle admin."""
+        from security.auth import _bootstrap_role
+
+        monkeypatch.setenv("AIH_ADMIN_DISCORD_IDS", "111, 222, 333")
+        assert _bootstrap_role("222") == "admin"
+        assert _bootstrap_role("999") == "user"
+
+    def test_bootstrap_role_no_env_means_no_admin(self, app, monkeypatch):
+        """Variable absente → personne n'est admin (comportement sûr)."""
+        from security.auth import _bootstrap_role
+
+        monkeypatch.delenv("AIH_ADMIN_DISCORD_IDS", raising=False)
+        assert _bootstrap_role("111") == "user"
+
+    def test_sync_session_user_assigns_bootstrap_role(self, app, monkeypatch):
+        """Au login, un ID listé reçoit le rôle admin."""
+        from security.auth import _sync_session_user
+        from db import get_db
+
+        monkeypatch.setenv("AIH_ADMIN_DISCORD_IDS", "admin-123")
+        with app.test_request_context("/"):
+            from flask import session
+            session["user"] = {
+                "id": "admin-123", "username": "adm",
+                "display_name": "Adm", "avatar": "",
+            }
+            _sync_session_user("admin-123")
+
+        conn = get_db()
+        row = conn.execute(
+            "SELECT role FROM users WHERE id = ?", ("admin-123",)
+        ).fetchone()
+        conn.close()
+        assert row is not None and row["role"] == "admin"
+
+    def test_sync_session_user_normal_user_stays_user(self, app, monkeypatch):
+        """Un utilisateur non listé reste non-admin au login."""
+        from security.auth import _sync_session_user
+        from db import get_db
+
+        monkeypatch.setenv("AIH_ADMIN_DISCORD_IDS", "admin-123")
+        with app.test_request_context("/"):
+            from flask import session
+            session["user"] = {
+                "id": "normal-456", "username": "n",
+                "display_name": "N", "avatar": "",
+            }
+            _sync_session_user("normal-456")
+
+        conn = get_db()
+        row = conn.execute(
+            "SELECT role FROM users WHERE id = ?", ("normal-456",)
+        ).fetchone()
+        conn.close()
+        assert row is not None and row["role"] == "user"

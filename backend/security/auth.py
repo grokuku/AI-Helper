@@ -5,6 +5,8 @@ and the privacy filter used by keyword queries.
 """
 
 import logging
+import os
+import time
 
 from flask import g, request, jsonify, session
 
@@ -69,13 +71,54 @@ def _authenticate_via_token() -> str | None:
         return None
 
 
+# ── Admin bootstrap (env AIH_ADMIN_DISCORD_IDS) ──────────────────────
+
+_ADMIN_BOOTSTRAP_WARNED_AT = 0.0
+_ADMIN_BOOTSTRAP_WARN_INTERVAL = 3600.0  # 1h — rate-limit du WARNING
+
+
+def _bootstrap_role(user_id: str) -> str:
+    """Détermine le rôle d'un utilisateur via la variable d'environnement.
+
+    ``AIH_ADMIN_DISCORD_IDS`` contient une liste d'IDs Discord séparés par
+    des virgules. Si ``user_id`` y figure, l'utilisateur reçoit le rôle
+    ``admin``. Si la variable est absente ou vide, personne n'est admin
+    (comportement sûr par défaut) et un WARNING explicite est émis, rate-
+    limité (au plus une fois par heure) pour ne pas polluer les logs à
+    chaque requête.
+
+    Args:
+        user_id (str): L'ID Discord de l'utilisateur.
+
+    Returns:
+        str: ``"admin"`` si l'utilisateur est dans la liste, sinon ``"user"``.
+    """
+    global _ADMIN_BOOTSTRAP_WARNED_AT
+    raw = os.environ.get("AIH_ADMIN_DISCORD_IDS", "").strip()
+    if not raw:
+        now = time.time()
+        if now - _ADMIN_BOOTSTRAP_WARNED_AT >= _ADMIN_BOOTSTRAP_WARN_INTERVAL:
+            _ADMIN_BOOTSTRAP_WARNED_AT = now
+            logging.warning(
+                "Aucun admin configuré — définir AIH_ADMIN_DISCORD_IDS "
+                "(liste d'IDs Discord séparés par des virgules)"
+            )
+        return "user"
+    admin_ids = {i.strip() for i in raw.split(",") if i.strip()}
+    if user_id in admin_ids:
+        logging.warning("Admin bootstrap: rôle admin accordé à %s", user_id)
+        return "admin"
+    return "user"
+
+
 # ── Session synchronisation ───────────────────────────────────────────
 
 def _sync_session_user(user_id: str):
     """Crée ou met à jour l'utilisateur en BDD à partir de la session.
 
-    Si l'utilisateur n'existe pas encore et qu'aucun admin n'est déclaré,
-    il devient automatiquement admin.
+    Le rôle d'un nouvel utilisateur est déterminé par le bootstrap admin
+    (env ``AIH_ADMIN_DISCORD_IDS``) : seuls les IDs listés deviennent admin.
+    Sans variable configurée, personne n'est admin (fail-closed).
 
     Args:
         user_id (str): L'ID Discord de l'utilisateur.
@@ -94,10 +137,8 @@ def _sync_session_user(user_id: str):
             conn = None
             return
         # User doesn't exist — use INSERT OR IGNORE to avoid race condition
-        # If admin_count == 0, the first user becomes admin
-        cur.execute("SELECT COUNT(*) FROM users WHERE role = 'admin'")
-        admin_count = cur.fetchone()[0]
-        role = "admin" if admin_count == 0 else "user"
+        # Le rôle est déterminé par le bootstrap admin (env AIH_ADMIN_DISCORD_IDS)
+        role = _bootstrap_role(user_id)
         cur.execute(
             "INSERT OR IGNORE INTO users (id, username, display_name, avatar, role) "
             "VALUES (?, ?, ?, ?, ?)",
@@ -146,7 +187,9 @@ def _login_required():
 def is_admin(user_id: str) -> bool:
     """Vérifie si un utilisateur est administrateur.
 
-    Si aucun admin n'est déclaré en BDD, tout le monde est considéré admin.
+    Modèle fail-closed : un utilisateur n'est admin que si son rôle en BDD
+    est explicitement ``admin``. S'il n'existe aucun admin en BDD, personne
+    n'est admin (retourne ``False``).
 
     Args:
         user_id (str): L'ID de l'utilisateur à vérifier.
@@ -160,12 +203,7 @@ def is_admin(user_id: str) -> bool:
         cols = [r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
         if "role" not in cols:
             conn.close()
-            return True
-        cur.execute("SELECT COUNT(*) FROM users WHERE role = 'admin'")
-        admin_count = cur.fetchone()[0]
-        if admin_count == 0:
-            conn.close()
-            return True
+            return False
         cur.execute("SELECT role FROM users WHERE id = ?", (user_id,))
         row = cur.fetchone()
         conn.close()

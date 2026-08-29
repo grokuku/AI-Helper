@@ -23,6 +23,7 @@ from security.auth import (
     _authenticate_via_token,
     _get_current_user_id,
     _sync_session_user,
+    _bootstrap_role,
     is_admin,
     is_kw_editor,
     _privacy_filter,

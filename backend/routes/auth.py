@@ -42,16 +42,15 @@ def discord_callback():
     conn = get_db()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) FROM users WHERE role = 'admin'")
-        admin_count = cur.fetchone()[0]
         cur.execute("SELECT role FROM users WHERE id = ?", (user_id,))
         existing = cur.fetchone()
+        bootstrap_role = _bootstrap_role(user_id)
         if existing:
             role = existing["role"]  # garde le rôle existant
-        elif admin_count == 0:
-            role = "admin"  # premier utilisateur ou aucun admin → admin
+            if bootstrap_role == "admin":
+                role = "admin"  # le bootstrap env peut promouvoir
         else:
-            role = "user"
+            role = bootstrap_role  # admin si dans AIH_ADMIN_DISCORD_IDS, sinon user
 
         # Sauvegarde / mise à jour dans la BDD
         conn.execute("""
