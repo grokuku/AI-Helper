@@ -10,6 +10,9 @@ ENV_FILE="$SCRIPT_DIR/.env"
 # Valeurs par defaut
 PROJECT_ROOT="$SCRIPT_DIR"
 FLASK_PORT=5000
+# Bootstrap admin (fail-closed) : IDs Discord séparés par des virgules.
+# Si absent/vide, PERSONNE n'est admin — renseigner obligatoirement le .env
+AIH_ADMIN_DISCORD_IDS=""
 
 echo "🚀 Démarrage de AI-Helper..."
 
@@ -25,8 +28,11 @@ DISCORD_CLIENT_ID=votre_client_id_ici
 DISCORD_CLIENT_SECRET=votre_client_secret_ici
 # Hugging Face (Recherche Sémantique)
 HF_TOKEN=votre_hf_token_ici
+# Admin Discord IDs (séparés par des virgules) — si vide/absente, PERSONNE n'est admin
+# Exemple : AIH_ADMIN_DISCORD_IDS=123456789012345678,987654321098765432
+AIH_ADMIN_DISCORD_IDS=votre_id_discord_ici
 EOF
-    echo "✅ Fichier .env généré. ⚠ MERCI DE REMPLIR TES CLÉS Discord et HF dans $ENV_FILE"
+    echo "✅ Fichier .env généré. ⚠ MERCI DE REMPLIR TES CLÉS Discord, HF et ton ID Discord (AIH_ADMIN_DISCORD_IDS) dans $ENV_FILE"
 fi
 
 # Charger les variables du .env vers l'environnement shell
@@ -35,6 +41,10 @@ export $(grep -v '^#' "$ENV_FILE" | xargs)
 # Lire PROJECT_ROOT et FLASK_PORT depuis .env (avec fallback)
 PROJECT_ROOT="${PROJECT_ROOT:-$SCRIPT_DIR}"
 FLASK_PORT="${FLASK_PORT:-5000}"
+
+# S'assurer que la variable admin est définie (vide si absente du .env = fail-closed)
+AIH_ADMIN_DISCORD_IDS="${AIH_ADMIN_DISCORD_IDS:-}"
+export AIH_ADMIN_DISCORD_IDS
 
 cd "$PROJECT_ROOT"
 LOG_FILE="$PROJECT_ROOT/server.log"
