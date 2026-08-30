@@ -2,7 +2,6 @@
 
 from context import *
 
-
 # ── Prompt Templates ────────────────────────────────────────────────
 
 @app.route('/api/prompts/templates', methods=['GET', 'POST'])

@@ -34,7 +34,7 @@ jobs:
 
       - name: 📦 Install backend dependencies
         run: |
-          pip install -r backend/requirements.txt
+          pip install -r backend/requirements.lock.txt
 
       - name: 🔍 Ruff lint (backend)
         run: ruff check backend/
@@ -44,8 +44,8 @@ jobs:
           pytest backend/ \
             --cov=backend \
             --cov-report=xml:coverage.xml \
-            --cov-report=term-missing \
-            || echo "⚠ Aucun test trouvé — passage en mode tolérant"
+            --cov-report=term-missing
+        # Bloquant : un test rouge fait échouer la CI (plus de mode « tolérant »).
 
       - name: 📤 Upload coverage report
         if: always()

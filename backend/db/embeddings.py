@@ -1,10 +1,12 @@
 """Embedding generation and Ollama configuration helpers."""
 
-import os
+import contextlib
 import json
+import os
+
+from embeddings import generate_embedding
 
 from db import get_db
-from embeddings import generate_embedding
 
 
 def _regenerate_keyword_embedding(keyword_id: int):
@@ -42,16 +44,12 @@ def _regenerate_keyword_embedding(keyword_id: int):
     except Exception as e:
         print(f"[_regenerate_keyword_embedding] Erreur: {e}")
         if conn:
-            try:
+            with contextlib.suppress(Exception):
                 conn.rollback()
-            except Exception:
-                pass
     finally:
         if conn:
-            try:
+            with contextlib.suppress(Exception):
                 conn.close()
-            except Exception:
-                pass
 
 
 def _get_ollama_config() -> dict:

@@ -2,7 +2,6 @@
 
 from context import *
 
-
 # ── Styles ──────────────────────────────────────────────────────────
 
 @app.route('/api/styles', methods=['GET', 'POST'])

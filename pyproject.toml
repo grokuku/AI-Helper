@@ -12,7 +12,23 @@ extend-exclude = [
 # isort (I), pep8-naming (N), pyupgrade (UP), flake8-bugbear (B),
 # flake8-builtins (A), flake8-comprehensions (C4), flake8-simplify (SIM)
 select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "SIM"]
-ignore = ["E501"]  # line too long — géré par ruff format
+ignore = [
+    "E501",  # line too long — géré par ruff format
+    # Les routes reposent sur `from context import *` (exports centralisés) :
+    # F405 (nom peut venir du star import) et F403 (star import lui-même)
+    # sont le pattern par design du codebase, pas des erreurs.
+    "F403",
+    "F405",
+    # Style des guards : `if guard: return guard` (un seul statement par ligne
+    # sur des guards est une convention assumée du codebase).
+    "E701",
+    # E402 : imports placés volontairement APRÈS le setup (logger dans app.py,
+    # load_dotenv() dans extensions.py) — l'ordre est fonctionnel.
+    "E402",
+    # N806 : constantes définies DANS une fonction (seeds db/init.py,
+    # MAX_WORKFLOW_SIZE...) — convention de nommage assumée.
+    "N806",
+]
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401", "F403"]

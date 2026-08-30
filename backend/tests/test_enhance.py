@@ -1,6 +1,6 @@
-import pytest
 import json
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
+
 
 # Tests d'authentification
 class TestEnhanceAuth:
@@ -99,7 +99,6 @@ class TestEnhanceLogic:
     def test_enhance_prepare_client_side_no_api_key(self, client, auth_headers):
         """Le mode client-side ne renvoie JAMAIS la clé API ni llm_config au client,
         et la session persistée ne contient pas la clé en clair."""
-        from routes import enhance
         from db import get_db
         # Le user doit exister (contrainte FK sur enhance_sessions.user_id)
         conn = get_db()
@@ -135,8 +134,8 @@ class TestEnhanceLogic:
 
     def test_enhance_session_never_persists_api_key(self, app_ctx):
         """_save_enhance_session ne persiste jamais la clé décryptée en clair."""
-        from routes import enhance
         from db import get_db
+        from routes import enhance
         conn = get_db()
         try:
             conn.execute(

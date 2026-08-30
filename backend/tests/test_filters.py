@@ -9,12 +9,10 @@ Couvre :
 """
 
 import json
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
-
 from db import get_db
-
 
 # ── Fixtures ───────────────────────────────────────────────────────────
 
@@ -328,7 +326,7 @@ class TestUpdateFilter:
         """Mettre à jour avec une config reconstruit le cache."""
         # Insérer des keywords
         conn = get_db()
-        kid = _insert_keyword(conn, keyword="alpha")
+        _insert_keyword(conn, keyword="alpha")
         conn.close()
 
         fid = _create_filter_via_api(client, auth_headers,
@@ -469,12 +467,28 @@ class TestPreviewFilter:
         assert "config" in data
 
     def test_preview_filter_nonexistent(self, client, auth_headers):
+        """Filtre inexistant → 404 (contrôle de propriété C2, pas d'énumération)."""
         resp = client.get("/api/filters/999999/preview",
                           headers=auth_headers)
-        # preview ne vérifie pas l'appartenance mais renvoie des données vides
-        assert resp.status_code == 200
-        data = resp.get_json()
-        assert data["total"] == 0
+        assert resp.status_code == 404
+
+    def test_preview_filter_not_owned(self, client, auth_headers):
+        """Filtre privé d'autrui → 404 (comme inexistant)."""
+        from routes.helpers import get_db
+
+        conn = get_db()
+        conn.execute(
+            "INSERT OR REPLACE INTO users (id, username, role) VALUES ('someone-else', 'autre', 'user')"
+        )
+        conn.execute(
+            "INSERT INTO saved_filters (user_id, name, config, filter_type, is_public) "
+            "VALUES ('someone-else', 'Privé', '{}', 'simple', 0)"
+        )
+        conn.commit()
+        fid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.close()
+        resp = client.get(f"/api/filters/{fid}/preview", headers=auth_headers)
+        assert resp.status_code == 404
 
 
 # ── _rebuild_filter_cache (tests directs) ──────────────────────────────

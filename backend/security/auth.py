@@ -4,15 +4,15 @@ Provides login guards (session or API token), role checks (admin, kw_editor),
 and the privacy filter used by keyword queries.
 """
 
+import contextlib
 import logging
 import os
 import time
-
-from flask import g, request, jsonify, session
+from datetime import datetime as _dt
 
 from auth import verify_jwt
 from db import get_db
-
+from flask import g, jsonify, request, session
 
 # ── User identification ────────────────────────────────────────────────
 
@@ -27,15 +27,12 @@ def _get_current_user_id() -> str | None:
     Returns:
         str | None: L'ID utilisateur, ou ``None`` si non authentifié.
     """
-    # 1) Flask g (positionné par _login_required)
     gid = getattr(g, 'user_id', None)
     if gid:
         return gid
-    # 2) Session (connexion Discord)
     user = session.get("user")
     if user:
         return user["id"]
-    # 3) Bearer token (API)
     return _authenticate_via_token()
 
 
@@ -44,7 +41,13 @@ def _authenticate_via_token() -> str | None:
 
     Accepte deux types de tokens :
         - JWT token (via ``verify_jwt``)
-        - API token legacy (``aih_...`` stocké en BDD)
+        - API token legacy (``aih_...``), stocké HASHÉ (SHA-256) en BDD.
+          Les anciens tokens stockés en clair restent valides : ils sont
+          migrés vers le hash à la 1re utilisation (sans invalidation).
+
+    Expiration : les tokens créés depuis le hashage expirent après
+    ``AIH_TOKEN_MAX_AGE_DAYS`` jours (défaut 365, 0 = jamais). Les tokens
+    legacy (sans date de création) n'expirent pas (migration transparente).
 
     Returns:
         str | None: L'ID utilisateur si le token est valide, sinon ``None``.
@@ -59,16 +62,53 @@ def _authenticate_via_token() -> str | None:
     if payload and payload.get('type') == 'access':
         return payload['sub']
 
-    # 2) Fallback : API token legacy (aih_...)
+    # 2) API token (aih_...)
     try:
+        import hashlib
         conn = get_db()
+
+        # 2a) Hash SHA-256 (format actuel)
+        token_hash = hashlib.sha256(token.encode('utf-8')).hexdigest()
+        row = conn.execute(
+            "SELECT id, api_token_created_at FROM users WHERE api_token_hash = ?",
+            (token_hash,),
+        ).fetchone()
+        if row:
+            conn.close()
+            if _api_token_expired(row['api_token_created_at']):
+                return None
+            return row['id']
+
+        # 2b) Legacy : token en clair → migration paresseuse vers le hash
         row = conn.execute(
             "SELECT id FROM users WHERE api_token = ?", (token,)
         ).fetchone()
+        if row:
+            conn.execute(
+                "UPDATE users SET api_token_hash = ?, api_token_created_at = datetime('now'), "
+                "api_token = NULL WHERE id = ?",
+                (token_hash, row['id']),
+            )
+            conn.commit()
+            conn.close()
+            return row['id']
         conn.close()
-        return row['id'] if row else None
+        return None
     except Exception:
         return None
+
+
+def _api_token_expired(created_at) -> bool:
+    """True si le token a dépassé AIH_TOKEN_MAX_AGE_DAYS jours (0 = jamais)."""
+    max_age_days = int(os.environ.get("AIH_TOKEN_MAX_AGE_DAYS", "365"))
+    if max_age_days <= 0 or not created_at:
+        return False  # pas de date (token legacy) ou expiration désactivée
+    try:
+        created = _dt.fromisoformat(str(created_at).replace('Z', '+00:00').split('+')[0])
+        age_days = (_dt.utcnow() - created).days
+    except Exception:
+        return False
+    return age_days > max_age_days
 
 
 # ── Admin bootstrap (env AIH_ADMIN_DISCORD_IDS) ──────────────────────
@@ -149,16 +189,12 @@ def _sync_session_user(user_id: str):
     except Exception:
         logging.exception("_sync_session_user failed")
         if conn:
-            try:
+            with contextlib.suppress(Exception):
                 conn.rollback()
-            except Exception:
-                pass
     finally:
         if conn:
-            try:
+            with contextlib.suppress(Exception):
                 conn.close()
-            except Exception:
-                pass
 
 
 # ── Login guards ───────────────────────────────────────────────────────

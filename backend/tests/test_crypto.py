@@ -5,8 +5,7 @@ randomness of the IV, and edge cases (empty strings, invalid data).
 """
 
 import pytest
-
-from security.crypto import encrypt_api_key, decrypt_api_key, _get_encryption_key
+from security.crypto import _get_encryption_key, decrypt_api_key, encrypt_api_key
 
 
 class TestEncryptDecryptRoundtrip:
@@ -82,7 +81,7 @@ class TestDecryptInvalidData:
 
     def test_decrypt_wrong_key(self, monkeypatch):
         """Decryption with a different key should fail."""
-        from cryptography.fernet import InvalidToken, Fernet
+        from cryptography.fernet import Fernet, InvalidToken
 
         # Encrypt with current key
         encrypted = encrypt_api_key("secret-key")

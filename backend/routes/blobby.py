@@ -10,17 +10,17 @@ def blobby_memory_save():
     if guard: return guard
     user_id = _get_current_user_id()
     data = request.get_json() or {}
-    
+
     content = (data.get('content') or '').strip()
     mem_type = (data.get('type') or 'episode').strip()
     importance = int(data.get('importance', 3))
-    
+
     if not content:
         return jsonify({'error': 'content requis'}), 400
     if mem_type not in ('episode', 'fact', 'personality', 'relationship'):
         mem_type = 'episode'
     importance = max(1, min(5, importance))
-    
+
     # Calculer l'embedding
     embedding = None
     try:
@@ -28,7 +28,7 @@ def blobby_memory_save():
         embedding = json.dumps(vec)
     except Exception as e:
         print(f"[blobby/memory] Embedding error: {e}")
-    
+
     conn = get_db()
     cur = conn.cursor()
     cur.execute("""
@@ -36,7 +36,7 @@ def blobby_memory_save():
         VALUES (?, ?, ?, ?, ?)
     """, (user_id, mem_type, content, embedding, importance))
     mem_id = cur.lastrowid
-    
+
     # Purge : garder max 50 épisodes par user
     if mem_type == 'episode':
         count = cur.execute("SELECT COUNT(*) FROM blobby_memories WHERE user_id = ? AND type = 'episode'", (user_id,)).fetchone()[0]
@@ -44,13 +44,13 @@ def blobby_memory_save():
             # Supprimer les moins importants (importance * access_count / age)
             cur.execute("""
                 DELETE FROM blobby_memories WHERE id IN (
-                    SELECT id FROM blobby_memories 
+                    SELECT id FROM blobby_memories
                     WHERE user_id = ? AND type = 'episode'
                     ORDER BY importance * (access_count + 1) ASC, created_at ASC
                     LIMIT ?
                 )
             """, (user_id, count - 50))
-    
+
     conn.commit()
     conn.close()
     return jsonify({'id': mem_id, 'ok': True})
@@ -62,11 +62,11 @@ def blobby_memory_search():
     guard = _login_required()
     if guard: return guard
     user_id = _get_current_user_id()
-    
+
     q = request.args.get('q', '').strip()
     limit = int(request.args.get('limit', 5))
     mem_type = request.args.get('type', '').strip()  # filtre optionnel par type
-    
+
     if not q:
         # Sans query : retourner les souvenirs les plus importants
         conn = get_db()
@@ -82,13 +82,13 @@ def blobby_memory_search():
         rows = [dict(r) for r in cur.fetchall()]
         conn.close()
         return jsonify({'results': rows, 'mode': 'importance'})
-    
+
     # Recherche sémantique
     try:
         query_vec = generate_embedding(q)
     except Exception as e:
         return jsonify({'error': f'Embedding error: {e}'}), 500
-    
+
     conn = get_db()
     cur = conn.cursor()
     sql = "SELECT id, type, content, embedding, importance, created_at, last_accessed, access_count FROM blobby_memories WHERE user_id = ?"
@@ -98,19 +98,16 @@ def blobby_memory_search():
         params.append(mem_type)
     cur.execute(sql, params)
     rows = cur.fetchall()
-    
+
     if not rows:
         conn.close()
         return jsonify({'results': [], 'mode': 'semantic'})
-    
+
     scored = []
     for r in rows:
         try:
             mem_vec = json.loads(r['embedding']) if r['embedding'] else None
-            if mem_vec:
-                sim = cosine_similarity(query_vec, mem_vec)
-            else:
-                sim = 0
+            sim = cosine_similarity(query_vec, mem_vec) if mem_vec else 0
         except Exception:
             sim = 0
         # Score = similarité * (importance / 5)
@@ -124,10 +121,10 @@ def blobby_memory_search():
             'score': round(score, 4),
             'similarity': round(sim, 4),
         })
-    
+
     scored.sort(key=lambda x: x['score'], reverse=True)
     results = scored[:limit]
-    
+
     # Mettre à jour last_accessed et access_count pour les résultats
     for r in results:
         cur.execute(
@@ -136,7 +133,7 @@ def blobby_memory_search():
         )
     conn.commit()
     conn.close()
-    
+
     return jsonify({'results': results, 'mode': 'semantic'})
 
 
@@ -147,7 +144,7 @@ def blobby_memory_list():
     if guard: return guard
     user_id = _get_current_user_id()
     mem_type = request.args.get('type', '').strip()
-    
+
     conn = get_db()
     cur = conn.cursor()
     sql = "SELECT id, type, content, importance, created_at, last_accessed, access_count FROM blobby_memories WHERE user_id = ?"

@@ -3,7 +3,6 @@
 Covers filters, templates, generate (auth guard), and the 404 handler.
 """
 
-import pytest
 
 
 # ── /api/filters ─────────────────────────────────────────────────────

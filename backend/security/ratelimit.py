@@ -3,10 +3,9 @@
 import time
 from collections import defaultdict
 
-from flask import request, jsonify
+from flask import jsonify, request
 
 from security.auth import _get_current_user_id
-
 
 _rate_buckets = defaultdict(list)
 

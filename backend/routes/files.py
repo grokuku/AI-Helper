@@ -13,11 +13,12 @@ Flow :
   6. DELETE /api/files/<id>        → supprime du storage
 """
 
-import os
-import json
+import contextlib
 import logging
-import tempfile
+import os
 import secrets
+import tempfile
+
 from context import *
 from storage import get_storage
 
@@ -108,7 +109,7 @@ def init_upload():
     # local, puis complete_upload pousse le fichier vers le storage via
     # SFTPStorage. Le client n'a jamais besoin des credentials SFTP.
     temp_path = os.path.join(TEMP_DIR, f"{upload_id}.tmp")
-    with open(temp_path, 'wb') as f:
+    with open(temp_path, 'wb'):
         pass
 
     conn = get_db()
@@ -250,10 +251,8 @@ def complete_upload():
                 logging.warning(f"[files] Size mismatch: expected {row['size']}, got {actual_size}")
 
             success = storage.upload(temp_path, remote_path)
-            try:
+            with contextlib.suppress(Exception):
                 os.remove(temp_path)
-            except Exception:
-                pass
 
             if not success:
                 conn.execute("UPDATE file_uploads SET status = 'error' WHERE upload_id = ?", (upload_id,))
@@ -404,10 +403,8 @@ def download_file(upload_id):
     # réponse envoyée (ou en cas d'erreur de send_file) pour éviter
     # l'accumulation disque.
     def _cleanup_local_tmp():
-        try:
+        with contextlib.suppress(Exception):
             os.remove(local_tmp)
-        except Exception:
-            pass
 
     try:
         response = send_file(
@@ -611,7 +608,7 @@ def delete_remote_model(upload_id):
             try:
                 storage = get_storage()
                 storage.delete(row['final_path'])
-            except Exception as e:
+            except Exception:
                 # Log l'erreur mais ne pas bloquer la suppression BDD
                 pass
 

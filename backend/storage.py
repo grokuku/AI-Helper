@@ -18,11 +18,11 @@ Env vars:
   SFTP_BASE_PATH  — base directory on the SFTP server (default /aih)
 """
 
-import os
+import contextlib
 import logging
-from pathlib import Path
+import os
 from datetime import datetime
-
+from pathlib import Path
 
 # ── Interface ────────────────────────────────────────────────────────
 
@@ -194,6 +194,21 @@ class SFTPStorage(StorageBackend):
         self._sftp = None
         self._open_handles = {}  # chemin_distant → Handle SFTP ouvert en append
 
+    def _known_hosts_path(self) -> Path:
+        """Fichier known_hosts persistant (TOFU).
+
+        Par défaut à côté de la BDD (même volume en Docker → persistant).
+        Surchargeable via ``SFTP_KNOWN_HOSTS``.
+        """
+        override = os.environ.get("SFTP_KNOWN_HOSTS")
+        if override:
+            return Path(override)
+        try:
+            from extensions import DB_PATH
+            return Path(DB_PATH).parent / ".sftp_known_hosts"
+        except Exception:
+            return Path(__file__).resolve().parent / ".sftp_known_hosts"
+
     def _connect(self):
         """Ouvre la connexion SFTP si pas déjà active."""
         if self._sftp:
@@ -203,16 +218,44 @@ class SFTPStorage(StorageBackend):
                 return self._sftp
             except Exception:
                 # Connexion morte, on la reconnecte
-                try:
+                with contextlib.suppress(Exception):
                     self._sftp.close()
-                except Exception:
-                    pass
                 self._sftp = None
                 self._ssh = None
 
         import paramiko
+
+        class _TOFUMissingHostKeyPolicy(paramiko.MissingHostKeyPolicy):
+            """TOFU (Trust On First Use) : mémorise la 1re clé d'hôte
+            rencontrée, refuse ensuite toute clé différente.
+
+            Remplace AutoAddPolicy : un attaquant MITM ne peut plus injecter
+            une clé d'hôte sur une connexion ultérieure (BadHostKeyException,
+            dont le message indique la marche à suivre : supprimer la ligne
+            du fichier known_hosts si le serveur a été légitimement réinstallé).
+            """
+
+            def __init__(self, known_hosts_path):
+                self._path = known_hosts_path
+
+            def missing_host_key(self, client, hostname, key):
+                client.get_host_keys().add(hostname, key.get_name(), key)
+                try:
+                    client.get_host_keys().save(self._path)
+                    logging.info("[SFTP] Nouvelle host key mémorisée (TOFU) pour %s → %s",
+                                 hostname, self._path)
+                except OSError as e:
+                    # Fail-closed : si on ne peut pas persister la clé, on refuse
+                    # plutôt que d'accepter une clé non vérifiée.
+                    raise paramiko.SSHException(
+                        f"Impossible de persister la host key TOFU ({self._path}) : {e}"
+                    ) from e
+
         self._ssh = paramiko.SSHClient()
-        self._ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        kh_path = self._known_hosts_path()
+        if kh_path.exists():
+            self._ssh.load_host_keys(str(kh_path))
+        self._ssh.set_missing_host_key_policy(_TOFUMissingHostKeyPolicy(str(kh_path)))
 
         if self.key_path:
             self._ssh.connect(self.host, port=self.port,
@@ -238,14 +281,12 @@ class SFTPStorage(StorageBackend):
             try:
                 sftp.stat(current)
                 break  # existe déjà
-            except IOError:
+            except OSError:
                 dirs_to_create.append(current)
                 current = "/".join(current.split("/")[:-1])
         for d in reversed(dirs_to_create):
-            try:
+            with contextlib.suppress(Exception):  # race condition possible, on ignore
                 sftp.mkdir(d)
-            except Exception:
-                pass  # race condition possible, on ignore
 
     def create_empty(self, remote_path: str) -> bool:
         """Cree un fichier vide sur le SFTP."""
@@ -253,7 +294,7 @@ class SFTPStorage(StorageBackend):
             sftp = self._connect()
             full = self._full_path(remote_path)
             self._mkdir_p(sftp, "/".join(full.split("/")[:-1]))
-            with sftp.open(full, 'wb') as f:
+            with sftp.open(full, 'wb'):
                 pass  # fichier vide
             return True
         except Exception as e:
@@ -307,10 +348,8 @@ class SFTPStorage(StorageBackend):
         """Ferme le handle ouvert pour ce chemin distant."""
         full = self._full_path(remote_path)
         if full in self._open_handles:
-            try:
+            with contextlib.suppress(Exception):
                 self._open_handles[full].close()
-            except Exception:
-                pass
             del self._open_handles[full]
 
     def close_handle(self, remote_path: str):
@@ -406,6 +445,7 @@ def get_storage() -> StorageBackend:
 
     try:
         import sqlite3
+
         from extensions import DB_PATH
         conn = sqlite3.connect(str(DB_PATH))
         for key in ('sftp_host', 'sftp_port', 'sftp_user', 'sftp_password', 'sftp_base_path'):

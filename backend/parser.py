@@ -1,6 +1,7 @@
 import re
 from pathlib import Path
 
+
 def parse_markdown(filepath: str) -> list[dict]:
     """Parse le fichier markdown Keywords-Complete.md et retourne une liste de dictionnaires."""
     keywords = []

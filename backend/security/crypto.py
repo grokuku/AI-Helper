@@ -1,11 +1,10 @@
 """Encryption utilities for API keys stored in the database."""
 
+import logging
 import os
 import sqlite3
-import logging
 
 from cryptography.fernet import Fernet
-
 from extensions import DB_PATH
 
 

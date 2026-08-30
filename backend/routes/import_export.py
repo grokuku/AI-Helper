@@ -1,6 +1,7 @@
 """Routes import_export for AI-Helper backend."""
 
 import logging
+
 from context import *
 
 
@@ -55,7 +56,6 @@ def import_md():
 
         imported = 0
         updated = 0
-        skipped = 0
         for key, e in unique_map.items():
             if key in existing:
                 # Déjà présent → mettre à jour

@@ -1,13 +1,11 @@
 """Database initialization: schema creation, migrations, and default seeds."""
 
-import sqlite3
 import json
+import sqlite3
 import uuid
 from datetime import datetime, timezone
 
 from extensions import DB_PATH
-from db import get_db
-
 
 # ── Table creation ─────────────────────────────────────────────────────
 
@@ -220,14 +218,21 @@ def _migrate_keywords(conn):
 def _migrate_users(conn):
     """Migrations pour la table users.
 
-    Ajoute les colonnes ``role``, ``settings``, ``guild_nickname`` et
-    ``api_token`` si absentes.
+    Ajoute les colonnes ``role``, ``settings``, ``guild_nickname``,
+    ``api_token``, ``api_token_hash`` et ``api_token_created_at`` si absentes.
 
     Args:
         conn (sqlite3.Connection): La connexion SQLite active.
     """
     cols_users = [r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
-    for col, default in [("role", "'user'"), ("settings", "'{}'"), ("guild_nickname", "NULL"), ("api_token", "NULL")]:
+    for col, default in [
+        ("role", "'user'"),
+        ("settings", "'{}'"),
+        ("guild_nickname", "NULL"),
+        ("api_token", "NULL"),
+        ("api_token_hash", "NULL"),
+        ("api_token_created_at", "NULL"),
+    ]:
         if col not in cols_users:
             conn.execute(f"ALTER TABLE users ADD COLUMN {col} TEXT DEFAULT {default}")
 
@@ -975,7 +980,7 @@ def _init_db():
     Raises:
         sqlite3.OperationalError: Si une opération de migration échoue.
     """
-    new = not DB_PATH.exists()
+    not DB_PATH.exists()
     conn = sqlite3.connect(str(DB_PATH))
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA foreign_keys = ON")

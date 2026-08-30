@@ -17,13 +17,12 @@ Contrats :
   ne sont JAMAIS exportés.
 """
 
-import uuid
 import base64
 import hashlib
+import uuid
 from datetime import datetime, timezone
 
 from context import *
-
 
 # ── Constantes ─────────────────────────────────────────────────────────
 
@@ -245,12 +244,7 @@ def _serialize(collection, rows, conn):
         if not cid:
             cid = cache.get(cache_key)
             if not cid:
-                if has_client_col:
-                    cid = uuid.uuid4().hex
-                else:
-                    cid = hashlib.md5(
-                        f"{collection}:{row_id}".encode("utf-8")
-                    ).hexdigest()
+                cid = uuid.uuid4().hex if has_client_col else hashlib.md5(f"{collection}:{row_id}".encode()).hexdigest()
                 cache[cache_key] = cid
                 if has_client_col:
                     conn.execute(
@@ -465,7 +459,7 @@ def sync_export():
                     last = rows[-1]
                     raw_ts = last[ts_col] or ""
                     next_cursor = base64.urlsafe_b64encode(
-                        f"{raw_ts}|{last['id']}".encode("utf-8")
+                        f"{raw_ts}|{last['id']}".encode()
                     ).decode("ascii")
         # Persister les éventuels client_id générés (no-op si colonne absente).
         conn.commit()

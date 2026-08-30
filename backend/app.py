@@ -1,19 +1,17 @@
-import sqlite3
-import io
-import json
-import random
-import time
-import secrets
 import logging
 import os
+import sqlite3
+import time
 import traceback
 from logging.handlers import RotatingFileHandler
-from datetime import datetime, timedelta
-from threading import Thread
 
-from flask import request, jsonify, send_file, send_from_directory, session, redirect, render_template_string, g, Response
-
-from extensions import app, oauth, DB_PATH, MD_PATH, BASE_DIR
+from extensions import BASE_DIR, DB_PATH, app
+from flask import (
+    g,
+    jsonify,
+    request,
+    send_from_directory,
+)
 
 # ── Configuration du logging structuré ────────────────────────────────
 # Logs écrits dans backend/logs/app.log avec rotation (10 MB × 5 fichiers).
@@ -61,30 +59,31 @@ def _load_ollama_config_at_startup():
         logging.warning(f"Failed to load Ollama config from DB: {e}")
 
 # Import route modules
-from routes.helpers import *
-from routes.auth import *
 from routes.admin import *
-from routes.search import *
-from routes.keywords import *
-from routes.import_export import *
-from routes.filters import *
-from routes.presets import *
-from routes.elements_presets import *
-from routes.styles import *
-from routes.templates import *
-from routes.enhance import *
-from routes.generate import *
-from routes.export import *
-from routes.ideogram import *
+from routes.auth import *
 from routes.blobby import *
-from routes.workflows import *
+from routes.elements_presets import *
+from routes.enhance import *
+from routes.export import *
 from routes.files import *
-from routes.preview import *
-from routes.music3 import *
-from routes.sync import *
+from routes.filters import *
+from routes.generate import *
+from routes.helpers import *
 
 # Initialisation unique de la BDD (schemas + migrations) au demarrage
 from routes.helpers import _init_db
+from routes.ideogram import *
+from routes.import_export import *
+from routes.keywords import *
+from routes.music3 import *
+from routes.presets import *
+from routes.preview import *
+from routes.search import *
+from routes.styles import *
+from routes.sync import *
+from routes.templates import *
+from routes.workflows import *
+
 _init_db()
 
 # Chargement de la config Ollama stockée en BDD (doit arriver APRES _init_db)
@@ -204,7 +203,15 @@ def handle_internal_server_error(e):
 
 @app.before_request
 def _log_request_start():
-    """Enregistre le timestamp de début de requête pour mesurer la durée."""
+    """Enregistre le timestamp de début de requête pour mesurer la durée.
+
+    Nettoie aussi ``g.user_id`` posé par une requête précédente : le test
+    client Flask peut préserver le contexte d'application entre requêtes,
+    ce qui ferait fuiter l'identité d'une requête vers la suivante (l'environ-
+    nement de production crée un contexte frais par requête, mais cette
+    précaution est gratuite et robuste partout).
+    """
+    g.pop('user_id', None)
     g.request_start_time = time.time()
     logger.debug("→ %s %s", request.method, request.path)
 

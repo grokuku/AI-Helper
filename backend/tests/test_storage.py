@@ -1,12 +1,9 @@
 """Tests for the SFTPStorage backend (paramiko mocked — no real network)."""
 
 import io
-import os
-import logging
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
-
 from storage import SFTPStorage, get_storage, reload_storage
 
 
@@ -83,6 +80,33 @@ def storage(mock_paramiko):
 
 # ── Connection tests ──────────────────────────────────────────────────
 
+
+class TestSFTPHostKeyTOFU:
+    """La connexion SFTP mémorise la 1re host key (TOFU) au lieu d'AutoAddPolicy."""
+
+    def test_connect_uses_tofu_policy_not_autoadd(self, storage, mock_paramiko):
+        """AutoAddPolicy ne doit plus être instancié ; une politique est posée."""
+        storage._connect()
+        mock_paramiko["module"].AutoAddPolicy.assert_not_called()
+        args, _ = mock_paramiko["ssh"].set_missing_host_key_policy.call_args
+        assert args[0] is not None
+
+    def test_connect_loads_existing_known_hosts(self, mock_paramiko, tmp_path, monkeypatch):
+        """Un fichier known_hosts existant est chargé avant la connexion."""
+        kh = tmp_path / "known_hosts"
+        kh.write_text("sftp.example ssh-ed25519 AAAA...\n")
+        monkeypatch.setenv("SFTP_KNOWN_HOSTS", str(kh))
+        s = SFTPStorage(host="sftp.example", port=22, user="tester",
+                        password="pw", base_path="/aih")
+        s._connect()
+        mock_paramiko["ssh"].load_host_keys.assert_called_once_with(str(kh))
+
+    def test_known_hosts_default_next_to_db(self, storage):
+        """Par défaut, le fichier known_hosts vit à côté de la BDD."""
+        p = storage._known_hosts_path()
+        assert p.name == ".sftp_known_hosts"
+
+
 class TestSFTPConnection:
     def test_sftp_connect_success(self, storage, mock_paramiko):
         """test_sftp_connect_success → mock SSHClient.connect OK"""
@@ -127,7 +151,7 @@ class TestSFTPConnection:
         storage._connect()
         assert mock_paramiko["ssh"].open_sftp.call_count == 1
         # Simulate dead connection: stat(".") now raises
-        mock_paramiko["sftp"].stat.side_effect = lambda p: (_ for _ in ()).throw(IOError("dead"))
+        mock_paramiko["sftp"].stat.side_effect = lambda p: (_ for _ in ()).throw(OSError("dead"))
         storage._connect()
         # Should have reconnected
         assert mock_paramiko["ssh"].open_sftp.call_count == 2
@@ -168,7 +192,7 @@ class TestSFTPWriteReadExistsDelete:
 
     def test_sftp_read_nonexistent_file(self, storage, mock_paramiko, tmp_path):
         """test_sftp_read_nonexistent_file → lève une erreur, retourne False"""
-        mock_paramiko["sftp"].get.side_effect = IOError("No such file")
+        mock_paramiko["sftp"].get.side_effect = OSError("No such file")
         ok = storage.download("missing.txt", str(tmp_path / "out.txt"))
         assert ok is False
 
@@ -180,7 +204,7 @@ class TestSFTPWriteReadExistsDelete:
 
     def test_sftp_exists_false(self, storage, mock_paramiko):
         """test_sftp_exists_false → mock sftp.stat lève IOError"""
-        mock_paramiko["sftp"].stat.side_effect = IOError("No such file")
+        mock_paramiko["sftp"].stat.side_effect = OSError("No such file")
         assert storage.exists("file.txt") is False
 
     def test_sftp_delete(self, storage, mock_paramiko):
@@ -191,7 +215,7 @@ class TestSFTPWriteReadExistsDelete:
 
     def test_sftp_delete_failure_returns_false(self, storage, mock_paramiko):
         """test_sftp_delete failure → returns False"""
-        mock_paramiko["sftp"].remove.side_effect = IOError("missing")
+        mock_paramiko["sftp"].remove.side_effect = OSError("missing")
         assert storage.delete("file.txt") is False
 
     def test_sftp_list_files(self, storage, mock_paramiko):
@@ -202,7 +226,7 @@ class TestSFTPWriteReadExistsDelete:
         mock_paramiko["sftp"].listdir.assert_called_once_with("/aih/somewhere")
 
     def test_sftp_list_files_failure_returns_empty(self, storage, mock_paramiko):
-        mock_paramiko["sftp"].listdir.side_effect = IOError("no dir")
+        mock_paramiko["sftp"].listdir.side_effect = OSError("no dir")
         assert storage.list_dir("somewhere") == []
 
 
@@ -234,7 +258,7 @@ class TestSFTPChunkStream:
 
     def test_sftp_write_chunk_stream_failure(self, storage, mock_paramiko):
         """test_sftp_write_chunk_stream failure → returns False, closes handle"""
-        mock_paramiko["sftp"].open.side_effect = IOError("cannot open")
+        mock_paramiko["sftp"].open.side_effect = OSError("cannot open")
         stream = io.BytesIO(b"data")
         ok = storage.append_chunk_stream("file.bin", stream)
         assert ok is False
@@ -295,7 +319,7 @@ class TestSFTPPathHelpers:
     def test_mkdirp_creates_missing_dirs(self, storage, mock_paramiko):
         """_mkdir_p walks up and creates directories that don't exist."""
         # Everything raises IOError (doesn't exist), so all dirs get created
-        mock_paramiko["sftp"].stat.side_effect = IOError("nope")
+        mock_paramiko["sftp"].stat.side_effect = OSError("nope")
         mock_paramiko["sftp"].mkdir = MagicMock()
         storage._mkdir_p(mock_paramiko["sftp"], "/aih/sub/deep")
         # At least the deepest dirs should have been created
@@ -309,7 +333,7 @@ class TestSFTPPathHelpers:
             call_log.append(path)
             if path == "/aih":
                 return MagicMock()  # exists
-            raise IOError("nope")
+            raise OSError("nope")
 
         mock_paramiko["sftp"].stat.side_effect = _stat
         mock_paramiko["sftp"].mkdir = MagicMock()

@@ -1,9 +1,9 @@
 """Routes ideogram for AI-Helper backend."""
 
 import logging
+
 from context import *
 from routes.enhance import _prepare_enhance, convert_bboxes_to_normalized
-
 
 # ── Endpoints decoupled pour Ideogram 4 ──────────────────────────
 # Ces 2 endpoints sont utilises par les nodes ComfyUI :
@@ -37,7 +37,6 @@ def ideogram_prep():
     # template_id reste celui envoye par le client (template selectionne)
     data['validation_passes'] = 0
 
-    import logging
     logging.warning(
         f"[ideogram/prep] REQUEST user={user_id} "
         f"keys={list(data.keys())} width={data.get('width')} height={data.get('height')}"
@@ -108,7 +107,6 @@ def ideogram_parse():
     Le user decide d'utiliser ou pas le validation_prompt selon son branchement.
     Le construire systematiquement ne coute rien et simplifie l'API.
     """
-    import logging
     import re as _re
 
     guard = _login_required()
@@ -136,10 +134,9 @@ def ideogram_parse():
     s = s.strip()
 
     is_valid = False
-    parsed = None
     error_msg = ''
     try:
-        parsed = json.loads(s)
+        json.loads(s)
         is_valid = True
     except Exception as e:
         error_msg = f"JSON invalide : {e}"
@@ -188,7 +185,7 @@ def ideogram_parse():
         validation_prompt = llm_response_raw
 
     # 5) Debug
-    debug_md = f"### Ideogram Parse\n\n"
+    debug_md = "### Ideogram Parse\n\n"
     debug_md += f"- LLM response length: {len(llm_response_raw)} chars\n"
     debug_md += f"- JSON valide: {is_valid}\n"
     if not is_valid:

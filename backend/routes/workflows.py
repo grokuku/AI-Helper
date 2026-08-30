@@ -12,7 +12,7 @@ Endpoints :
 """
 
 import gzip
-import logging
+
 from context import *
 
 

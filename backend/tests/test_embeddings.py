@@ -4,10 +4,9 @@ All external calls (Ollama, Gemini API) are mocked — no real HTTP.
 """
 
 import json
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
-
 
 # ── cosine_similarity (pure maths, no network) ────────────────────────
 
@@ -152,6 +151,7 @@ class TestGenerateEmbedding:
     def test_generate_embedding_ollama_error(self):
         """When urlopen raises URLError → RuntimeError is raised (wrapped)."""
         import urllib.error
+
         from embeddings import generate_embedding, set_config
 
         set_config(provider="ollama")
@@ -159,9 +159,8 @@ class TestGenerateEmbedding:
         with patch(
             "embeddings.urllib.request.urlopen",
             side_effect=urllib.error.URLError("Connection refused"),
-        ):
-            with pytest.raises(RuntimeError, match="Impossible de se connecter"):
-                generate_embedding("hello")
+        ), pytest.raises(RuntimeError, match="Impossible de se connecter"):
+            generate_embedding("hello")
 
     def test_generate_embedding_gemini_no_key(self):
         """Gemini provider without API key → RuntimeError."""

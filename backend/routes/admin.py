@@ -4,7 +4,6 @@ import logging
 
 from context import *
 
-
 # ── API keywords ─────────────────────────────────────────────────────
 
 @app.route('/api/settings', methods=['GET', 'POST'])
@@ -312,7 +311,7 @@ def admin_backup_now():
     if guard:
         return guard
     try:
-        from storage import backup_database, get_storage
+        from storage import backup_database
         # Lire max_backups depuis la config
         conn = get_db()
         row = conn.execute("SELECT value FROM app_settings WHERE key = 'backup_max_backups'").fetchone()

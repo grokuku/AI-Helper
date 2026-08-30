@@ -15,19 +15,18 @@ Reference cache is synced daily from the MiniMax-Music3 GitHub repo (see
 sync_music3_cache / backend/music3_refresh.py).
 """
 
+import json
 import logging
 import os
 import re
-import json
+import shutil
 import tarfile
 import tempfile
-import shutil
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from context import *
 from routes.enhance import _call_llm_internal, _resolve_preset
-
 
 # ── Référentiel & cache ───────────────────────────────────────────────
 MUSIC3_REPO_URL = "https://github.com/MiniMax-AI/MiniMax-Music3"
@@ -350,7 +349,7 @@ def _step5_duration_and_lyrics(user_id, brief, caption, user_lyrics, musique, se
         f"Brief:\n{json.dumps(brief, ensure_ascii=False)}\n\n"
         f"Caption:\n{caption}"
     )
-    instrumental = _is_instrumental(brief, user_lyrics if not musique else musique)
+    instrumental = _is_instrumental(brief, musique if musique else user_lyrics)
     # Toujours estimer la durée via un appel LLM dédié (brief + caption).
     try:
         dur_content = _call_music_llm(

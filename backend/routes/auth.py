@@ -1,7 +1,8 @@
 """Routes auth for AI-Helper backend."""
 
-from context import *
+import hashlib
 
+from context import *
 
 # ── Routes d'authentification ────────────────────────────────────────
 
@@ -149,7 +150,12 @@ def discord_logout():
 
 @app.route('/api/auth/token', methods=['GET', 'POST'])
 def api_token():
-    """Gérer la clé API de l'utilisateur connecté."""
+    """Gérer la clé API de l'utilisateur connecté.
+
+    Le token est stocké HASHÉ (SHA-256) en BDD : il n'est donc affiché
+    qu'au moment de sa (re)génération. Les anciens tokens en clair restent
+    valides (migration paresseuse à la 1re utilisation).
+    """
     guard = _login_required()
     if guard:
         return guard
@@ -157,25 +163,36 @@ def api_token():
     conn = get_db()
 
     if request.method == 'POST':
-        # Régénérer le token
+        # Régénérer le token (l'ancien devient invalide immédiatement)
         import secrets
         new_token = 'aih_' + secrets.token_hex(24)
-        conn.execute("UPDATE users SET api_token = ? WHERE id = ?", (new_token, user_id))
+        token_hash = hashlib.sha256(new_token.encode('utf-8')).hexdigest()
+        conn.execute(
+            "UPDATE users SET api_token_hash = ?, api_token_created_at = datetime('now'), api_token = NULL WHERE id = ?",
+            (token_hash, user_id),
+        )
         conn.commit()
         conn.close()
         return jsonify({'token': new_token})
 
-    # GET : retourner le token existant (ou en créer un)
-    cur = conn.execute("SELECT api_token FROM users WHERE id = ?", (user_id,))
+    # GET : impossible de réafficher un token hashé → signaler son existence
+    # (la 1re utilisation crée un token, comme avant).
+    cur = conn.execute(
+        "SELECT api_token_hash, api_token FROM users WHERE id = ?", (user_id,)
+    )
     row = cur.fetchone()
-    if row and row['api_token']:
+    if row and (row['api_token_hash'] or row['api_token']):
         conn.close()
-        return jsonify({'token': row['api_token']})
+        return jsonify({'token': None, 'exists': True})
 
-    # Pas de token → en créer un
+    # Pas de token → en créer un (affiché une seule fois)
     import secrets
     new_token = 'aih_' + secrets.token_hex(24)
-    conn.execute("UPDATE users SET api_token = ? WHERE id = ?", (new_token, user_id))
+    token_hash = hashlib.sha256(new_token.encode('utf-8')).hexdigest()
+    conn.execute(
+        "UPDATE users SET api_token_hash = ?, api_token_created_at = datetime('now') WHERE id = ?",
+        (token_hash, user_id),
+    )
     conn.commit()
     conn.close()
     return jsonify({'token': new_token})

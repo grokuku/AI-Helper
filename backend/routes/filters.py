@@ -114,7 +114,8 @@ def single_filter(filter_id):
         return jsonify({'error': 'Not found'}), 404
     if request.method == 'DELETE':
         cur.execute("DELETE FROM saved_filters WHERE id = ?", (filter_id,))
-        conn.commit(); conn.close()
+        conn.commit()
+        conn.close()
         return jsonify({'status': 'ok'})
     data = request.get_json() or {}
     vals = (
@@ -153,7 +154,8 @@ def single_filter(filter_id):
         cur.execute("UPDATE saved_filters SET config = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (json.dumps(config), filter_id))
         cur.execute("DELETE FROM filter_cache WHERE filter_id = ?", (filter_id,))
         _rebuild_filter_cache(cur, filter_id, config, user_id)
-    conn.commit(); conn.close()
+    conn.commit()
+    conn.close()
     return jsonify({'status': 'ok'})
 
 
@@ -188,7 +190,8 @@ def refresh_filter_cache(filter_id):
         config['union_member_ids'] = [r['member_filter_id'] for r in cur.fetchall()]
     cur.execute("DELETE FROM filter_cache WHERE filter_id = ?", (filter_id,))
     _rebuild_filter_cache(cur, filter_id, config, user_id)
-    conn.commit(); conn.close()
+    conn.commit()
+    conn.close()
     return jsonify({'status': 'ok', 'count': _count_filter_cache(filter_id)})
 
 
@@ -281,7 +284,7 @@ def _rebuild_filter_cache(cur, filter_id, config, user_id=None):
 
     if semantic_text:
         try:
-            from embeddings import generate_embedding, cosine_similarity
+            from embeddings import cosine_similarity, generate_embedding
             qe = generate_embedding(semantic_text)
             # Pré-filtrer section/nsfw/subsection dans la requête SQL (hidden_ids appliqué APRES la limite)
             sem_privacy_where, sem_privacy_params = _privacy_filter(user_id) if user_id else ("k.privacy_status = 'public'", [])

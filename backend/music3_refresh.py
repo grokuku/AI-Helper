@@ -8,14 +8,13 @@ sync_music3_cache(force=True) and prints the result. Intended to be run by a
 daily cron to keep the ~1000 templates cache in sync with GitHub.
 """
 
-import sys
 import os
+import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from app import app  # noqa: F401  (registration des routes)
 from routes.music3 import sync_music3_cache  # noqa: F401
-
 
 if __name__ == '__main__':
     with app.app_context():

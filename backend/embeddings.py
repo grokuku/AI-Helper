@@ -15,11 +15,10 @@ GEMINI_API_KEY   (optionnel, defaut: vide)
 GEMINI_MODEL     (defaut: gemini-embedding-001)
 """
 
-import os
 import json
-import urllib.request
+import os
 import urllib.error
-
+import urllib.request
 
 # === Configuration par defaut ===
 DEFAULT_PROVIDER = os.environ.get("EMBEDDING_PROVIDER", "ollama")
@@ -123,12 +122,12 @@ def _generate_ollama(text: str) -> list[float]:
             result = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8")[:300]
-        raise RuntimeError(f"Erreur Ollama ({e.code}): {body}")
+        raise RuntimeError(f"Erreur Ollama ({e.code}): {body}") from e
     except urllib.error.URLError as e:
         raise RuntimeError(
             f"Impossible de se connecter a Ollama ({url}): {e.reason}\n"
             "Verifie que le serveur Ollama est bien lance."
-        )
+        ) from e
 
     # Reponse : {"model":"...","embeddings":[[0.1, 0.2, ...]]}
     if isinstance(result, dict):
@@ -175,19 +174,19 @@ def _generate_gemini(text: str) -> list[float]:
         body = e.read().decode("utf-8")[:500]
         # Messages d'erreur plus parlants pour les cas courants
         if e.code == 400 and "API key" in body:
-            raise RuntimeError(f"Cle API Gemini invalide. Verifie-la sur https://aistudio.google.com/apikey")
+            raise RuntimeError("Cle API Gemini invalide. Verifie-la sur https://aistudio.google.com/apikey") from e
         if e.code == 403:
-            raise RuntimeError(f"Acces refuse par Gemini API: {body}")
+            raise RuntimeError(f"Acces refuse par Gemini API: {body}") from e
         if e.code == 404:
-            raise RuntimeError(f"Modele Gemini '{model}' introuvable. Verifie le nom (ex: gemini-embedding-001, gemini-embedding-2).")
+            raise RuntimeError(f"Modele Gemini '{model}' introuvable. Verifie le nom (ex: gemini-embedding-001, gemini-embedding-2).") from e
         if e.code == 429:
-            raise RuntimeError(f"Quota Gemini depasse. Verifie tes limites sur https://aistudio.google.com/")
-        raise RuntimeError(f"Erreur Gemini API ({e.code}): {body}")
+            raise RuntimeError("Quota Gemini depasse. Verifie tes limites sur https://aistudio.google.com/") from e
+        raise RuntimeError(f"Erreur Gemini API ({e.code}): {body}") from e
     except urllib.error.URLError as e:
         raise RuntimeError(
             f"Impossible de joindre Google AI Studio: {e.reason}\n"
             "Verifie ta connexion internet."
-        )
+        ) from e
 
     # Reponse : {"embedding": {"values": [0.1, 0.2, ...]}}
     if isinstance(result, dict):
@@ -253,12 +252,10 @@ def is_ollama_available() -> bool:
 def is_gemini_available() -> bool:
     """Verifie si la cle API Gemini est configuree (et fait un ping leger)."""
     api_key = _get_gemini_api_key()
-    if not api_key:
-        return False
     # Pas de ping cote serveur ici - on se contente de verifier la presence
     # de la cle. Un test reel (embedContent) sera fait au premier appel.
     # Ca evite de generer du trafic/quotas sur le endpoint admin.
-    return True
+    return bool(api_key)
 
 
 # === Helpers admin ===

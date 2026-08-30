@@ -11,6 +11,7 @@ Routes :
   GET  /api/preview/image/<id> — Sert une image par son ID
 """
 
+import contextlib
 import logging
 import uuid
 
@@ -144,10 +145,8 @@ def preview_upload():
     except Exception as e:
         logging.exception("[preview] Échec d'enregistrement en BDD")
         # Nettoyer le fichier si l'insertion BDD a échoué
-        try:
+        with contextlib.suppress(OSError):
             os.remove(filepath)
-        except OSError:
-            pass
         return jsonify({'error': f'Erreur base de données : {e}'}), 500
     finally:
         conn.close()

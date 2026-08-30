@@ -1,20 +1,21 @@
 """Routes enhance for AI-Helper backend."""
 
+import contextlib
 import logging
 import re
-from context import *
 
+from context import *
 
 # ── Enhance ─────────────────────────────────────────────────────────
 
 def _clean_output(text, output_format="rich"):
     """Nettoie la sortie LLM selon le format choisi.
-    
+
     rich: garde markdown, JSON, retours à la ligne. Nettoie seulement:
       - code fences en début/fin
       - marqueurs [PRIORITE ...]
       - doubles virgules
-    
+
     basic: aplatit tout en une seule ligne comma-separated:
       - remplace \n par ', '
       - supprime markdown (*, _, #, `, ~)
@@ -22,7 +23,7 @@ def _clean_output(text, output_format="rich"):
     """
     if not text:
         return ""
-    
+
     # --- Nettoyage commun aux deux modes ---
     # Code fences en début/fin
     if text.startswith('```'):
@@ -32,20 +33,20 @@ def _clean_output(text, output_format="rich"):
         if lines and lines[-1].strip() == '```':
             lines = lines[:-1]
         text = '\n'.join(lines).strip()
-    
+
     # Marqueurs [PRIORITE ...]
     text = re.sub(r'\[PRIORITE\s+(HAUTE|MOYENNE|BASSE)\]', '', text, flags=re.IGNORECASE)
-    
+
     if output_format == "basic":
         # Aplatir en une seule ligne
         text = text.replace('\n', ', ')
         # Supprimer le markdown
         text = re.sub(r'[\*\_\#\`\~]', '', text)
-    
+
     # Nettoyage des virgules (commun aux deux modes)
     text = re.sub(r'\s*,\s*', ', ', text)
     text = re.sub(r',+', ',', text).strip(' ,')
-    
+
     return text
 
 def _coerce_bbox_number(value):
@@ -823,10 +824,8 @@ def _validate_enhance_inputs(data):
     template_id = data.get('template_id')
     # Accepter aussi 'prompt_type' comme ancien alias le temps de la transition
     if not template_id and data.get('prompt_type'):
-        try:
+        with contextlib.suppress(ValueError, TypeError):
             template_id = int(data.get('prompt_type'))
-        except (ValueError, TypeError):
-            pass
     if not template_id:
         return jsonify({'error': 'template_id requis'}), 400
     try:
@@ -1341,6 +1340,7 @@ def _get_model_context(base_url, api_key, model, cache_ttl=3600):
     """Interroge l'API pour récupérer la fenêtre de contexte du modèle.
     Retourne un int (tokens) ou 0 si indisponible. Cache par (base_url, model)."""
     import time as _time
+
     import requests as _req
     key = (base_url, model)
     now = _time.time()
@@ -1576,9 +1576,10 @@ def _call_llm_internal(llm_request, llm_config):
     Leve une exception en cas d'erreur — l'appelant decide du code HTTP.
     Retourne le dict de reponse OpenAI ({choices: [{message: {content: ...}}], ...}).
     """
-    import requests
     import logging
     import time
+
+    import requests
     base_url = llm_config['base_url']
     api_key = llm_config.get('api_key', '')
     headers = {'Content-Type': 'application/json', 'Authorization': f'Bearer {api_key}'} if api_key else {'Content-Type': 'application/json'}
@@ -1591,7 +1592,7 @@ def _call_llm_internal(llm_request, llm_config):
 
     # ── Log diagnostique : payload complet (sans API key) ───────────────
     # On clone le payload pour le log sans risque de modification
-    safe_payload = {k: v for k, v in llm_request.items()}
+    safe_payload = dict(llm_request.items())
     logging.warning(
         f"[enhance] LLM CALL url={url!r} "
         f"model={llm_request.get('model')!r} "
@@ -1611,10 +1612,8 @@ def _call_llm_internal(llm_request, llm_config):
         if not resp.ok:
             # Capturer le body de la reponse — DeepSeek renvoie un JSON d'erreur detaille
             error_body = ''
-            try:
+            with contextlib.suppress(Exception):
                 error_body = resp.text
-            except Exception:
-                pass
             logging.error(
                 f"[enhance] LLM HTTP {resp.status_code} ERROR "
                 f"url={url!r} body={error_body[:1000]!r}"
@@ -1684,7 +1683,7 @@ def _finish_enhance_pass1(user_id, prepared, llm_response, output_format="rich")
 
     # Metadata
     template_id = prepared['template_id']
-    template_name = prepared.get('template_name', '')
+    prepared.get('template_name', '')
     merged_text = prepared['merged_text']
     width = prepared['width']
     height = prepared['height']
@@ -1883,7 +1882,6 @@ def _do_validation_pass(current_output, original_input, style_text, width, heigh
             return None, debug
         result = r.json()
     except Exception as e:
-        import logging
         logging.error(f"[enhance] VALIDATION EXCEPTION: {e!r}")
         debug['api_calls'][-1]['error'] = str(e)
         return None, debug
@@ -1969,7 +1967,7 @@ def keywords_llm_process():
 
     output = llm_response['choices'][0]['message']['content'].strip()
     usage = llm_response.get('usage', {})
-    
+
     # Essayer de recuperer la taille max de contexte
     max_context = None
     try:
@@ -2001,8 +1999,8 @@ def keywords_llm_process():
             if k in model.lower():
                 max_context = v
                 break
-    
+
     if not max_context:
         max_context = 4096
-    
+
     return jsonify({'output': output, 'usage': usage, 'max_context': max_context})

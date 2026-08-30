@@ -1,6 +1,149 @@
 """Routes presets for AI-Helper backend."""
 
+import ipaddress
+import logging
+import os
+import socket
+from urllib.parse import urljoin, urlparse
+
 from context import *
+
+logger = logging.getLogger('ai_helper')
+
+
+# ── Protection anti-SSRF (appels LLM sortants) ───────────────────────
+
+_PRIVATE_NETWORKS = (
+    ipaddress.ip_network('0.0.0.0/8'),
+    ipaddress.ip_network('10.0.0.0/8'),
+    ipaddress.ip_network('100.64.0.0/10'),   # CGNAT
+    ipaddress.ip_network('127.0.0.0/8'),
+    ipaddress.ip_network('169.254.0.0/16'),  # link-local
+    ipaddress.ip_network('172.16.0.0/12'),
+    ipaddress.ip_network('192.168.0.0/16'),
+    ipaddress.ip_network('::/128'),
+    ipaddress.ip_network('::1/128'),
+    ipaddress.ip_network('::ffff:0:0/96'),   # IPv4-mapped IPv6
+    ipaddress.ip_network('fc00::/7'),        # ULA
+    ipaddress.ip_network('fe80::/10'),       # link-local IPv6
+)
+
+
+_MAX_REDIRECTS = 3
+
+
+def _is_private_ip(ip_str):
+    """True si l'adresse est privée/loopback/link-local (ou non parsable)."""
+    try:
+        ip = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return True  # non parsable → refuser par défaut
+    if ip.version == 6 and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped  # ::ffff:127.0.0.1 → vérifier la forme IPv4
+    return any(ip in net for net in _PRIVATE_NETWORKS)
+
+
+def _opt_in_private_hosts():
+    """Hôtes privés explicitement autorisés (LLM locaux type ollama).
+
+    Variable d'environnement ``AIH_ALLOW_PRIVATE_LLM_HOSTS`` : liste de
+    hostnames/IP séparés par des virgules. Toujours vide par défaut.
+    """
+    raw = os.environ.get('AIH_ALLOW_PRIVATE_LLM_HOSTS', '')
+    return {h.strip().lower() for h in raw.split(',') if h.strip()}
+
+
+def _host_allowed(host):
+    """True si l'hôte peut être ciblé par un appel LLM sortant.
+
+    Vérifie : IP littérale non privée, ou hostname dont TOUTES les IP
+    résolues sont publiques (anti DNS-rebinding). Un hôte listé dans
+    ``AIH_ALLOW_PRIVATE_LLM_HOSTS`` est toujours accepté (opt-in admin).
+    """
+    host = host.lower()
+    if host in _opt_in_private_hosts():
+        return True
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    else:
+        return not _is_private_ip(host)
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except OSError:
+        return False
+    ips = {info[4][0] for info in infos}
+    return bool(ips) and all(not _is_private_ip(ip) for ip in ips)
+
+
+def _validate_llm_base_url(base_url):
+    """Valide un base_url d'API LLM avant appel sortant (anti-SSRF).
+
+    Retourne un message d'erreur (str) ou ``None`` si l'URL est acceptée.
+    Règles :
+    - https:// uniquement (http:// si hôte privé opt-in ou AIH_ALLOW_HTTP_LLM=1)
+    - pas de credentials embarquées (user:pass@)
+    - port standard (443/80), sauf hôte privé opt-in
+    - hôte : pas d'IP privée/loopback/link-local, ni de DNS rebinding
+      (toutes les IP résolues sont vérifiées)
+    """
+    try:
+        parsed = urlparse(base_url)
+    except ValueError:
+        return "URL invalide"
+    if parsed.scheme not in ('http', 'https'):
+        return "URL non supportée (https requis)"
+    if parsed.username or parsed.password:
+        return "Credentials embarquées interdites"
+    host = (parsed.hostname or '').lower()
+    if not host:
+        return "Hôte manquant"
+    opt_in = host in _opt_in_private_hosts()
+    if parsed.scheme == 'http' and not opt_in and os.environ.get('AIH_ALLOW_HTTP_LLM', '') != '1':
+        return "URL non supportée (https requis)"
+    if not opt_in:
+        default_port = 443 if parsed.scheme == 'https' else 80
+        if parsed.port is not None and parsed.port != default_port:
+            return "Port non autorisé"
+        if not _host_allowed(host):
+            return "Hôte refusé (adresse privée ou introuvable)"
+    return None
+
+
+def _safe_llm_get(url, headers, timeout=(5, 10)):
+    """GET HTTP avec validation anti-SSRF, redirection par redirection.
+
+    Lève ``ValueError`` (message générique, sans détail réseau) si un hôte
+    est refusé ou si le nombre maximal de redirections est dépassé.
+    """
+    import requests
+    current = url
+    for _ in range(_MAX_REDIRECTS + 1):
+        err = _validate_llm_base_url(current)
+        if err:
+            raise ValueError(f"Hôte refusé : {err}")
+        resp = requests.get(current, headers=headers, timeout=timeout, allow_redirects=False)
+        if resp.status_code in (301, 302, 303, 307, 308):
+            loc = resp.headers.get('Location')
+            if not loc:
+                raise ValueError("Redirection sans destination")
+            current = urljoin(current, loc)
+            continue
+        return resp
+    raise ValueError("Trop de redirections")
+
+
+def _parse_models(data):
+    """Normalise la réponse /models d'un fournisseur OpenAI-compatible."""
+    models = []
+    raw = data.get('data', data.get('models', []))
+    for m in raw:
+        if isinstance(m, dict):
+            models.append({'id': m.get('id', ''), 'name': m.get('name', m.get('id', '')), 'owned_by': m.get('owned_by', '')})
+        elif isinstance(m, str):
+            models.append({'id': m, 'name': m, 'owned_by': ''})
+    return models
 
 
 # ── Presets ─────────────────────────────────────────────────────────
@@ -220,21 +363,19 @@ def list_preset_models(preset_id):
     api_key = decrypt_api_key(row['api_key_encrypted'])
     conn.close()
 
-    import requests
+    err = _validate_llm_base_url(base_url)
+    if err:
+        logger.warning("[presets] Appel LLM refusé (preset %s) : %s", preset_id, err)
+        return jsonify({'error': 'Impossible de lister les modeles : fournisseur inaccessible'}), 502
+
     try:
         headers = {'Authorization': f'Bearer {api_key}'} if api_key else {}
-        r = requests.get(f'{base_url}/models', headers=headers, timeout=10)
+        r = _safe_llm_get(f'{base_url}/models', headers=headers)
         r.raise_for_status()
-        data = r.json()
-        models = []
-        for m in data.get('data', data.get('models', [])):
-            if isinstance(m, dict):
-                models.append({'id': m.get('id', ''), 'name': m.get('name', m.get('id', '')), 'owned_by': m.get('owned_by', '')})
-            elif isinstance(m, str):
-                models.append({'id': m, 'name': m, 'owned_by': ''})
-        return jsonify(models)
+        return jsonify(_parse_models(r.json()))
     except Exception as e:
-        return jsonify({'error': f'Impossible de lister les modeles : {e}'}), 502
+        logger.warning("[presets] Erreur liste modèles (preset %s) : %s", preset_id, e)
+        return jsonify({'error': 'Impossible de lister les modeles : fournisseur inaccessible'}), 502
 
 
 @app.route('/api/presets/list-models', methods=['POST'])
@@ -247,21 +388,19 @@ def list_models_temp():
     api_key = (data.get('api_key') or '').strip()
     if not base_url:
         return jsonify({'error': 'URL requise'}), 400
-    import requests
+
+    err = _validate_llm_base_url(base_url)
+    if err:
+        logger.warning("[presets] Appel LLM refusé (list-models) : %s", err)
+        return jsonify({'error': 'Impossible de lister les modeles : fournisseur inaccessible'}), 502
+
     try:
         headers = {'Authorization': f'Bearer {api_key}'} if api_key else {}
-        r = requests.get(f'{base_url}/models', headers=headers, timeout=10)
+        r = _safe_llm_get(f'{base_url}/models', headers=headers)
         r.raise_for_status()
-        data = r.json()
-        models = []
-        raw = data.get('data', data.get('models', []))
-        for m in raw:
-            if isinstance(m, dict):
-                models.append({'id': m.get('id', ''), 'name': m.get('name', m.get('id', '')), 'owned_by': m.get('owned_by', '')})
-            elif isinstance(m, str):
-                models.append({'id': m, 'name': m, 'owned_by': ''})
-        return jsonify(models)
+        return jsonify(_parse_models(r.json()))
     except Exception as e:
-        return jsonify({'error': f'Impossible de lister les modeles : {e}'}), 502
+        logger.warning("[presets] Erreur liste modèles (list-models) : %s", e)
+        return jsonify({'error': 'Impossible de lister les modeles : fournisseur inaccessible'}), 502
 
 

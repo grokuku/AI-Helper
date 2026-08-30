@@ -1,6 +1,6 @@
 import sqlite3
-from pathlib import Path
 from collections import OrderedDict
+from pathlib import Path
 
 
 def export_to_markdown(db_path: str) -> str:

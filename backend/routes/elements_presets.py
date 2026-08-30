@@ -5,6 +5,8 @@ Chaque utilisateur peut créer, lister et supprimer ses propres presets.
 Le nom d'un preset est unique par utilisateur (contrainte DB UNIQUE(user_id, name)).
 """
 
+import contextlib
+
 from context import *
 
 
@@ -62,10 +64,9 @@ def save_elements_preset():
     # Si preset_data est une chaîne JSON (ex: valeur brute d'un widget ComfyUI),
     # la décoder pour éviter un double-encodage par json.dumps().
     if isinstance(preset_data, str):
-        try:
+        # Garder la chaîne telle quelle si ce n'est pas du JSON valide
+        with contextlib.suppress(json.JSONDecodeError, TypeError):
             preset_data = json.loads(preset_data)
-        except (json.JSONDecodeError, TypeError):
-            pass  # Garder la chaîne telle quelle si ce n'est pas du JSON valide
 
     if not name:
         return jsonify({'error': 'Name required'}), 400

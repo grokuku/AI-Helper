@@ -9,10 +9,8 @@ Covers:
   - Edge cases: duplicates, filters, nsfw, privacy
 """
 
-import pytest
 
 from db import get_db
-
 
 # ── Helpers ──────────────────────────────────────────────────────────
 

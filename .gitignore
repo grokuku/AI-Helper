@@ -38,6 +38,9 @@ __tmp_import.md
 # ── Logs ──────────────────────────────────────────────
 *.log
 
+# ── Host keys SFTP (TOFU) ──────────────────────────────
+.sftp_known_hosts
+
 # ── Android ───────────────────────────────────────────
 android/.gradle/
 android/build/

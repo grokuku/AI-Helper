@@ -13,8 +13,8 @@ Usage:
 
 import argparse
 import json
-import sys
 import os
+import sys
 
 try:
     import requests
@@ -29,10 +29,7 @@ def test_deepseek(api_key, model, base_url):
 
     # Normaliser l'URL
     base_url = base_url.rstrip('/')
-    if not base_url.endswith('/chat/completions'):
-        url = f"{base_url}/chat/completions"
-    else:
-        url = base_url
+    url = f"{base_url}/chat/completions" if not base_url.endswith('/chat/completions') else base_url
 
     headers = {
         'Content-Type': 'application/json',
@@ -40,7 +37,7 @@ def test_deepseek(api_key, model, base_url):
     }
 
     print(f"{'='*60}")
-    print(f"Diagnostic DeepSeek")
+    print("Diagnostic DeepSeek")
     print(f"{'='*60}")
     print(f"URL:     {url}")
     print(f"Model:   {model}")
@@ -113,7 +110,10 @@ def test_deepseek(api_key, model, base_url):
 
     # ── Test 4: Vérifier les modèles disponibles ──────────────────────
     print("── Test 4: Lister les modèles disponibles ──")
-    models_url = base_url.rstrip('/chat/completions') + '/models'
+    models_url = base_url
+    if models_url.endswith('/chat/completions'):
+        models_url = models_url[:-len('/chat/completions')]
+    models_url = models_url + '/models'
     if '/chat/completions' in models_url:
         models_url = models_url.replace('/chat/completions', '/models')
     try:
@@ -128,7 +128,7 @@ def test_deepseek(api_key, model, base_url):
             if model not in model_ids:
                 print(f"⚠️  ATTENTION: Le modèle '{model}' n'est PAS dans la liste!")
                 print(f"   Modèles valides: {model_ids}")
-                print(f"   Corrige le modèle dans ton preset AI-Helper.")
+                print("   Corrige le modèle dans ton preset AI-Helper.")
             else:
                 print(f"✓ Le modèle '{model}' est valide.")
         else:
@@ -140,7 +140,7 @@ def test_deepseek(api_key, model, base_url):
     # ── Test 5: URL alternative avec /v1/ ─────────────────────────────
     if '/v1/' not in url:
         alt_url = url.replace('/chat/completions', '/v1/chat/completions')
-        print(f"── Test 5: URL alternative avec /v1/ ──")
+        print("── Test 5: URL alternative avec /v1/ ──")
         print(f"URL: {alt_url}")
         try:
             r = requests.post(alt_url, headers=headers, json=payload_min, timeout=30)

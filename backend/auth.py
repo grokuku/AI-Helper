@@ -20,7 +20,7 @@ from pathlib import Path
 import jwt as pyjwt
 import requests
 from authlib.integrations.flask_client import OAuth
-from flask import session, current_app
+from flask import current_app, session
 
 DISCORD_API = "https://discord.com/api"
 
@@ -303,7 +303,7 @@ def _make_jwt_decorator():
     Returns:
         callable: Un décorateur qui vérifie le Bearer token JWT sur la route.
     """
-    from flask import g, request, jsonify
+    from flask import g, jsonify, request
 
     def decorator(f):
         @wraps(f)
@@ -334,7 +334,6 @@ def jwt_required(f=None):
             user_id = g.jwt_user['sub']
             ...
     """
-    from flask import g, request, jsonify
 
     if f is not None:
         # Utilisé comme @jwt_required (sans parenthèses)

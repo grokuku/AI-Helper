@@ -1,6 +1,7 @@
 """Routes generate for AI-Helper backend."""
 
 import logging
+
 from context import *
 
 
@@ -73,7 +74,7 @@ def generate_prompt():
             elif elem.get('type') == 'text' and elem.get('text'):
                 kind = 'semantic'
                 try:
-                    from embeddings import generate_embedding, cosine_similarity
+                    from embeddings import cosine_similarity, generate_embedding
                     qe = generate_embedding(elem['text'])
                     gen_privacy_where, gen_privacy_params = _privacy_filter(user_id)
                     cur.execute(

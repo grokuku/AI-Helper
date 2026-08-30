@@ -2,9 +2,6 @@
 
 import time
 
-import pytest
-
-
 # ── Token creation & verification ────────────────────────────────────
 
 
@@ -55,10 +52,10 @@ class TestJWTCreation:
         assert payload["type"] == "refresh"
 
     def test_expired_token_rejected(self):
-        from auth import create_jwt, verify_jwt
-
         # Create a token that expires in 1 second
         import os
+
+        from auth import create_jwt, verify_jwt
         old = os.environ.get("JWT_ACCESS_EXPIRY")
         os.environ["JWT_ACCESS_EXPIRY"] = "1"
         try:
@@ -144,7 +141,7 @@ class TestJwtRequiredDecorator:
     def _build_wrapper(self, app):
         """Build a jwt_required-wrapped function for testing."""
         from auth import jwt_required
-        from flask import jsonify, g
+        from flask import g, jsonify
 
         @jwt_required
         def _protected():
@@ -244,10 +241,9 @@ class TestLoginAdminRequired:
             assert result[1] == 401
 
     def test_admin_required_as_admin(self, app, make_token):
-        from security.auth import _admin_required
-
         # Insert an admin user
         from db import get_db
+        from security.auth import _admin_required
         conn = get_db()
         conn.execute(
             "INSERT OR REPLACE INTO users (id, username, role) VALUES (?, ?, ?)",
@@ -272,10 +268,9 @@ class TestLoginAdminRequired:
             assert result is None
 
     def test_admin_required_as_non_admin(self, app, make_token):
-        from security.auth import _admin_required
-
         # Ensure at least one admin exists so non-admins are actually restricted
         from db import get_db
+        from security.auth import _admin_required
         conn = get_db()
         conn.execute(
             "INSERT OR REPLACE INTO users (id, username, role) VALUES (?, ?, ?)",
@@ -305,8 +300,8 @@ class TestAdminFailClosed:
 
     def test_is_admin_false_when_no_admin_in_db(self, app):
         """Aucun admin en BDD → is_admin() retourne False (fail-closed)."""
-        from security.auth import is_admin
         from db import get_db
+        from security.auth import is_admin
 
         conn = get_db()
         conn.execute("DELETE FROM users")
@@ -322,8 +317,8 @@ class TestAdminFailClosed:
 
     def test_is_admin_false_when_no_users_at_all(self, app):
         """BDD vide → is_admin() retourne False (aucun admin par défaut)."""
-        from security.auth import is_admin
         from db import get_db
+        from security.auth import is_admin
 
         conn = get_db()
         conn.execute("DELETE FROM users")
@@ -349,8 +344,8 @@ class TestAdminFailClosed:
 
     def test_sync_session_user_assigns_bootstrap_role(self, app, monkeypatch):
         """Au login, un ID listé reçoit le rôle admin."""
-        from security.auth import _sync_session_user
         from db import get_db
+        from security.auth import _sync_session_user
 
         monkeypatch.setenv("AIH_ADMIN_DISCORD_IDS", "admin-123")
         with app.test_request_context("/"):
@@ -370,8 +365,8 @@ class TestAdminFailClosed:
 
     def test_sync_session_user_normal_user_stays_user(self, app, monkeypatch):
         """Un utilisateur non listé reste non-admin au login."""
-        from security.auth import _sync_session_user
         from db import get_db
+        from security.auth import _sync_session_user
 
         monkeypatch.setenv("AIH_ADMIN_DISCORD_IDS", "admin-123")
         with app.test_request_context("/"):

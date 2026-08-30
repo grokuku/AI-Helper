@@ -9,8 +9,8 @@ CRUD complet pour les mots-clés avec système de modération :
 """
 
 import logging
-from context import *
 
+from context import *
 
 # ── CRUD mots-clés ───────────────────────────────────────────────
 
@@ -143,13 +143,13 @@ def list_or_create_keywords():
     # ── Branche sémantique : recherche par embedding ──
     if semantic_text:
         try:
-            from embeddings import generate_embedding, cosine_similarity
+            from embeddings import cosine_similarity, generate_embedding
             qe = generate_embedding(semantic_text)
             if qe:
                 # Pré-filtrer par les mêmes conditions SQL (privacy, section, nsfw, etc.)
                 # mais on ne peut pas appliquer q/q_neg en SQL car on veut les appliquer
                 # sur les résultats sémantiques (post-filter, comme dans _rebuild_filter_cache)
-                sem_conds = [c for c in conditions]
+                sem_conds = list(conditions)
                 sem_params = params[:]
                 # Retirer les conditions q / q_neg (elles seront appliquées post-filter)
                 # Note: q et q_neg sont déjà dans conditions/params, on les garde car
@@ -519,7 +519,7 @@ def bulk_import_keywords():
     # Format attendu : une ligne par mot-clé
     # Format simple : "keyword | description"
     # Format complet : "keyword | description | section | subsection | nsfw(0/1)"
-    lines = [l.strip() for l in raw.split('\n') if l.strip()]
+    lines = [line.strip() for line in raw.split('\n') if line.strip()]
 
     conn = get_db()
     cur = conn.cursor()
@@ -699,7 +699,7 @@ def check_keyword_duplicates():
     # Phase 2: slow operations — NO DB connection held
     semantic_matches = []
     try:
-        from embeddings import generate_embedding, cosine_similarity
+        from embeddings import cosine_similarity, generate_embedding
         vec = generate_embedding(keyword)
         if vec:
             for r in all_rows:
@@ -779,7 +779,7 @@ def scan_keyword_duplicates():
     # Phase 2: O(n²) computation — NO DB connection held
     semantic_groups = []
     try:
-        from embeddings import generate_embedding, cosine_similarity
+        from embeddings import cosine_similarity
         # Construire des groupes par similarite
         visited = set()
         threshold = 0.85
