@@ -529,7 +529,19 @@
         if (!ok) return;
         try {
           var res = await fetch(API + '/admin/users/' + encodeURIComponent(userId), {method: 'DELETE'});
-          if (res.ok) loadAdminUsers();
+          if (res.ok) {
+            showModal('Suppression', 'Utilisateur supprime.', 'success');
+            loadAdminUsers();
+            return;
+          }
+          // Echec cote serveur : afficher l'erreur de facon visible (403 non-admin,
+          // 401 non connecte, 400 auto-suppression bloquee, 500, ...)
+          var errMsg = 'Suppression impossible (' + res.status + ')';
+          try {
+            var data = await res.json();
+            if (data && data.error) errMsg = data.error;
+          } catch (err) {}
+          showModal('Erreur', errMsg, 'error');
         } catch (err) {
           showModal('Erreur', err.message || 'Une erreur est survenue', 'error');
         }
