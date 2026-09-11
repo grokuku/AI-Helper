@@ -288,7 +288,7 @@
           });
           promptsHtml += '</div>';
         } else {
-          promptsHtml += '<p class="text-xs text-slate-400 italic">Aucun prompt genere</p>';
+          promptsHtml += '<p class="text-xs text-slate-400 italic">Aucun prompt généré</p>';
         }
         body.innerHTML = '<div class="space-y-3">'
           + '<div class="text-center">' + avatarHtml + '</div>'
@@ -326,7 +326,7 @@
         if (data.token) {
           input.value = data.token;
         } else if (data && data.exists) {
-          input.value = 'Clé masquée — clique sur « Regénérer » pour en afficher une nouvelle.';
+          input.value = 'Clé masquée — clique sur « Régénérer » pour en afficher une nouvelle.';
         } else {
           input.value = 'Erreur : pas de token';
         }
@@ -337,10 +337,10 @@
 
     async function regenerateApiKey() {
       if (LOCAL_MODE) { showModal('API Key', 'Indisponible en mode local', 'error'); return; }
-      if (!confirm('Regénérer la clé API ? L\'ancienne clé ne fonctionnera plus.')) return;
+      if (!confirm('Régénérer la clé API ? L\'ancienne clé ne fonctionnera plus.')) return;
       var statusEl = document.getElementById('settings-key-status');
       statusEl.className = 'text-xs mt-2 text-amber-500';
-      statusEl.textContent = 'Regénération...';
+      statusEl.textContent = 'Régénération...';
       statusEl.classList.remove('hidden');
       try {
         var res = await fetch(API + '/auth/token', { method: 'POST' });
@@ -396,7 +396,7 @@
             + '</div>';
         }).join('');
       } catch (err) {
-        container.innerHTML = '<p class="text-sm text-rose-500">Erreur reseau</p>';
+        container.innerHTML = '<p class="text-sm text-rose-500">Erreur réseau</p>';
       }
     }
 
@@ -444,7 +444,7 @@
             + '</div>';
         }).join('');
       } catch (err) {
-        container.innerHTML = '<p class="text-sm text-rose-500">Erreur reseau : ' + (err.message || 'impossible') + '</p>';
+        container.innerHTML = '<p class="text-sm text-rose-500">Erreur réseau : ' + (err.message || 'impossible') + '</p>';
       }
     }
 
@@ -525,17 +525,17 @@
     }
 
     async function deleteUser(userId) {
-      showConfirm('Suppression', 'Supprimer cet utilisateur et tous ses mots-cles ?', async function(ok) {
+      showConfirm('Suppression', 'Supprimer cet utilisateur et tous ses mots-clés ?', async function(ok) {
         if (!ok) return;
         try {
           var res = await fetch(API + '/admin/users/' + encodeURIComponent(userId), {method: 'DELETE'});
           if (res.ok) {
-            showModal('Suppression', 'Utilisateur supprime.', 'success');
+            showModal('Suppression', 'Utilisateur supprimé.', 'success');
             loadAdminUsers();
             return;
           }
-          // Echec cote serveur : afficher l'erreur de facon visible (403 non-admin,
-          // 401 non connecte, 400 auto-suppression bloquee, 500, ...)
+          // Échec côté serveur : afficher l'erreur de façon visible (403 non-admin,
+          // 401 non connecté, 400 auto-suppression bloquée, 500, ...)
           var errMsg = 'Suppression impossible (' + res.status + ')';
           try {
             var data = await res.json();
@@ -589,7 +589,7 @@
     }
 
     async function adminClearDb() {
-      showConfirm('Vider la BDD', 'Vider la base de donnees ? Cette action est irreversible.', async function(ok) {
+      showConfirm('Vider la BDD', 'Vider la base de données ? Cette action est irreversible.', async function(ok) {
         if (!ok) return;
         try {
           var res = await fetch(API + '/admin/db/clear', {method: 'POST'});
