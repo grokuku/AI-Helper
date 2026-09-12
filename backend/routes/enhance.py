@@ -1653,32 +1653,41 @@ def _prepare_enhance(user_id, data):
         conn.close()
 
 
-def _normalize_tool_calls(message):
+def _relay_tool_calls(message):
     """
-    Normalise message.tool_calls (format provider OpenAI) en [{id, name, arguments}].
+    Relaie message.tool_calls au client dans la forme EXACTE attendue par l'API
+    OpenAI-compatible (OpenAI, DeepSeek, ...) :
+        [{id, type: 'function', function: {name, arguments}}, ...]
 
-    - id        : id provider (ex. 'call_abc123'), '' si absent ;
-    - name      : nom de la fonction (tc['function']['name']) ;
-    - arguments : STRING brute du provider (JSON a parser cote client), '' si absent/non-str.
+    Pourquoi VERBATIM et pas une forme normalisee {id, name, arguments} :
+    le client (pack JS) reinjecte ce message assistant tel quel dans le tour
+    suivant via `messages`. L'API exige le champ `type` et le wrapper
+    `function` ; une forme normalisee est rejetee (DeepSeek renvoie 400
+    "messages[i]: missing field type"). En relayant la structure du provider,
+    l'echo reste conforme quel que soit le fournisseur.
 
-    Retourne None si le message ne contient aucun tool_call (reponse texte pure) —
-    permet un test `if tool_calls:` sans ambiguite.
+    - copie defensive : le body provider n'est jamais mute ;
+    - `type` absent -> 'function' (seul type supporte par l'API) ;
+    - `function` absent/!dict -> entree inexploitable, ignoree.
+
+    Retourne None si le message ne contient aucun tool_call exploitable
+    (reponse texte pure) — permet un test `if tool_calls:` sans ambiguite.
     """
     raw = message.get('tool_calls') if isinstance(message, dict) else None
     if not raw or not isinstance(raw, list):
         return None
-    normalized = []
+    relayed = []
     for tc in raw:
         if not isinstance(tc, dict):
             continue
-        fn = tc.get('function') or {}
-        args = fn.get('arguments')
-        normalized.append({
-            'id': tc.get('id') or '',
-            'name': fn.get('name') or '',
-            'arguments': args if isinstance(args, str) else '',
-        })
-    return normalized
+        fn = tc.get('function')
+        if not isinstance(fn, dict):
+            continue
+        entry = dict(tc)              # copie defensive (id, index, ... preserves)
+        entry['type'] = tc.get('type') or 'function'
+        entry['function'] = dict(fn)  # copie defensive du wrapper function
+        relayed.append(entry)
+    return relayed or None
 
 
 def _call_llm_internal(llm_request, llm_config):
@@ -1690,9 +1699,10 @@ def _call_llm_internal(llm_request, llm_config):
     Tool-calling : si le modele repond par des appels d'outils (message.tool_calls,
     content souvent null), le tour est transmis IMMEDIATEMENT (pas de retry — un
     tour d'outil n'est pas une reponse vide ratee) et le dict retourne porte en plus
-    une cle normalisee 'tool_calls' = [{id, name, arguments}] qui permet de
-    distinguer reponse texte vs reponse tool_calls. Les reponses texte sont
-    retournees a l'identique (aucune cle ajoutee).
+    une cle 'tool_calls' = [{id, type, function:{name, arguments}}] (forme provider
+    VERBATIM, reinjectable telle quelle par le client) qui permet de distinguer
+    reponse texte vs reponse tool_calls. Les reponses texte sont retournees a
+    l'identique (aucune cle ajoutee).
     """
     import logging
     import time
@@ -1753,7 +1763,7 @@ def _call_llm_internal(llm_request, llm_config):
     # vide ratee — transmission immediate au caller (relais client), sans retry.
     if message.get('tool_calls'):
         logging.warning(f"[enhance] LLM tool_calls recus ({len(message['tool_calls'])}) — relais immediat, pas de retry")
-        result['tool_calls'] = _normalize_tool_calls(message)
+        result['tool_calls'] = _relay_tool_calls(message)
         return result
     # Retry si l'output est vide OU manifestement tronque (Ollama Cloud est instable)
     for retry in range(3):
@@ -1771,7 +1781,7 @@ def _call_llm_internal(llm_request, llm_config):
             if message.get('tool_calls'):
                 # Un retry qui aboutit a un tour d'outil n'est pas re-tente non plus.
                 logging.warning("[enhance] LLM tool_calls recus apres retry — relais immediat")
-                result['tool_calls'] = _normalize_tool_calls(message)
+                result['tool_calls'] = _relay_tool_calls(message)
                 return result
             output = (message.get('content') or '').strip()
         except requests.RequestException as e:
@@ -2041,8 +2051,10 @@ def keywords_llm_process():
       Si la liste ne commence pas par un message 'system', le systeme par defaut
       est prefixe pour preserver le contexte d'identite. Liste vide => non fournie.
     Retourne : {output, usage, max_context, context_source[, tool_calls]}
-      - tool_calls : [{id, name, arguments}] quand le modele repond par des appels
-        d'outils (output est alors null pour un tour d'outil pur).
+      - tool_calls : [{id, type, function:{name, arguments}}] (forme provider
+        VERBATIM) quand le modele repond par des appels d'outils (output est alors
+        null pour un tour d'outil pur). Le client reinjecte ce champ tel quel
+        dans le message assistant du tour suivant.
     """
     guard = _login_required()
     if guard:
@@ -2137,7 +2149,7 @@ def keywords_llm_process():
     # un pur tool_call (OpenAI-compatible) — pas de crash None.strip().
     message = llm_response['choices'][0]['message']
     output = (message.get('content') or '').strip()
-    tool_calls = _normalize_tool_calls(message)
+    tool_calls = _relay_tool_calls(message)
     usage = llm_response.get('usage', {})
 
     # Fenêtre de contexte effective — précédence validée :
