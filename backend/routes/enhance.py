@@ -1384,6 +1384,66 @@ def _get_model_context(base_url, api_key, model, cache_ttl=3600):
     return ctx
 
 
+# ── Fenêtre de contexte par famille de modèle ────────────────────────
+# Minimum CONSERVATEUR documenté par famille. Matching par sous-chaîne,
+# premier match gagnant → les clés les plus spécifiques d'abord
+# ('gpt-4o' AVANT 'gpt-4', sinon 'gpt-4o' tomberait dans la clé 'gpt-4').
+#
+# NOTE : cette table module-level remplace la table inline périmée de
+# keywords_llm_process ('deepseek': 4096, 'gpt-4': 8192, 'claude': 100000, …)
+# qui affichait une fenêtre fausse (ex. DeepSeek affiché 4096 au lieu de 64K).
+# Elle est partagée avec POST /api/presets/<id>/detect-context (routes/presets.py).
+#
+# Sources : doc officielle de chaque fournisseur (plateforme OpenAI « models »,
+# api-docs.deepseek.com, docs.anthropic.com, model cards Meta/Alibaba/Mistral/
+# Google/Cohere). Une valeur non vérifiable est gardée au plus bas et signalée
+# en commentaire ; les exceptions les plus basses connues sont listées.
+_MODEL_FAMILY_CONTEXT = {
+    # OpenAI — platform.openai.com/docs/models (context window) :
+    'gpt-4.1': 1047576,     # gpt-4.1 / mini / nano : 1 047 576 (doc OpenAI)
+    'gpt-4o': 128000,       # gpt-4o, gpt-4o-mini : 128 000 (doc OpenAI)
+    'gpt-4-turbo': 128000,  # gpt-4-turbo / -preview : 128 000 (doc OpenAI)
+    'gpt-4': 8192,          # gpt-4 (legacy 0613) : 8 192 (doc OpenAI)
+    'gpt-3.5': 16384,       # gpt-3.5-turbo : 16 385 → arrondi conservateur 16 384
+                            #   (variante legacy 0301/instruct = 4 096, plus basse)
+    # DeepSeek — api-docs.deepseek.com (models) :
+    'deepseek': 65536,      # deepseek-chat / reasoner (V3, R1) : 64K = 65 536
+    # Anthropic — docs.anthropic.com (models overview) :
+    'claude': 200000,       # Claude 3 / 3.5 / 4 : 200K (Claude 2.0/Instant = 100K, plus bas)
+    # Alibaba — model cards Qwen2.5 / Qwen3 (context length) :
+    'qwen': 131072,         # Qwen2.5/Qwen3 mainstream (≥7B) : 128K = 131 072
+                            #   (variantes ≤3B et qwen-max DashScope = 32K, plus basses)
+    # Meta — model cards Llama :
+    'llama': 8192,          # Llama 3 : 8 192 (Llama 2 = 4 096, plus bas ;
+                            #   Llama 3.1+ = 131 072 → sous-estimation, sens sûr)
+    # Mistral AI — docs.mistral.ai (models) :
+    'mistral': 32768,       # mistral-small/medium : 32K (Mistral-7B v0.1 = 8 192, plus bas)
+    'mixtral': 32768,       # Mixtral-8x7B : 32 768 (model card Mistral)
+    # Google — ai.google.dev/gemma (model cards) :
+    'gemma': 8192,          # Gemma 1/2 : 8 192 (Gemma 3 = 131 072 → sous-estimation, sens sûr)
+    # Cohere — docs.cohere.com :
+    'command': 4096,        # Command (legacy) : 4 096 (command-r = 131 072 → sens sûr)
+}
+
+
+def guess_family_context(model):
+    """Fenêtre de contexte conservatrice par famille de modèle.
+
+    Args:
+        model: nom du modèle (ex. 'deepseek-chat', 'gpt-4o-2024-11-20').
+
+    Returns:
+        tuple: (context_length:int|None, family_key:str|None).
+        (None, None) si aucune famille connue → l'appelant doit rester
+        explicite ('unknown') : JAMAIS de valeur inventée.
+    """
+    name = (model or '').lower()
+    for key, value in _MODEL_FAMILY_CONTEXT.items():
+        if key in name:
+            return value, key
+    return None, None
+
+
 def _prepare_enhance(user_id, data):
     """
     Construit le payload LLM a partir des params de la requete.
@@ -1968,39 +2028,29 @@ def keywords_llm_process():
     output = llm_response['choices'][0]['message']['content'].strip()
     usage = llm_response.get('usage', {})
 
-    # Essayer de recuperer la taille max de contexte
-    max_context = None
-    try:
-        import requests as _req2
-        r2_headers = {}
-        if api_key:
-            r2_headers['Authorization'] = f'Bearer {api_key}'
-        r2 = _req2.get(f'{base_url}/models', headers=r2_headers, timeout=30)
-        if r2.ok:
-            models_data = r2.json()
-            all_models = models_data.get('data') or models_data.get('models') or []
-            for m in all_models:
-                mid = m.get('id') or m.get('name') or ''
-                if mid == model or model in mid:
-                    max_context = m.get('max_context_length') or m.get('context_length') or \
-                                  m.get('max_model_len') or m.get('context_window')
-                    break
-    except Exception:
-        logging.exception("enhance: max_context lookup failed")
-    # Fallback : valeurs connues
-    if not max_context:
-        known = {
-            'gpt-4': 8192, 'gpt-4-turbo': 128000, 'gpt-3.5': 4096,
-            'claude': 100000, 'gemma': 8192, 'llama': 4096,
-            'mistral': 8192, 'mixtral': 32768, 'qwen': 32768,
-            'deepseek': 4096, 'command': 4096,
-        }
-        for k, v in known.items():
-            if k in model.lower():
-                max_context = v
-                break
+    # Fenêtre de contexte effective — précédence validée :
+    #   1. manual : context_length posé sur le preset (jamais réinterrogé) ;
+    #   2. auto   : sonde API mise en cache (_get_model_context, TTL 3600) ;
+    #   3. family : table de familles (minimum conservateur documenté) ;
+    #   4. unknown: inconnu EXPLICITE (None) — le repli forcé `4096` de
+    #      l'ancien code est supprimé, plus jamais de valeur inventée.
+    manual_ctx = _row_get(preset, 'context_length', None)
+    if manual_ctx is not None:
+        max_context = int(manual_ctx)
+        context_source = _row_get(preset, 'context_source', None) or 'manual'
+    else:
+        probed = _get_model_context(base_url, api_key, model)
+        if probed and probed > 0:
+            max_context = int(probed)
+            context_source = 'auto'
+        else:
+            family_value, family_key = guess_family_context(model)
+            if family_value:
+                max_context = int(family_value)
+                context_source = 'family'
+            else:
+                max_context = None
+                context_source = 'unknown'
 
-    if not max_context:
-        max_context = 4096
-
-    return jsonify({'output': output, 'usage': usage, 'max_context': max_context})
+    return jsonify({'output': output, 'usage': usage,
+                    'max_context': max_context, 'context_source': context_source})

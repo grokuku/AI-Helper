@@ -649,6 +649,12 @@
                 <button onclick="fetchModelsForForm()" class="text-xs text-indigo-500 hover:text-indigo-700 px-2 py-1 border border-indigo-200 rounded-md">Lister</button>
               </div>
               <datalist id="preset-models-datalist"></datalist>
+              <div class="flex items-center gap-2">
+                <input type="number" id="preset-form-context" min="1" step="1" inputmode="numeric" placeholder="Contexte (tokens, vide = auto)" oninput="onPresetContextInput()" class="flex-1 px-3 py-1.5 text-sm border border-slate-300 rounded-md dark:bg-slate-700 dark:border-slate-600 dark:text-slate-200">
+                <button type="button" id="preset-context-detect-btn" onclick="detectPresetContext()" class="text-xs text-indigo-500 hover:text-indigo-700 px-2 py-1 border border-indigo-200 rounded-md whitespace-nowrap">Détecter</button>
+                <span id="preset-context-badge" class="hidden text-[10px] font-medium px-1.5 py-0.5 rounded whitespace-nowrap"></span>
+              </div>
+              <p id="preset-context-hint" class="hidden text-xs text-slate-500 dark:text-slate-400"></p>
               <label class="inline-flex items-center gap-1 text-xs text-slate-500 dark:text-slate-400" id="preset-global-label" style="display:none;">
                 <input type="checkbox" id="preset-form-global" class="rounded"> Global (visible par tous)
               </label>

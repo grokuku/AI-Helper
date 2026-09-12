@@ -259,9 +259,134 @@
       document.getElementById('preset-form-url').value = '';
       document.getElementById('preset-form-key').value = '';
       document.getElementById('preset-form-model').value = '';
+      document.getElementById('preset-form-context').value = '';
       document.getElementById('preset-form-key').placeholder = 'API Key (optionnel)';
       document.getElementById('preset-form-global').checked = false;
       document.getElementById('preset-models-datalist').innerHTML = '';
+      renderPresetContextBadge(null);
+      showPresetContextHint('', null);
+    }
+
+    // -- Fenetre de contexte (tokens) : badge de source + detection --
+    // Sources renvoyees par le backend : manual | auto | family | unknown | null
+    var CONTEXT_SOURCE_META = {
+      manual: { label: 'manuel', title: 'Valeur saisie manuellement', cls: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300' },
+      auto: { label: 'détecté', title: 'Détecté automatiquement auprès du provider', cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300' },
+      family: { label: '≈ estimation', title: 'Estimation par famille de modèle, non vérifiée chez le provider', cls: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300' },
+      unknown: { label: '? inconnu', title: 'Aucune valeur fiable disponible', cls: 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400' }
+    };
+
+    function contextBadgeMeta(source) {
+      return (source && CONTEXT_SOURCE_META[source]) ? CONTEXT_SOURCE_META[source] : null;
+    }
+
+    function renderPresetContextBadge(source) {
+      var badge = document.getElementById('preset-context-badge');
+      if (!badge) return;
+      var meta = contextBadgeMeta(source);
+      if (!meta) {
+        badge.textContent = '';
+        badge.removeAttribute('title');
+        badge.className = 'hidden text-[10px] font-medium px-1.5 py-0.5 rounded whitespace-nowrap';
+        return;
+      }
+      badge.textContent = meta.label;
+      badge.title = meta.title;
+      badge.className = 'text-[10px] font-medium px-1.5 py-0.5 rounded whitespace-nowrap ' + meta.cls;
+    }
+
+    function onPresetContextInput() {
+      var raw = document.getElementById('preset-form-context').value.trim();
+      // Le badge suit la valeur saisie : non vide = manuel, vide = detection auto.
+      renderPresetContextBadge(raw !== '' ? 'manual' : null);
+    }
+
+    function showPresetContextHint(text, cls) {
+      var el = document.getElementById('preset-context-hint');
+      if (!el) return;
+      if (!text) {
+        el.textContent = '';
+        el.className = 'hidden text-xs';
+        return;
+      }
+      el.textContent = text;   // valeur serveur : jamais interpolee en HTML
+      el.className = 'text-xs ' + (cls || 'text-slate-500 dark:text-slate-400');
+    }
+
+    function showPresetContextProposal(length, source) {
+      var el = document.getElementById('preset-context-hint');
+      if (!el) return;
+      el.textContent = '';
+      el.className = 'text-xs text-slate-500 dark:text-slate-400';
+      var span = document.createElement('span');
+      span.textContent = (source === 'family')
+        ? 'Estimation (famille de modèle) : ' + length + ' tokens — non vérifiée chez le provider. '
+        : 'Contexte détecté : ' + length + ' tokens. ';
+      el.appendChild(span);
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'text-indigo-500 hover:text-indigo-700 underline';
+      btn.textContent = 'Appliquer';
+      btn.onclick = function() { applyDetectedContext(length); };
+      el.appendChild(btn);
+      el.classList.remove('hidden');
+    }
+
+    function applyDetectedContext(length) {
+      document.getElementById('preset-form-context').value = String(length);
+      renderPresetContextBadge('manual');
+      showPresetContextHint('Valeur appliquée en manuel — pense à sauvegarder le preset.', 'text-emerald-600 dark:text-emerald-400');
+    }
+
+    function presetContextStatusMessage(status, detail) {
+      var msg;
+      switch (status) {
+        case 'unauthorized': msg = 'Authentification refusée par le provider (clé API invalide ou manquante).'; break;
+        case 'unreachable': msg = 'Provider injoignable (URL erronée, serveur arrêté ou réseau indisponible).'; break;
+        case 'not_found': msg = 'Le provider ne fournit pas d\'information de contexte pour ce modèle.'; break;
+        case 'blocked': msg = 'Requête bloquée par la protection SSRF (URL locale ou non autorisée).'; break;
+        default: msg = 'Détection du contexte impossible.'; break;
+      }
+      if (detail) msg += ' Détail : ' + detail;
+      return msg;
+    }
+
+    async function detectPresetContext() {
+      if (LOCAL_MODE) { showModal('Contexte', 'Indisponible en mode local', 'error'); return; }
+      var editId = document.getElementById('preset-form-name').dataset.editId;
+      if (!editId) {
+        showPresetContextHint('Enregistre d\'abord le preset pour détecter son contexte (la détection s\'appuie sur les identifiants stockés).', 'text-amber-600 dark:text-amber-400');
+        return;
+      }
+      var btn = document.getElementById('preset-context-detect-btn');
+      var prevText = btn ? btn.textContent : '';
+      if (btn) { btn.disabled = true; btn.classList.add('opacity-50', 'cursor-not-allowed'); btn.textContent = 'Détection…'; }
+      showPresetContextHint('Détection du contexte en cours…', 'text-slate-500 dark:text-slate-400');
+      try {
+        // Contrat backend : POST /presets/<id>/detect-context (config du preset stocké).
+        var res = await fetch(API + '/presets/' + editId + '/detect-context', { method: 'POST' });
+        var data = await safeJson(res);
+        if (!res.ok) {
+          renderPresetContextBadge('unknown');
+          showPresetContextHint((data && (data.detail || data.error)) || ('Erreur serveur ' + res.status), 'text-rose-500 dark:text-rose-400');
+          return;
+        }
+        var length = data && data.detected_length;
+        var source = data && data.source;
+        if (length > 0) {
+          renderPresetContextBadge(source || 'unknown');
+          showPresetContextProposal(length, source);
+        } else {
+          renderPresetContextBadge('unknown');
+          showPresetContextHint(presetContextStatusMessage(data && data.status, data && data.detail), 'text-rose-500 dark:text-rose-400');
+        }
+        loadPresets();
+      } catch (e) {
+        renderPresetContextBadge('unknown');
+        showPresetContextHint('Impossible de contacter le serveur : ' + ((e && e.message) || 'erreur réseau'), 'text-rose-500 dark:text-rose-400');
+      } finally {
+        if (btn) { btn.disabled = false; btn.classList.remove('opacity-50', 'cursor-not-allowed'); btn.textContent = prevText; }
+      }
     }
 
     async function loadPresets() {
@@ -291,6 +416,15 @@
       } catch (e) {}
     }
 
+    function presetContextInlineHtml(p) {
+      var parts = [];
+      var hasValue = p.context_length !== null && p.context_length !== undefined && p.context_length !== '';
+      if (hasValue) parts.push('<span class="text-slate-600 dark:text-slate-300 font-medium">' + escapeHtml(String(p.context_length)) + ' tok</span>');
+      var meta = contextBadgeMeta(p.context_source);
+      if (meta) parts.push('<span title="' + escapeHtml(meta.title) + '" class="text-[10px] font-medium px-1 py-0.5 rounded ' + meta.cls + '">' + escapeHtml(meta.label) + '</span>');
+      return parts.join(' ');
+    }
+
     function renderPresetsList(presets) {
       var el = document.getElementById('presets-list');
       if (!presets.length) { el.innerHTML = '<p class="text-xs text-slate-400">Aucun preset. Creez-en un !</p>'; return; }
@@ -302,7 +436,10 @@
         if (p.is_global) html += ' <span class="text-indigo-500">🌐 global</span>';
         if (p.is_client_side) html += ' <span class="text-amber-500">🖥️ client</span>';
         if (p.owner_name && !p.is_global) html += ' <span class="text-slate-400">(' + escapeHtml(p.owner_name) + ')</span>';
-        html += '<br><span class="text-slate-400">' + escapeHtml(p.model) + ' @ ' + escapeHtml(p.base_url) + '</span></div>';
+        html += '<br><span class="text-slate-400">' + escapeHtml(p.model) + ' @ ' + escapeHtml(p.base_url) + '</span>';
+        var ctx = presetContextInlineHtml(p);
+        if (ctx) html += '<br><span class="text-slate-400">Contexte : ' + ctx + '</span>';
+        html += '</div>';
         html += '<div class="flex gap-1">';
         if (canEdit) {
           html += '<button onclick="editPreset(' + p.id + ')" class="text-xs text-indigo-500 hover:text-indigo-700">Edit</button>';
@@ -326,6 +463,10 @@
         document.getElementById('preset-form-key').value = '';
         document.getElementById('preset-form-key').placeholder = '••••••• (inchangé)';
         document.getElementById('preset-form-global').checked = p.is_global;
+        var ctxEl = document.getElementById('preset-form-context');
+        ctxEl.value = (p.context_length !== null && p.context_length !== undefined) ? String(p.context_length) : '';
+        renderPresetContextBadge(p.context_source || null);
+        showPresetContextHint('', null);
         // Stocker l'ID pour un update
         document.getElementById('preset-form-name').dataset.editId = id;
       }).catch(function(){});
@@ -341,11 +482,22 @@
       var isClient = document.getElementById('preset-form-client').checked ? 1 : 0;
       var editId = document.getElementById('preset-form-name').dataset.editId;
 
+      var ctxRaw = document.getElementById('preset-form-context').value.trim();
+      var contextLength = null;
+      if (ctxRaw !== '') {
+        var parsedCtx = Number(ctxRaw);
+        if (!isFinite(parsedCtx) || parsedCtx <= 0 || Math.floor(parsedCtx) !== parsedCtx) {
+          showModal('Preset', 'Contexte (tokens) : saisis un entier positif, ou laisse vide pour la détection automatique.', 'error');
+          return;
+        }
+        contextLength = parsedCtx;
+      }
+
       if (!name) { showModal('Preset', 'Nom requis', 'error'); return; }
       if (!url) { showModal('Preset', 'URL requise', 'error'); return; }
 
       try {
-        var body = { name: name, base_url: url, api_key: key, model: model, is_global: isGlobal, is_client_side: isClient };
+        var body = { name: name, base_url: url, api_key: key, model: model, is_global: isGlobal, is_client_side: isClient, context_length: contextLength };
         var method = 'POST';
         var endpoint = '/presets';
         if (editId) {

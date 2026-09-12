@@ -240,7 +240,16 @@ def _migrate_users(conn):
 def _migrate_presets(conn):
     """Migrations pour la table ai_presets.
 
-    Ajoute la colonne ``is_client_side`` si absente.
+    - ``is_client_side`` (comportement historique).
+    - Colonnes de fenêtre de contexte LLM :
+        * ``context_length``     INTEGER NULL — fenêtre effective du modèle.
+          NULL = non renseignée ⇒ détection auto à l'exécution (sonde cachée).
+        * ``context_source``     TEXT NULL ∈ ('manual','auto','family','unknown').
+        * ``context_checked_at`` TEXT NULL — horodatage ISO 8601 UTC de la
+          dernière détection/réglage.
+
+    Idempotent (ALTER TABLE uniquement si la colonne manque). Backfill : aucun
+    UPDATE nécessaire — NULL est la valeur initiale voulue (= détection auto).
 
     Args:
         conn (sqlite3.Connection): La connexion SQLite active.
@@ -248,6 +257,15 @@ def _migrate_presets(conn):
     cols_presets = [r[1] for r in conn.execute("PRAGMA table_info(ai_presets)").fetchall()]
     if "is_client_side" not in cols_presets:
         conn.execute("ALTER TABLE ai_presets ADD COLUMN is_client_side INTEGER DEFAULT 0")
+    # ALTER TABLE ... ADD COLUMN sans DEFAULT remplit les lignes existantes à
+    # NULL (= détection auto), ce qui est le backfill voulu.
+    for col, decl in (
+        ("context_length", "INTEGER"),
+        ("context_source", "TEXT"),
+        ("context_checked_at", "TEXT"),
+    ):
+        if col not in cols_presets:
+            conn.execute(f"ALTER TABLE ai_presets ADD COLUMN {col} {decl}")
 
 
 def _migrate_styles(conn):

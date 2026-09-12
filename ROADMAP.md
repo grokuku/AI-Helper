@@ -655,7 +655,11 @@ User: "tu te souviens de mon projet de workflow flux?"
 
 ### ✅ API — Améliorations
 - **`/api/keywords/llm-process`** : nouvel endpoint simple pour les appels LLM (bulk import / chat).
-- **Retourne `max_context`** : détecté via API `/models` du provider, fallback par nom de modèle, défaut 4096.
+- **`max_context`** : précédence `manuel > détecté (auto) > estimation par famille > inconnu explicite` — plus JAMAIS de `4096` inventé (`null` = inconnu). Renvoie aussi `context_source`.
+- **3 colonnes sur `ai_presets`** : `context_length` / `context_source` / `context_checked_at` (migration + backfill : `NULL` = détection auto à l'exécution).
+- **`POST /api/presets/<id>/detect-context`** : sonde `/models` (OpenAI-compat) → `/api/show` (Ollama) → `/props` (llama.cpp) → table de familles ; persiste le résultat sans jamais écraser une valeur manuelle ; mêmes gardes SSRF/autorisation que `list-models`.
+- **Champ « Contexte (tokens) » + bouton « Détecter »** sur les 2 surfaces (site web + pack ComfyUI) ; un PUT qui renvoie la valeur inchangée conserve la source (pas de promotion silencieuse en `manual`).
+- **Barre Blobby honnête** : `~N tokens | 64 000 max`, préfixe `≈` pour une estimation famille, `?` si inconnu (aucun chiffre inventé).
 - **`/api/settings`** : les données Blobby sont mergées avec les settings existants pour ne pas les écraser.
 
 ### ✅ Normalisation des données : `prompt_type` → `template_id` (migration radicale)
