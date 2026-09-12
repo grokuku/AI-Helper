@@ -75,8 +75,5 @@ jobs:
       - name: 📦 Install ESLint
         run: npm install -g eslint
 
-      - name: 🔍 ESLint web/js
-        run: eslint web/js/ --ignore-pattern "xterm.js" --ignore-pattern "xterm-addon-fit.js"
-
       - name: 🔍 ESLint frontend/js
         run: eslint frontend/js/

@@ -18,7 +18,6 @@ from unittest import mock
 
 import pytest
 
-
 # ── Fixtures / helpers ────────────────────────────────────────────────
 
 
@@ -85,9 +84,37 @@ def _create_preset(client, headers, base_url="https://api.example.com",
                    model="deepseek-chat", api_key="sk-VERYSECRET-42", **extra):
     payload = {"name": "CtxTest", "base_url": base_url, "api_key": api_key, "model": model}
     payload.update(extra)
-    r = client.post("/api/presets", json=payload, headers=headers)
+    # La création valide désormais l'URL (anti-SSRF) : on simule une résolution
+    # DNS publique pour les hôtes de test (un hôte privé opt-in court-circuite
+    # la résolution).
+    with mock.patch("socket.getaddrinfo", side_effect=_fake_getaddrinfo):
+        r = client.post("/api/presets", json=payload, headers=headers)
     assert r.status_code == 201, r.get_data(as_text=True)
     return r.get_json()["id"]
+
+
+def _seed_preset(base_url, model="deepseek-chat", user_id="test-user-123", **extra):
+    """Insère un preset directement en BDD (pré-existant, ex. LLM interne).
+
+    Contourne volontairement la validation d'écriture : un preset enregistré
+    AVANT le durcissement doit rester utilisable et éditable (pas d'invalidation
+    rétroactive).
+    """
+    from routes.helpers import get_db
+
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO ai_presets (user_id, name, engine, base_url, api_key_encrypted, "
+        "model, is_global, is_client_side, context_length, context_source, context_checked_at) "
+        "VALUES (?, ?, 'openai', ?, '', ?, 0, 0, ?, ?, ?)",
+        (user_id, 'SeededPreset', base_url, model,
+         extra.get('context_length'), extra.get('context_source'), extra.get('context_checked_at')),
+    )
+    conn.commit()
+    pid = cur.lastrowid
+    conn.close()
+    return pid
 
 
 def _preset_row(pid):
@@ -229,7 +256,7 @@ def test_detect_via_openrouter_style_api(client, auth_headers):
     with mock.patch("socket.getaddrinfo", side_effect=_fake_getaddrinfo), \
          mock.patch("requests.get", return_value=_FakeResp(json_data={
              "data": [{"id": "deepseek-chat", "name": "DeepSeek Chat",
-                       "owned_by": "deepseek", "context_length": 65536}]})) as mget, \
+                       "owned_by": "deepseek", "context_length": 65536}]})), \
          mock.patch("requests.post") as mpost:
         r = client.post(f"/api/presets/{pid}/detect-context", headers=auth_headers)
     assert r.status_code == 200
@@ -412,7 +439,9 @@ def test_detect_never_overwrites_manual(client, auth_headers):
 
 def test_detect_ssrf_blocked_no_probe(client, auth_headers):
     _ensure_user()
-    pid = _create_preset(client, auth_headers, base_url="https://192.168.1.10")
+    # Preset pré-existant (interne) : seedé en BDD car la création refuse
+    # désormais une URL privée sans opt-in (pas d'invalidation rétroactive).
+    pid = _seed_preset(base_url="https://192.168.1.10")
     with mock.patch("requests.get") as mget, mock.patch("requests.post") as mpost:
         r = client.post(f"/api/presets/{pid}/detect-context", headers=auth_headers)
     body = r.get_json()
@@ -693,7 +722,8 @@ def test_llm_process_auto_cached_probe(client, auth_headers):
     _ensure_user()
     pid = _create_preset(client, auth_headers, model="ctx-model-7b")
     probe = _FakeResp(json_data={"data": [{"id": "ctx-model-7b", "context_length": 24576}]})
-    with mock.patch("requests.get", return_value=probe) as mget:
+    with mock.patch("socket.getaddrinfo", side_effect=_fake_getaddrinfo), \
+         mock.patch("requests.get", return_value=probe) as mget:
         body = _run_llm_process(client, auth_headers, pid)
     assert body["max_context"] == 24576
     assert body["context_source"] == "auto"
@@ -748,9 +778,10 @@ def test_llm_process_detect_persisted_family_value_used(client, auth_headers):
 # ── Compléments : sonde cachée Ollama (branche /api/show) ─────────────
 
 
-def test_get_model_context_ollama_branch_cached(app_ctx):
+def test_get_model_context_ollama_branch_cached(app_ctx, monkeypatch):
     from routes import enhance
 
+    monkeypatch.setenv("AIH_ALLOW_PRIVATE_LLM_HOSTS", "127.0.0.1")
     with mock.patch("requests.post", return_value=_FakeResp(json_data={
             "model_info": {"llama.context_length": 131072}})) as mpost:
         ctx = enhance._get_model_context("http://127.0.0.1:11434", "", "llama3.1:8b")
@@ -766,7 +797,8 @@ def test_get_model_context_ollama_branch_cached(app_ctx):
 def test_get_model_context_unknown_returns_zero(app_ctx):
     from routes import enhance
 
-    with mock.patch("requests.get", return_value=_FakeResp(status_code=404)):
+    with mock.patch("socket.getaddrinfo", side_effect=_fake_getaddrinfo), \
+         mock.patch("requests.get", return_value=_FakeResp(status_code=404)):
         ctx = enhance._get_model_context("https://api.example.com", "k", "zzx9q-mystery-99")
     assert ctx == 0
 

@@ -1,153 +1,17 @@
 """Routes presets for AI-Helper backend."""
 
-import ipaddress
 import logging
-import os
-import socket
 from datetime import datetime, timezone
-from urllib.parse import urljoin, urlparse
 
 from context import *
-
-logger = logging.getLogger('ai_helper')
-
-
-# ── Protection anti-SSRF (appels LLM sortants) ───────────────────────
-
-_PRIVATE_NETWORKS = (
-    ipaddress.ip_network('0.0.0.0/8'),
-    ipaddress.ip_network('10.0.0.0/8'),
-    ipaddress.ip_network('100.64.0.0/10'),   # CGNAT
-    ipaddress.ip_network('127.0.0.0/8'),
-    ipaddress.ip_network('169.254.0.0/16'),  # link-local
-    ipaddress.ip_network('172.16.0.0/12'),
-    ipaddress.ip_network('192.168.0.0/16'),
-    ipaddress.ip_network('::/128'),
-    ipaddress.ip_network('::1/128'),
-    ipaddress.ip_network('::ffff:0:0/96'),   # IPv4-mapped IPv6
-    ipaddress.ip_network('fc00::/7'),        # ULA
-    ipaddress.ip_network('fe80::/10'),       # link-local IPv6
+from security.llm_url import (
+    LLM_URL_OPTIN_HINT,
+    _safe_llm_get,
+    _safe_llm_post,
+    _validate_llm_base_url,
 )
 
-
-_MAX_REDIRECTS = 3
-
-
-def _is_private_ip(ip_str):
-    """True si l'adresse est privée/loopback/link-local (ou non parsable)."""
-    try:
-        ip = ipaddress.ip_address(ip_str)
-    except ValueError:
-        return True  # non parsable → refuser par défaut
-    if ip.version == 6 and ip.ipv4_mapped is not None:
-        ip = ip.ipv4_mapped  # ::ffff:127.0.0.1 → vérifier la forme IPv4
-    return any(ip in net for net in _PRIVATE_NETWORKS)
-
-
-def _opt_in_private_hosts():
-    """Hôtes privés explicitement autorisés (LLM locaux type ollama).
-
-    Variable d'environnement ``AIH_ALLOW_PRIVATE_LLM_HOSTS`` : liste de
-    hostnames/IP séparés par des virgules. Toujours vide par défaut.
-    """
-    raw = os.environ.get('AIH_ALLOW_PRIVATE_LLM_HOSTS', '')
-    return {h.strip().lower() for h in raw.split(',') if h.strip()}
-
-
-def _host_allowed(host):
-    """True si l'hôte peut être ciblé par un appel LLM sortant.
-
-    Vérifie : IP littérale non privée, ou hostname dont TOUTES les IP
-    résolues sont publiques (anti DNS-rebinding). Un hôte listé dans
-    ``AIH_ALLOW_PRIVATE_LLM_HOSTS`` est toujours accepté (opt-in admin).
-    """
-    host = host.lower()
-    if host in _opt_in_private_hosts():
-        return True
-    try:
-        ipaddress.ip_address(host)
-    except ValueError:
-        pass
-    else:
-        return not _is_private_ip(host)
-    try:
-        infos = socket.getaddrinfo(host, None)
-    except OSError:
-        return False
-    ips = {info[4][0] for info in infos}
-    return bool(ips) and all(not _is_private_ip(ip) for ip in ips)
-
-
-def _validate_llm_base_url(base_url):
-    """Valide un base_url d'API LLM avant appel sortant (anti-SSRF).
-
-    Retourne un message d'erreur (str) ou ``None`` si l'URL est acceptée.
-    Règles :
-    - https:// uniquement (http:// si hôte privé opt-in ou AIH_ALLOW_HTTP_LLM=1)
-    - pas de credentials embarquées (user:pass@)
-    - port standard (443/80), sauf hôte privé opt-in
-    - hôte : pas d'IP privée/loopback/link-local, ni de DNS rebinding
-      (toutes les IP résolues sont vérifiées)
-    """
-    try:
-        parsed = urlparse(base_url)
-    except ValueError:
-        return "URL invalide"
-    if parsed.scheme not in ('http', 'https'):
-        return "URL non supportée (https requis)"
-    if parsed.username or parsed.password:
-        return "Credentials embarquées interdites"
-    host = (parsed.hostname or '').lower()
-    if not host:
-        return "Hôte manquant"
-    opt_in = host in _opt_in_private_hosts()
-    if parsed.scheme == 'http' and not opt_in and os.environ.get('AIH_ALLOW_HTTP_LLM', '') != '1':
-        return "URL non supportée (https requis)"
-    if not opt_in:
-        default_port = 443 if parsed.scheme == 'https' else 80
-        if parsed.port is not None and parsed.port != default_port:
-            return "Port non autorisé"
-        if not _host_allowed(host):
-            return "Hôte refusé (adresse privée ou introuvable)"
-    return None
-
-
-def _safe_llm_get(url, headers, timeout=(5, 10)):
-    """GET HTTP avec validation anti-SSRF, redirection par redirection.
-
-    Lève ``ValueError`` (message générique, sans détail réseau) si un hôte
-    est refusé ou si le nombre maximal de redirections est dépassé.
-    """
-    import requests
-    current = url
-    for _ in range(_MAX_REDIRECTS + 1):
-        err = _validate_llm_base_url(current)
-        if err:
-            raise ValueError(f"Hôte refusé : {err}")
-        resp = requests.get(current, headers=headers, timeout=timeout, allow_redirects=False)
-        if resp.status_code in (301, 302, 303, 307, 308):
-            loc = resp.headers.get('Location')
-            if not loc:
-                raise ValueError("Redirection sans destination")
-            current = urljoin(current, loc)
-            continue
-        return resp
-    raise ValueError("Trop de redirections")
-
-
-def _safe_llm_post(url, json_payload, headers, timeout=(5, 10)):
-    """POST HTTP avec validation anti-SSRF (pas de suivi de redirection).
-
-    Mêmes règles que ``_safe_llm_get`` pour l'hôte (IP privée interdites sauf
-    opt-in ``AIH_ALLOW_PRIVATE_LLM_HOSTS``, anti DNS-rebinding, https requis).
-    Une redirection sur un POST est traitée comme un échec (conservateur).
-    """
-    import requests
-    err = _validate_llm_base_url(url)
-    if err:
-        raise ValueError(f"Hôte refusé : {err}")
-    return requests.post(url, json=json_payload, headers=headers,
-                         timeout=timeout, allow_redirects=False)
+logger = logging.getLogger('ai_helper')
 
 
 # Champs de fenêtre de contexte exposés par les fournisseurs OpenAI-compat.
@@ -334,6 +198,16 @@ def presets():
         conn.close()
         return jsonify({'error': ctx_err}), 400
 
+    # Validation anti-SSRF de l'URL à l'écriture (même politique que les sondes
+    # list-models / detect-context). Un LLM local/privé reste possible via
+    # l'opt-in AIH_ALLOW_PRIVATE_LLM_HOSTS : l'erreur 400 indique explicitement
+    # comment l'activer (message actionnable, sans reflet de l'URL).
+    url_err = _validate_llm_base_url(base_url)
+    if url_err:
+        conn.close()
+        logger.warning("[presets] Création preset refusée (base_url) : %s", url_err)
+        return jsonify({'error': f"URL de fournisseur refusée : {url_err}. {LLM_URL_OPTIN_HINT}"}), 400
+
     if is_global:
         admin_guard = _admin_required()
         if admin_guard:
@@ -415,6 +289,17 @@ def single_preset(preset_id):
     # PUT
     data = request.get_json() or {}
 
+    # Validation anti-SSRF du nouveau base_url — UNIQUEMENT s'il est modifié :
+    # un preset interne existant doit rester éditable (renommage, contexte) même
+    # sans opt-in. Pas d'invalidation rétroactive des presets déjà enregistrés.
+    new_base_url = data.get('base_url', row['base_url'])
+    if new_base_url != row['base_url']:
+        url_err = _validate_llm_base_url((new_base_url or '').strip())
+        if url_err:
+            conn.close()
+            logger.warning("[presets] Mise à jour preset %s refusée (base_url) : %s", preset_id, url_err)
+            return jsonify({'error': f"URL de fournisseur refusée : {url_err}. {LLM_URL_OPTIN_HINT}"}), 400
+
     # context_length (optionnel) : entier > 0 → réglage manuel ; null / ''
     # explicites → remise en auto ; clé ABSENTE → valeur existante inchangée
     # (les clients existants qui ne renvoient pas ce champ ne perdent rien).
@@ -469,7 +354,7 @@ def single_preset(preset_id):
             WHERE id = ?
         """, (
             data.get('name', row['name']),
-            data.get('base_url', row['base_url']),
+            new_base_url,
             enc,
             data.get('model', row['model']),
             int(data.get('is_client_side', _row_get(row, 'is_client_side', 0))),
@@ -484,7 +369,7 @@ def single_preset(preset_id):
             WHERE id = ?
         """, (
             data.get('name', row['name']),
-            data.get('base_url', row['base_url']),
+            new_base_url,
             enc,
             data.get('model', row['model']),
             int(data.get('is_client_side', _row_get(row, 'is_client_side', 0))),

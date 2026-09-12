@@ -32,7 +32,7 @@
 | # | Cible | Vulnérabilité | Raison |
 |---|-------|---------------|--------|
 | **C2** | `/api/files/init`, `/api/files/<id>/download-info` | Mot de passe SFTP renvoyé aux clients. | Retirer le mot de passe casserait l'upload direct via paramiko (le client ComfyUI en a besoin). À revisiter avec clé SSH ou proxy. |
-| **C3** | `/aih/blobby/exec` + WebSocket `/aih/terminal` (`__init__.py`) | RCE shell sans auth. | Utilisateurs en localhost ou derrière un reverse proxy avec auth. |
+| **C3** | `/aih/blobby/exec` + WebSocket `/aih/terminal` (`__init__.py` du pack ComfyUI-AI-Helper) | RCE shell sans auth. | Utilisateurs en localhost ou derrière un reverse proxy avec auth. |
 | **C4** | `/aih/credentials`, `/aih/openai/keys` | Fuite clés API (routes ComfyUI locales non protégées). | Même raison que C3. |
 
 Justification documentée : risque nul en localhost pur, couvert par le reverse proxy avec auth pour les accès distants.
@@ -54,9 +54,19 @@ Justification documentée : risque nul en localhost pur, couvert par le reverse 
 - **Limite upload** : `MAX_FILE_SIZE` passé de 10 GB à 50 GB (`backend/routes/files.py`).
 - **UX Partager** : spinner de chargement « Analyse des dépendances... » dans l'onglet Partager (`aih_workflow_share.js`).
 
+### ✅ Durcissement SSRF — politique d'URL unifiée (backend)
+
+- **Module partagé `backend/security/llm_url.py`** : la politique anti-SSRF (réseaux privés, anti DNS-rebinding, https/ports, redirections revalidées, opt-ins) est extraite de `routes/presets.py` sans changement de comportement ; `routes/presets.py` **et** `routes/enhance.py` l'importent (aucune duplication de la politique).
+- **`_get_model_context` (détection de fenêtre de contexte, `routes/enhance.py`)** : plus d'appels `requests.get/post` bruts. Les deux branches (Ollama `POST /api/show`, OpenAI-compat `GET /models`) passent par `_validate_llm_base_url` + `_safe_llm_get`/`_safe_llm_post`. Une cible refusée ne déclenche **aucune requête réseau** (retour `0`) ; le log indique l'opt-in à activer.
+- **`POST /api/presets`** : `base_url` validée à l'écriture (même politique + opt-in). URL privée/refusée → **400** avec message actionnable indiquant `AIH_ALLOW_PRIVATE_LLM_HOSTS` (et `AIH_ALLOW_HTTP_LLM` pour `http://`) ; aucune ligne créée.
+- **`PUT /api/presets/<id>`** : `base_url` revalidée **uniquement si elle change** → un simple renommage reste possible et **aucune invalidation rétroactive** d'un preset interne déjà enregistré.
+- **LLM locaux préservés via l'opt-in existant** : `AIH_ALLOW_PRIVATE_LLM_HOSTS=localhost,192.168.x.x` (hôtes privés) et `AIH_ALLOW_HTTP_LLM=1` (http) restent la voie officielle. Les 4 combinaisons (publique/privée × opt-in activé/désactivé) sont couvertes par `backend/tests/test_presets_ssrf.py`.
+
 ---
 
 ## 🚀 Session (29/06/2026) — Renommage FRIA→AIH, Node Keywords & Elements Picker LLM
+
+> 🕓 **Entrée historique** : à cette date le monorepo contenait encore l'extension ComfyUI (ancien dossier `AIH_ComfyUI/`, widgets JS dans `web/js/`). Depuis la séparation comfy/webui, le pack vit dans le dépôt **ComfyUI-AI-Helper** (entrée `__init__.py`, servi par son propre `WEB_DIRECTORY = "js"`) et le dossier `web/` n'existe plus dans AI-Helper. Les chemins cités ci-dessous décrivent l'état de l'époque.
 
 ### ✅ Refactor global : FRIA → AIH
 
@@ -270,6 +280,8 @@ Tous les findings Blobby ont été corrigés lors de la session précédente.
 
 ## 🚀 Session (22/06/2026) — Correction Blobby + Code Review Backend
 
+> 🕓 **Entrée historique** : le monorepo contenait encore l'extension ComfyUI ; les widgets JS alors cités (`web/js/...`) vivent désormais dans le dépôt **ComfyUI-AI-Helper** (dossier `js/`).
+
 ### ✅ Code review backend — 15/20 findings corrigés
 
 | Finding | Severity | Fix | Statut |
@@ -340,6 +352,7 @@ Tous les findings Blobby ont été corrigés lors de la session précédente.
 
 > Analyse exhaustive de tous les fichiers du projet (backend, frontend, ComfyUI).
 > Bugs corrigés marqués ✅, bugs restants marqués ⬜.
+> 🕓 **Analyse historique (20/06/2026)** : le monorepo contenait encore l'extension ComfyUI (ancien dossier `AIH_ComfyUI/`, widgets dans `web/js/`), désormais dans le dépôt **ComfyUI-AI-Helper** (`js/`).
 
 ### 🔴 Bugs critiques (runtime errors)
 
@@ -1212,6 +1225,8 @@ Code review complet, classé par priorité :
 
 ## 🧩 AI-Helper — Extension ComfyUI
 
+> ℹ️ Le pack ComfyUI vit désormais dans le dépôt séparé **ComfyUI-AI-Helper** (et non plus dans AI-Helper, qui se limite au backend Flask + site `frontend/`). Les chemins ci-dessous sont ceux de ce dépôt séparé ; ComfyUI le charge via son `WEB_DIRECTORY = "js"`.
+
 ### Concept
 
 Extension légère qui ajoute un bouton `[AI-Helper]` dans la barre de menu de ComfyUI.
@@ -1257,8 +1272,8 @@ Tous les nœuds sauf Diagnostic et Ideogram Parse utilisent le pattern suivant :
 ### Fichiers de l'extension
 
 ```
-AI-Helper-ComfyUI/
-├── __init__.py
+ComfyUI-AI-Helper/              # dépôt séparé (pack installé dans ComfyUI/custom_nodes/)
+├── __init__.py                 # WEB_DIRECTORY = "js"
 ├── nodes/
 │   ├── __init__.py
 │   ├── _credentials.py          # lecture aih_credentials.json
@@ -1271,17 +1286,16 @@ AI-Helper-ComfyUI/
 │   ├── diagnostic_node.py       # Diagnostic
 │   ├── terminal.py              # PTY serveur pour /aih/terminal
 │   └── update_manager.py        # Mise à jour du repo
-├── web/
-│   └── js/
-│       ├── aih_menu.js
-│       ├── aih_elements_widget.js
-│       ├── aih_enhance_widget.js
-│       ├── aih_prep_widget.js
-│       ├── aih_ideogram4_widget.js
-│       ├── aih_ideogram_prep_widget.js
-│       ├── aih_terminal_widget.js
-│       ├── xterm.js              # bundle UMD
-│       └── xterm-addon-fit.js    # bundle UMD
+├── js/                          # servi par ComfyUI (WEB_DIRECTORY = "js")
+│   ├── aih_menu.js
+│   ├── aih_elements_widget.js
+│   ├── aih_enhance_widget.js
+│   ├── aih_prep_widget.js
+│   ├── aih_ideogram4_widget.js
+│   ├── aih_ideogram_prep_widget.js
+│   ├── aih_terminal_widget.js
+│   ├── xterm.js              # bundle UMD
+│   └── xterm-addon-fit.js    # bundle UMD
 ├── pyproject.toml
 ├── README.md
 └── requirements.txt
@@ -1301,7 +1315,7 @@ AI-Helper-ComfyUI/
 
 ### Notes de packaging
 
-- Le nom du dossier doit être **`AIH_Tools`** (le nom du repo GitHub) pour que Python importe `AIH_ComfyUI` correctement. Le README doit refléter cette consigne (corriger l'avertissement obsolète "AIH_Keywords").
+- Le pack vit dans le dépôt **ComfyUI-AI-Helper** ; le README de ce dépôt doit refléter la consigne de nommage (corriger l'avertissement obsolète "AIH_Keywords").
 
 ### Site web — Onglet "Compte" dans la modale Paramètres
 
@@ -1314,7 +1328,7 @@ AI-Helper-ComfyUI/
 1. Copier `.env` complet (CLIENT_ID, CLIENT_SECRET, REDIRECT_URI, SECRET_KEY fixe, GUILD_ID optionnel)
 2. Vérifier alignement exact `DISCORD_REDIRECT_URI` ↔ Redirects sur Discord Dev Portal
 3. Si reverse-proxy HTTPS : ajouter `ProxyFix` à `extensions.py`
-4. Pull du repo + restart extension ComfyUI → `web/js/*` rechargés
+4. Pull du repo + restart extension ComfyUI → `js/*` (pack ComfyUI-AI-Helper) rechargés
 5. Côté user : menu **AI-Helper → Compte** → mettre la nouvelle `URL du serveur` + clé API + vider cache navigateur
 6. Tester login Discord + génération d'un node Ideogram4
 
@@ -1326,4 +1340,4 @@ AI-Helper-ComfyUI/
 - Convention : un commit = un changement logique.
 - Le serveur de prod est sur `/projects/AIH_Tools` (cloud), pas `AI-Helper-keywords/`.
 - Le frontend web est servi par Flask depuis `frontend/`.
-- Le frontend ComfyUI est servi par ComfyUI depuis `web/js/` (extension `AIH_ComfyUI`).
+- Le frontend ComfyUI est servi par ComfyUI depuis `js/` (dépôt séparé ComfyUI-AI-Helper, `WEB_DIRECTORY = "js"`).

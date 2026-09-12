@@ -5,6 +5,12 @@ import logging
 import re
 
 from context import *
+from security.llm_url import (
+    LLM_URL_OPTIN_HINT,
+    _safe_llm_get,
+    _safe_llm_post,
+    _validate_llm_base_url,
+)
 
 # ── Enhance ─────────────────────────────────────────────────────────
 
@@ -1338,25 +1344,39 @@ _model_context_cache = {}  # key: (base_url, model) -> (context_length, fetched_
 
 def _get_model_context(base_url, api_key, model, cache_ttl=3600):
     """Interroge l'API pour récupérer la fenêtre de contexte du modèle.
-    Retourne un int (tokens) ou 0 si indisponible. Cache par (base_url, model)."""
+    Retourne un int (tokens) ou 0 si indisponible. Cache par (base_url, model).
+
+    Les appels sortants passent par la MÊME politique anti-SSRF que les routes
+    presets (``_validate_llm_base_url`` + ``_safe_llm_get``/``_safe_llm_post``) :
+    hôte privé refusé sans opt-in ``AIH_ALLOW_PRIVATE_LLM_HOSTS``, https requis
+    sauf ``AIH_ALLOW_HTTP_LLM=1``, anti DNS-rebinding, redirections revalidées.
+    Une URL refusée ne déclenche AUCUNE requête réseau (retour 0).
+    """
     import time as _time
 
-    import requests as _req
     key = (base_url, model)
     now = _time.time()
     cached = _model_context_cache.get(key)
     if cached and now - cached[1] < cache_ttl:
         return cached[0]
     ctx = 0
+    base = (base_url or "").rstrip("/")
+    is_ollama = "ollama" in base.lower() or ":1143" in base
+    native_base = base[:-3] if base.endswith("/v1") else base
+    probe_url = f"{native_base}/api/show" if is_ollama else f"{base}/models"
+
+    # Garde anti-SSRF AVANT tout appel réseau : une cible refusée ne doit
+    # jamais générer de requête (mêmes règles + opt-in que les routes presets).
+    err = _validate_llm_base_url(probe_url)
+    if err:
+        logging.warning("[enhance] Détection contexte refusée (%s) : %s. %s",
+                        base, err, LLM_URL_OPTIN_HINT)
+        return 0
+
     try:
-        base = (base_url or "").rstrip("/")
-        is_ollama = "ollama" in base.lower() or ":1143" in base
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         if is_ollama:
-            native_base = base[:-3] if base.endswith("/v1") else base
-            resp = _req.post(f"{native_base}/api/show",
-                             json={"model": model},
-                             headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
-                             timeout=10)
+            resp = _safe_llm_post(probe_url, {"model": model}, headers=headers)
             if resp.ok:
                 info = resp.json().get("model_info", {})
                 for k, v in info.items():
@@ -1364,9 +1384,7 @@ def _get_model_context(base_url, api_key, model, cache_ttl=3600):
                         ctx = int(v)
                         break
         else:
-            resp = _req.get(f"{base}/models",
-                            headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
-                            timeout=10)
+            resp = _safe_llm_get(probe_url, headers=headers)
             if resp.ok:
                 data = resp.json()
                 models = data.get("data", []) if isinstance(data, dict) else []
@@ -1377,6 +1395,11 @@ def _get_model_context(base_url, api_key, model, cache_ttl=3600):
                                 ctx = int(m[k])
                                 break
                         break
+    except ValueError:
+        # Refus anti-SSRF pendant la sonde (ex : redirection vers un hôte privé) :
+        # aucune requête vers la cible refusée, fenêtre indisponible.
+        logging.warning("[enhance] Détection contexte refusée en cours de sonde (%s)", base)
+        ctx = 0
     except Exception:
         ctx = 0
     if ctx > 0:
@@ -1630,11 +1653,46 @@ def _prepare_enhance(user_id, data):
         conn.close()
 
 
+def _normalize_tool_calls(message):
+    """
+    Normalise message.tool_calls (format provider OpenAI) en [{id, name, arguments}].
+
+    - id        : id provider (ex. 'call_abc123'), '' si absent ;
+    - name      : nom de la fonction (tc['function']['name']) ;
+    - arguments : STRING brute du provider (JSON a parser cote client), '' si absent/non-str.
+
+    Retourne None si le message ne contient aucun tool_call (reponse texte pure) —
+    permet un test `if tool_calls:` sans ambiguite.
+    """
+    raw = message.get('tool_calls') if isinstance(message, dict) else None
+    if not raw or not isinstance(raw, list):
+        return None
+    normalized = []
+    for tc in raw:
+        if not isinstance(tc, dict):
+            continue
+        fn = tc.get('function') or {}
+        args = fn.get('arguments')
+        normalized.append({
+            'id': tc.get('id') or '',
+            'name': fn.get('name') or '',
+            'arguments': args if isinstance(args, str) else '',
+        })
+    return normalized
+
+
 def _call_llm_internal(llm_request, llm_config):
     """
     Helper: fait l'appel LLM via requests (avec retry logic Ollama Cloud).
     Leve une exception en cas d'erreur — l'appelant decide du code HTTP.
     Retourne le dict de reponse OpenAI ({choices: [{message: {content: ...}}], ...}).
+
+    Tool-calling : si le modele repond par des appels d'outils (message.tool_calls,
+    content souvent null), le tour est transmis IMMEDIATEMENT (pas de retry — un
+    tour d'outil n'est pas une reponse vide ratee) et le dict retourne porte en plus
+    une cle normalisee 'tool_calls' = [{id, name, arguments}] qui permet de
+    distinguer reponse texte vs reponse tool_calls. Les reponses texte sont
+    retournees a l'identique (aucune cle ajoutee).
     """
     import logging
     import time
@@ -1687,7 +1745,16 @@ def _call_llm_internal(llm_request, llm_config):
 
     r = _do_request()
     result = r.json()
-    output = result['choices'][0]['message']['content'].strip()
+    message = result['choices'][0]['message']
+    # content peut etre null sur un tour d'outil pur (OpenAI-compatible) :
+    # on normalise en '' au lieu de crasser sur None.strip().
+    output = (message.get('content') or '').strip()
+    # Tool-calling : un tour d'outil (message.tool_calls) n'est PAS une reponse
+    # vide ratee — transmission immediate au caller (relais client), sans retry.
+    if message.get('tool_calls'):
+        logging.warning(f"[enhance] LLM tool_calls recus ({len(message['tool_calls'])}) — relais immediat, pas de retry")
+        result['tool_calls'] = _normalize_tool_calls(message)
+        return result
     # Retry si l'output est vide OU manifestement tronque (Ollama Cloud est instable)
     for retry in range(3):
         if len(output) >= 50:
@@ -1700,7 +1767,13 @@ def _call_llm_internal(llm_request, llm_config):
         try:
             r = _do_request()
             result = r.json()
-            output = result['choices'][0]['message']['content'].strip()
+            message = result['choices'][0]['message']
+            if message.get('tool_calls'):
+                # Un retry qui aboutit a un tour d'outil n'est pas re-tente non plus.
+                logging.warning("[enhance] LLM tool_calls recus apres retry — relais immediat")
+                result['tool_calls'] = _normalize_tool_calls(message)
+                return result
+            output = (message.get('content') or '').strip()
         except requests.RequestException as e:
             if retry == 2:
                 raise
@@ -1953,11 +2026,23 @@ def _do_validation_pass(current_output, original_input, style_text, width, heigh
 @app.route('/api/keywords/llm-process', methods=['POST'])
 def keywords_llm_process():
     """
-    Appel LLM simple pour les operations sur les mots-cles.
-    Corps : {preset_id, instruction, input_text?}
+    Appel LLM simple pour les operations sur les mots-cles (+ relais tool-calling).
+    Corps : {preset_id, instruction, input_text?, tools?, tool_choice?, messages?}
     - instruction : le prompt / instruction utilisateur
     - input_text (optionnel) : texte a reformater (bulk import conversion)
-    Retourne : {output: str}
+    - tools (optionnel, liste) : schemas d'outils JSON-Schema, transmis tels quels
+      au provider (liste vide => rien d'injecte, comportement historique)
+    - tool_choice (optionnel) : 'auto' | 'none' | {...} — transmis tel quel si
+      tools est fourni (ignore sinon : les providers OpenAI-compatibles refusent
+      un tool_choice orphelin)
+    - messages (optionnel, liste) : messages OpenAI pre-construits ({role, content,
+      tool_calls, tool_call_id...}) — REMPLACENT la construction classique
+      system+user (boucle multi-tours de tool-calling, messages role:'tool').
+      Si la liste ne commence pas par un message 'system', le systeme par defaut
+      est prefixe pour preserver le contexte d'identite. Liste vide => non fournie.
+    Retourne : {output, usage, max_context, context_source[, tool_calls]}
+      - tool_calls : [{id, name, arguments}] quand le modele repond par des appels
+        d'outils (output est alors null pour un tour d'outil pur).
     """
     guard = _login_required()
     if guard:
@@ -1971,7 +2056,17 @@ def keywords_llm_process():
 
     if not preset_id:
         return jsonify({'error': 'preset_id requis'}), 400
-    if not instruction:
+    tools = data.get('tools')
+    tool_choice = data.get('tool_choice')
+    client_messages = data.get('messages')
+    if tools is not None and not isinstance(tools, list):
+        return jsonify({'error': 'tools doit etre une liste'}), 400
+    if client_messages is not None and (
+        not isinstance(client_messages, list) or not all(isinstance(m, dict) for m in client_messages)
+    ):
+        return jsonify({'error': 'messages doit etre une liste de messages {role, content}'}), 400
+    # messages fournie => instruction optionnelle (la conversation est deja construite)
+    if not instruction and not client_messages:
         return jsonify({'error': 'instruction requise'}), 400
 
     conn = get_db()
@@ -1992,7 +2087,13 @@ def keywords_llm_process():
 
     # Construire le message systeme
     system_msg = "Tu es un assistant specialise dans la gestion de mots-cles pour un outil de generation de prompt d'images."
-    if input_text:
+    if client_messages:
+        # Boucle multi-tours (tool-calling) : conversation fournie telle quelle.
+        messages = [dict(m) for m in client_messages]  # copie defensive
+        if messages[0].get('role') != 'system':
+            # Contexte d'identite preserve : prefixer le systeme par defaut.
+            messages.insert(0, {'role': 'system', 'content': system_msg})
+    elif input_text:
         messages = [
             {'role': 'system', 'content': system_msg},
             {'role': 'user', 'content': f"{instruction}\n\nVoici le texte a traiter :\n\n{input_text}"}
@@ -2008,6 +2109,13 @@ def keywords_llm_process():
         'messages': messages,
         'temperature': 0.3,
     }
+    # Tool-calling : transmission telle quelle au provider (schemas JSON-Schema).
+    # - tools absent/vide => rien d'injecte (comportement historique strict) ;
+    # - tool_choice ignore sans tools (providers OpenAI-compatibles le refusent).
+    if tools:
+        llm_request['tools'] = tools
+        if tool_choice is not None:
+            llm_request['tool_choice'] = tool_choice
     llm_config = {
         'base_url': base_url,
         'api_key': api_key,
@@ -2025,7 +2133,11 @@ def keywords_llm_process():
             return jsonify({'error': f'Serveur LLM inaccessible : verifie l\'URL ({base_url})'}), 502
         return jsonify({'error': f'Erreur LLM: {msg}'}), 502
 
-    output = llm_response['choices'][0]['message']['content'].strip()
+    # Extraction tolérante : content peut être null quand le modèle répond par
+    # un pur tool_call (OpenAI-compatible) — pas de crash None.strip().
+    message = llm_response['choices'][0]['message']
+    output = (message.get('content') or '').strip()
+    tool_calls = _normalize_tool_calls(message)
     usage = llm_response.get('usage', {})
 
     # Fenêtre de contexte effective — précédence validée :
@@ -2052,5 +2164,12 @@ def keywords_llm_process():
                 max_context = None
                 context_source = 'unknown'
 
+    if tool_calls:
+        # Relais tool-calling : le client exécute les outils puis renvoie la
+        # conversation (messages avec role:'tool') pour le tour suivant.
+        # Tour d'outil pur => pas de texte => output null.
+        return jsonify({'output': output or None, 'tool_calls': tool_calls,
+                        'usage': usage, 'max_context': max_context,
+                        'context_source': context_source})
     return jsonify({'output': output, 'usage': usage,
                     'max_context': max_context, 'context_source': context_source})

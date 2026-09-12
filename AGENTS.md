@@ -21,11 +21,19 @@
 AI-Helper/
 ├── backend/          # Serveur Flask (app.py, auth.py, parser.py, etc.)
 ├── frontend/         # Interface web (index.html)
-├── AIH_ComfyUI/     # Extension ComfyUI (nodes, web/)
-├── web/js/           # Widgets JS pour ComfyUI
+├── android/          # Application Android
 ├── AGENTS.md         # Règles du projet
 └── ROADMAP.md        # Roadmap et état d'avancement
 ```
+
+⚠️ **Pack ComfyUI séparé** : les nodes/widgets ComfyUI (Elements Picker, Enhance,
+Ideogram 4, Music, Keywords, menus, terminal, Blobby…) vivent désormais dans le
+dépôt distinct **ComfyUI-AI-Helper** (pack installé dans `ComfyUI/custom_nodes/`).
+L'ancien monorepo contenait aussi l'extension ComfyUI (point d'entrée custom node
+racine + widgets JS du dossier `web`), supprimée lors de la séparation comfy/webui.
+AI-Helper = backend Flask + site `frontend/` uniquement. Les règles et patterns
+ComfyUI documentés plus bas décrivent désormais le code du pack (dépôt
+ComfyUI-AI-Helper).
 
 ## Filtres
 
