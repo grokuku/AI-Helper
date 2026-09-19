@@ -46,6 +46,9 @@ def generate_prompt():
             kid = None
             kind = ''
             score = 0
+            # Réinitialisé à chaque élément : évite qu'un hint d'une itération
+            # précédente ne contamine un élément qui n'en définit pas.
+            hint = ''
 
             if elem.get('type') == 'filter' and elem.get('id'):
                 kind = 'filter'
@@ -73,6 +76,7 @@ def generate_prompt():
 
             elif elem.get('type') == 'text' and elem.get('text'):
                 kind = 'semantic'
+                hint = elem.get('hint', '').strip()
                 try:
                     from embeddings import cosine_similarity, generate_embedding
                     qe = generate_embedding(elem['text'])
@@ -97,12 +101,16 @@ def generate_prompt():
                     logging.exception("generate: semantic search failed")
 
             elif elem.get('type') == 'raw' and elem.get('text'):
-                # Custom text du node ComfyUI : on l'ajoute TEL QUEL dans le prompt.
+                # Custom text du node ComfyUI : on l'ajoute TEL QUEL dans le prompt
+                # quand aucun hint n'est fourni.  Si un hint est present, il
+                # devient un prefixe de resolution — coherent avec les filtres.
                 # Pas de recherche semantique, pas de pioche aleatoire.
                 kind = 'raw'
+                hint = elem.get('hint', '').strip()
                 raw_text = elem['text'].strip()
                 if raw_text:
-                    keywords.append(raw_text)
+                    kw_text = f"{hint}: {raw_text}" if hint else raw_text
+                    keywords.append(kw_text)
                     debug.append({'keyword': raw_text, 'source': 'raw', 'score': 0})
                 continue  # pas de kid a chercher en BDD
 

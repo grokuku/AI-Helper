@@ -1022,8 +1022,15 @@ def _resolve_ep_keywords(conn, user_id, ep_elements):
                     else:
                         ordered_ep_results.append(kw)
             elif elem.get('type') == 'text' and elem.get('text'):
-                # Utiliser le texte original comme resolution
-                ordered_ep_results.append(elem['text'].strip())
+                # Utiliser le texte original comme resolution.
+                # Le hint optionnel est un prefixe (aucun « : » si vide),
+                # exactement comme pour les filtres.
+                hint = elem.get('hint', '').strip()
+                text_val = elem['text'].strip()
+                if hint:
+                    ordered_ep_results.append(f"{hint}: {text_val}")
+                else:
+                    ordered_ep_results.append(text_val)
     return ordered_ep_results
 
 
