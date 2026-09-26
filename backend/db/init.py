@@ -653,6 +653,12 @@ def _create_post_migration_tables(conn):
             workflow_json TEXT DEFAULT '',
             has_prompt INTEGER DEFAULT 0,
             has_workflow INTEGER DEFAULT 0,
+            width INTEGER,
+            height INTEGER,
+            duration_ms INTEGER,
+            codec TEXT,
+            meta_checked INTEGER DEFAULT 0,
+            trashed_at TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (user_id) REFERENCES users(id)
         )
@@ -718,6 +724,18 @@ def _migrate_media_files(conn):
         ("workflow_json", "TEXT DEFAULT ''"),
         ("has_prompt", "INTEGER DEFAULT 0"),
         ("has_workflow", "INTEGER DEFAULT 0"),
+        # Métadonnées techniques (galerie) — NULL = inconnu, backfill paresseux.
+        ("width", "INTEGER"),
+        ("height", "INTEGER"),
+        ("duration_ms", "INTEGER"),
+        ("codec", "TEXT"),
+        # meta_checked=1 : l'extraction a déjà été tentée (succès OU abandon
+        # car outils absents) → on ne relit plus le fichier à chaque appel.
+        ("meta_checked", "INTEGER DEFAULT 0"),
+        # Corbeille (soft delete) : horodatage ISO-8601 du passage à la
+        # corbeille (NULL si le média est vivant). Le statut correspondant est
+        # ``status = 'trashed'`` (colonne ``status`` déjà présente).
+        ("trashed_at", "TEXT"),
     ):
         if col not in cols:
             conn.execute(f"ALTER TABLE media_files ADD COLUMN {col} {ddl}")
@@ -743,6 +761,7 @@ def _create_indexes(conn):
     conn.execute("CREATE INDEX IF NOT EXISTS idx_file_uploads_fp ON file_uploads(size, fingerprint_head, fingerprint_tail)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_media_files_user ON media_files(user_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_media_files_status ON media_files(status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_media_files_user_status ON media_files(user_id, status)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_media_files_upload ON media_files(upload_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_whitelist_uid ON discord_whitelist(discord_uid)")
 

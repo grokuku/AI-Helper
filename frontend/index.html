@@ -62,6 +62,9 @@
             <button id="tab-btn-preview" onclick="switchMainTab('preview')" class="px-3 py-1.5 text-xs font-medium rounded-md text-white/70 hover:text-white hover:bg-white/10 transition">
               Preview
             </button>
+            <button id="tab-btn-gallery" onclick="switchMainTab('gallery')" class="px-3 py-1.5 text-xs font-medium rounded-md text-white/70 hover:text-white hover:bg-white/10 transition">
+              Galerie
+            </button>
           </nav>
         </div>
         <div class="flex items-center gap-2">
@@ -974,6 +977,46 @@
         </div>
       </div>
 
+      <!-- Galerie média tab (consultation : grille + vignettes + visionneuse + infos) -->
+      <div id="tab-gallery" class="hidden w-full flex-1 flex flex-col overflow-hidden relative">
+        <!-- Barre d'outils : taille d'affichage (alignée sur ComfyUI) + compteurs -->
+        <div class="px-4 pt-3 pb-2 shrink-0 flex flex-wrap items-center gap-3 border-b border-slate-200 dark:border-slate-700">
+          <h2 class="text-sm font-semibold text-slate-800 dark:text-slate-200">Galerie</h2>
+          <div class="flex items-center gap-2 ml-1">
+            <label for="gallery-thumb-size" class="text-xs text-slate-500 dark:text-slate-400">Taille</label>
+            <input type="range" id="gallery-thumb-size" min="80" max="300" step="10" value="150"
+                   class="w-40 h-1 accent-indigo-500" aria-label="Taille d'affichage des vignettes">
+            <span id="gallery-thumb-size-value" class="text-xs text-slate-500 dark:text-slate-400" style="min-width:3rem">150 px</span>
+            <span id="gallery-thumb-resolution" class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-400"
+                  title="Résolution demandée au serveur pour les vignettes">vignettes 256 px</span>
+          </div>
+          <div class="flex-1"></div>
+          <span id="gallery-selected" class="hidden text-xs font-medium text-indigo-500 dark:text-indigo-400"></span>
+          <span id="gallery-count" class="text-xs text-slate-400"></span>
+          <button onclick="galleryRefresh()" title="Rafraîchir" class="text-xs text-slate-400 hover:text-indigo-500 transition p-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-600">
+            <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/></svg>
+          </button>
+        </div>
+        <!-- Corps : grille virtualisée (gauche) + panneau d'informations (droite) -->
+        <div class="flex-1 flex overflow-hidden min-h-0">
+          <div class="flex-1 relative min-w-0">
+            <div id="gallery-grid" class="absolute inset-0 overflow-y-auto p-3"></div>
+            <div id="gallery-loading" class="absolute inset-0 flex items-center justify-center gap-2 text-sm text-slate-400 dark:text-slate-500">
+              <svg class="w-5 h-5 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+              Chargement...
+            </div>
+            <div id="gallery-empty" class="hidden absolute inset-0 flex flex-col items-center justify-center text-center">
+              <div class="w-16 h-16 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center mb-4">
+                <svg class="w-8 h-8 text-slate-300 dark:text-slate-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="M21 15l-5-5L5 21"/></svg>
+              </div>
+              <p class="text-sm text-slate-500 dark:text-slate-400">Aucun média pour l'instant</p>
+            </div>
+            <div id="gallery-error" class="hidden absolute inset-0 flex items-center justify-center text-sm text-rose-500 dark:text-rose-400 text-center px-6"></div>
+          </div>
+          <aside id="gallery-info" class="shrink-0 overflow-y-auto border-l border-slate-200 dark:border-slate-700" style="width: 320px; min-width: 200px;"></aside>
+        </div>
+      </div>
+
     </div>
 
   <!-- Bulk import modal (tabs: Import / Generation IA) -->
@@ -1078,5 +1121,17 @@
   <script src="/js/app-filters.js"></script>
   <script src="/js/app-admin.js" id="script-admin"></script>
   <script src="/js/app-preview.js" id="script-preview"></script>
+
+  <!-- Briques holaf VENDUES (DUAL ESM + global) : chargées en modules (deferred)
+       → les globals window.Holaf* sont prêts avant l'ouverture de l'onglet.
+       AUCUNE brique modifiée — cf. vendor/holaf/holaf-manifest.json + `holaf check`. -->
+  <script type="module" src="/vendor/holaf/holaf-collection.js"></script>
+  <script type="module" src="/vendor/holaf/holaf-thumbcache.js"></script>
+  <script type="module" src="/vendor/holaf/holaf-virtual-grid.js"></script>
+  <script type="module" src="/vendor/holaf/holaf-viewport.js"></script>
+  <script type="module" src="/vendor/holaf/holaf-lightbox.js"></script>
+  <script type="module" src="/vendor/holaf/holaf-infopane.js"></script>
+  <!-- Adaptateur galerie (script classique, comme les autres app-*.js) -->
+  <script src="/js/app-gallery.js" id="script-gallery"></script>
 </body>
 </html>

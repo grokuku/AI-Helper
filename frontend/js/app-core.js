@@ -62,6 +62,7 @@
       // Masquer les elements "mode complet" (login, user, admin, membres, preview,
       // presets IA / upload / partage)
       ['btn-login', 'user-info', 'btn-admin', 'btn-members', 'tab-btn-preview', 'tab-preview',
+       'tab-btn-gallery', 'tab-gallery',
        'enhance-preset', 'empty-import-btn', 'presets-list'].forEach(function(id) {
         var el = document.getElementById(id);
         if (el) el.classList.add('hidden');
@@ -182,14 +183,16 @@
         style: document.getElementById('tab-styles'),
         template: document.getElementById('tab-templates'),
         keywords: document.getElementById('tab-keywords-manager'),
-        preview: document.getElementById('tab-preview')
+        preview: document.getElementById('tab-preview'),
+        gallery: document.getElementById('tab-gallery')
       };
       const buttons = {
         prompt: document.getElementById('tab-btn-prompt'),
         style: document.getElementById('tab-btn-style'),
         template: document.getElementById('tab-btn-template'),
         keywords: document.getElementById('tab-btn-keywords'),
-        preview: document.getElementById('tab-btn-preview')
+        preview: document.getElementById('tab-btn-preview'),
+        gallery: document.getElementById('tab-btn-gallery')
       };
 
       Object.keys(tabs).forEach(function(key) {
@@ -201,6 +204,8 @@
 
       // Arrêter le polling de l'onglet Preview quand on le quitte
       if (tab !== 'preview' && typeof previewStop === 'function') previewStop();
+      // Fermer la visionneuse de la galerie quand on quitte son onglet
+      if (tab !== 'gallery' && typeof galleryStop === 'function') galleryStop();
 
       Object.keys(buttons).forEach(function(key) {
         var btn = buttons[key];
@@ -218,6 +223,7 @@
       if (tab === 'template') loadTemplatesTab();
       if (tab === 'keywords') kwLoadList();
       if (tab === 'preview' && typeof previewStart === 'function') previewStart();
+      if (tab === 'gallery' && typeof galleryStart === 'function') galleryStart();
     }
 
     /* ── Theme system ── */
@@ -397,6 +403,7 @@
 
     async function logout() {
       if (typeof previewStop === 'function') previewStop();
+      if (typeof galleryStop === 'function') galleryStop();
       document.getElementById('admin-panel').classList.add('hidden');
       document.getElementById('members-panel').classList.add('hidden');
       document.getElementById('main-content').style.display = 'none';
