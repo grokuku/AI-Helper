@@ -75,6 +75,7 @@ from routes.helpers import _init_db
 from routes.ideogram import *
 from routes.import_export import *
 from routes.keywords import *
+from routes.media import *
 from routes.music3 import *
 from routes.presets import *
 from routes.preview import *

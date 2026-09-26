@@ -631,6 +631,33 @@ def _create_post_migration_tables(conn):
         )
     """)
 
+    # ── Table Media files (sauvegarde serveur des médias des nodes AIH) ──
+    # Sert à la fois de suivi d'upload chunké (status/temp_path/received_chunks)
+    # et de catalogue pour la future galerie (métadonnées prompt/workflow).
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS media_files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            upload_id TEXT UNIQUE,
+            user_id TEXT NOT NULL,
+            subfolder TEXT DEFAULT '',
+            filename TEXT NOT NULL,
+            ext TEXT DEFAULT '',
+            kind TEXT NOT NULL,
+            size INTEGER DEFAULT 0,
+            status TEXT DEFAULT 'uploading',
+            received_chunks INTEGER DEFAULT 0,
+            total_chunks INTEGER DEFAULT 0,
+            temp_path TEXT DEFAULT '',
+            final_path TEXT DEFAULT '',
+            prompt_text TEXT DEFAULT '',
+            workflow_json TEXT DEFAULT '',
+            has_prompt INTEGER DEFAULT 0,
+            has_workflow INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+    """)
+
 
 def _migrate_shared_workflows(conn):
     """Migration : colonne ``thumbnail`` pour ``shared_workflows``.
@@ -665,6 +692,37 @@ def _migrate_file_uploads(conn):
         conn.execute("ALTER TABLE file_uploads ADD COLUMN display_name TEXT DEFAULT ''")
 
 
+def _migrate_media_files(conn):
+    """Migrations pour ``media_files`` (sauvegarde serveur des médias AIH).
+
+    La table est créée dans ``_create_post_migration_tables`` ; cette migration
+    ne fait qu'ajouter, de façon idempotente (garde via ``PRAGMA table_info``),
+    toute colonne qui manquerait sur une base créée par une version antérieure.
+    Même pattern que ``_migrate_file_uploads``.
+
+    Args:
+        conn (sqlite3.Connection): La connexion SQLite active.
+    """
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(media_files)").fetchall()]
+    for col, ddl in (
+        ("upload_id", "TEXT"),
+        ("subfolder", "TEXT DEFAULT ''"),
+        ("ext", "TEXT DEFAULT ''"),
+        ("size", "INTEGER DEFAULT 0"),
+        ("status", "TEXT DEFAULT 'uploading'"),
+        ("received_chunks", "INTEGER DEFAULT 0"),
+        ("total_chunks", "INTEGER DEFAULT 0"),
+        ("temp_path", "TEXT DEFAULT ''"),
+        ("final_path", "TEXT DEFAULT ''"),
+        ("prompt_text", "TEXT DEFAULT ''"),
+        ("workflow_json", "TEXT DEFAULT ''"),
+        ("has_prompt", "INTEGER DEFAULT 0"),
+        ("has_workflow", "INTEGER DEFAULT 0"),
+    ):
+        if col not in cols:
+            conn.execute(f"ALTER TABLE media_files ADD COLUMN {col} {ddl}")
+
+
 # ── Indexes ────────────────────────────────────────────────────────────
 
 def _create_indexes(conn):
@@ -683,6 +741,9 @@ def _create_indexes(conn):
     conn.execute("CREATE INDEX IF NOT EXISTS idx_file_uploads_user ON file_uploads(user_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_file_uploads_status ON file_uploads(status)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_file_uploads_fp ON file_uploads(size, fingerprint_head, fingerprint_tail)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_media_files_user ON media_files(user_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_media_files_status ON media_files(status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_media_files_upload ON media_files(upload_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_whitelist_uid ON discord_whitelist(discord_uid)")
 
 
@@ -1016,6 +1077,7 @@ def _init_db():
     # 4. Migrations sur les nouvelles tables
     _migrate_shared_workflows(conn)
     _migrate_file_uploads(conn)
+    _migrate_media_files(conn)
 
     # 5. Index
     _create_indexes(conn)
