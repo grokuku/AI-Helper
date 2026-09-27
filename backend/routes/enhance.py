@@ -254,13 +254,22 @@ def enhance_prompt():
     result_box = {'done': False, 'value': None, 'error': None}
 
     def worker():
+        # Le thread n'hérite PAS du contexte d'application/requête Flask.
+        # On pousse un contexte d'application (pour jsonify(...) des chemins
+        # d'erreur de _prepare_enhance) et on y pose g.user_id : les helpers
+        # qui liraient encore flask.g (ex. _get_current_user_id) retrouvent
+        # l'identité, sans jamais dépendre du contexte de requête.
+        ctx = app.app_context()
+        ctx.push()
         try:
+            g.user_id = user_id
             result_box['value'] = _do_enhance(user_id, data)
         except Exception as e:
             import traceback
             result_box['error'] = f'{e}\n{traceback.format_exc()}'
         finally:
             result_box['done'] = True
+            ctx.pop()
 
     thread = Thread(target=worker, daemon=True)
     thread.start()
@@ -918,7 +927,7 @@ def _resolve_style(conn, style_id, style_text):
     return style_text, negative_prompt
 
 
-def _resolve_ep_filter_keyword(cur, elem):
+def _resolve_ep_filter_keyword(cur, user_id, elem):
     """Resout un mot-cle EP depuis un filtre (type 'filter').
 
     Recupere les keyword_ids lies au filtre via filter_cache, puis pioche un
@@ -928,14 +937,20 @@ def _resolve_ep_filter_keyword(cur, elem):
     (user_id = ?) ou est public (is_public = 1). Sinon, on ignore silencieusement
     l'element (aucun nom/mot-cle renvoye).
 
+    IMPORTANT : ``user_id`` est RECU en parametre, jamais lu depuis le contexte
+    Flask. Cette fonction s'execute aussi dans le thread ``worker`` de
+    ``/api/enhance`` (aucun contexte requete/application) : appeler
+    ``_get_current_user_id()`` (qui lit ``flask.g``) y leverait
+    ``RuntimeError: Working outside of application context``.
+
     Args:
         cur: curseur sqlite3 reutilisable.
+        user_id (int|str): utilisateur courant, fourni par l'appelant.
         elem (dict): element EP de type 'filter' (doit contenir 'id').
 
     Returns:
         str|None: un mot-cle choisi au hasard, ou None si aucun trouve ou non autorise.
     """
-    user_id = _get_current_user_id()
     row = cur.execute(
         "SELECT user_id, is_public FROM saved_filters WHERE id = ?",
         (elem['id'],)
@@ -1014,7 +1029,7 @@ def _resolve_ep_keywords(conn, user_id, ep_elements):
         cur = conn.cursor()
         for elem in ep_elements:
             if elem.get('type') == 'filter' and elem.get('id'):
-                kw = _resolve_ep_filter_keyword(cur, elem)
+                kw = _resolve_ep_filter_keyword(cur, user_id, elem)
                 hint = elem.get('hint', '').strip()
                 if kw:
                     if hint:

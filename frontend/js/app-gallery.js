@@ -49,6 +49,13 @@ var GALLERY_THUMB_SIZES = [128, 256, 512];
 // Debounce de la recherche par nom (ms) avant de relancer la liste.
 var GALLERY_SEARCH_DEBOUNCE = 350;
 
+// Rafraîchissement AUTOMATIQUE de la galerie (ms). Poll léger : on interroge
+// seulement la tête de liste (page 1, limit 1) et on relance la liste
+// uniquement si le média le plus récent ou le total a changé. Détecte les
+// médias poussés par l'extérieur (node ComfyUI, autre onglet) sans action
+// manuelle. Assez long pour ne pas matraquer le serveur.
+var GALLERY_POLL_MS = 15000;
+
 // Reprise UNIQUE et bornée d'une vignette après un échec de chargement <img>
 // (un <img> en erreur ne se recharge pas tout seul, la cellule resterait
 // bloquée sur l'état d'erreur). Délai court (ms) : laisse passer un aléa
@@ -291,6 +298,9 @@ var galleryState = {
   sort: 'created_at_desc',
   // Verrou d'actions pendant un appel réseau (désactive les boutons).
   busy: false,
+  // Rafraîchissement automatique : timer du poll + listener de visibilité.
+  pollTimer: null,
+  visibilityHandler: null,
   // Observables de test : dernier appel réseau et derniers téléchargements.
   lastRequest: null,
   lastDownload: null,
@@ -308,6 +318,7 @@ function galleryStart() {
     if (!galleryInit()) return;
     galleryState.started = true;
   }
+  galleryStartPolling();
 }
 
 function galleryStop() {
@@ -316,6 +327,102 @@ function galleryStop() {
   if (galleryState.lightbox && galleryState.lightbox.isOpen()) {
     try { galleryState.lightbox.close(); } catch (e) { /* ignore */ }
   }
+  galleryStopPolling();
+}
+
+/* ── Rafraîchissement automatique (poll léger + retour d'onglet) ─────────── */
+
+/**
+ * Démarre le rafraîchissement automatique : un poll périodique ET un
+ * rafraîchissement quand l'onglet redevient visible (retour du navigateur).
+ * Idempotent : un 2e appel ne crée pas de doublon (listener + timer uniques).
+ */
+function galleryStartPolling() {
+  galleryStopPolling();
+  if (typeof document !== 'undefined' && !galleryState.visibilityHandler) {
+    galleryState.visibilityHandler = function () {
+      if (!document.hidden) galleryPollNow();
+    };
+    document.addEventListener('visibilitychange', galleryState.visibilityHandler);
+  }
+  galleryPollSchedule();
+}
+
+/** Arrête le poll et retire le listener de visibilité. */
+function galleryStopPolling() {
+  if (galleryState.pollTimer) {
+    clearTimeout(galleryState.pollTimer);
+    galleryState.pollTimer = null;
+  }
+  if (galleryState.visibilityHandler && typeof document !== 'undefined') {
+    document.removeEventListener('visibilitychange', galleryState.visibilityHandler);
+    galleryState.visibilityHandler = null;
+  }
+}
+
+/** (Re)programme le prochain tick de poll. */
+function galleryPollSchedule() {
+  if (!galleryState.started) return;
+  galleryState.pollTimer = setTimeout(galleryPollTick, GALLERY_POLL_MS);
+  // En Node (tests headless), setTimeout renvoie un objet Timeout : unref()
+  // évite de maintenir la boucle d'événements vivante. En navigateur, c'est
+  // un nombre (pas de unref) → aucun effet.
+  if (galleryState.pollTimer && typeof galleryState.pollTimer.unref === 'function') {
+    galleryState.pollTimer.unref();
+  }
+}
+
+function galleryPollTick() {
+  galleryState.pollTimer = null;
+  galleryPollCheck();
+  galleryPollSchedule();
+}
+
+/** Rafraîchissement immédiat (retour d'onglet), si la page est visible. */
+function galleryPollNow() {
+  if (typeof document !== 'undefined' && document.hidden) return;
+  galleryPollCheck();
+}
+
+/**
+ * Vérifie si la liste doit être rechargée, SANS perturber l'utilisateur :
+ * on ne touche à rien pendant une action réseau, une sélection multiple, la
+ * visionneuse ouverte, ou un scroll profond (on ne « saute » pas en tête).
+ */
+function galleryPollCheck() {
+  if (!galleryState.started) return;
+  if (galleryState.busy) return;
+  if (galleryState.lightbox && galleryState.lightbox.isOpen()) return;
+  if (gallerySelectedIds().length) return;
+  var col = galleryState.collection;
+  if (!col) return;
+  var gridEl = galleryById('gallery-grid');
+  if (gridEl && gridEl.scrollTop > 0) return; // l'utilisateur lit la suite
+  galleryPollFetchTop(col);
+}
+
+/**
+ * Interroge la tête de liste (page 1, limit 1) et relance la liste seulement
+ * si le média le plus récent ou le total a changé. Silencieux en cas d'erreur
+ * réseau (le prochain tick réessaiera).
+ */
+function galleryPollFetchTop(col) {
+  var url = galleryMediaUrl(1, 1, galleryReadFilterInputs(), galleryState.sort);
+  return fetch(url, { credentials: 'same-origin' }).then(function (res) {
+    if (!res.ok) return null;
+    return galleryJson(res).then(function (data) {
+      var items = (data && Array.isArray(data.items)) ? data.items : [];
+      var topId = items.length ? items[0].id : null;
+      var total = (data && typeof data.total === 'number') ? data.total : null;
+      var first = (col.length > 0) ? col.at(0) : null;
+      var curTop = (first && first.id != null) ? first.id : null;
+      var changed = false;
+      if (total !== null && col.total !== total) changed = true;
+      if (topId !== null && curTop !== null && topId !== curTop) changed = true;
+      if (changed) galleryReload();
+      return data;
+    });
+  }).catch(function () { return null; });
 }
 
 /** Relance le chargement depuis la première page (bouton Rafraîchir). */
@@ -1517,6 +1624,8 @@ window.AppGallery = {
   stop: galleryStop,
   refresh: galleryRefresh,
   reload: galleryReload,
+  pollNow: galleryPollNow,
+  pollStop: galleryStopPolling,
   setDisplaySize: gallerySetDisplaySize,
   serverThumbSize: galleryServerThumbSize,
   thumbUrl: galleryThumbUrl,
@@ -1559,6 +1668,7 @@ window.AppGallery = {
     THUMB_SIZES: GALLERY_THUMB_SIZES.slice(),
     SEARCH_DEBOUNCE: GALLERY_SEARCH_DEBOUNCE,
     THUMB_RETRY_MS: GALLERY_THUMB_RETRY_MS,
+    POLL_MS: GALLERY_POLL_MS,
     SORTS: GALLERY_SORTS.slice(),
   },
   state: galleryState,

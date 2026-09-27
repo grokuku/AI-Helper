@@ -297,6 +297,67 @@ class TestSFTPClose:
         storage.close()  # should not raise
 
 
+# ── Timeouts réseau & sûreté de thread (anti-blocage) ─────────────────
+
+class TestSFTPTimeoutsAndThreadSafety:
+    """Sans timeout, une opération SFTP peut bloquer INDÉFINIMENT (galerie
+    « figée »). Et paramiko SFTPClient n'est pas thread-safe : le canal
+    partagé doit être sérialisé."""
+
+    def test_timeout_is_positive(self):
+        import storage as storage_module
+
+        assert storage_module.SFTP_TIMEOUT > 0
+
+    def test_connect_passes_explicit_timeouts(self, storage, mock_paramiko):
+        """connect() reçoit timeout/banner_timeout/auth_timeout explicites."""
+        import storage as storage_module
+
+        storage._connect()
+        kwargs = mock_paramiko["ssh"].connect.call_args.kwargs
+        assert kwargs["timeout"] == storage_module.SFTP_TIMEOUT
+        assert kwargs["banner_timeout"] == storage_module.SFTP_TIMEOUT
+        assert kwargs["auth_timeout"] == storage_module.SFTP_TIMEOUT
+
+    def test_channel_gets_socket_timeout(self, storage, mock_paramiko):
+        """Le canal SFTP reçoit un timeout socket (borne get/put/stat)."""
+        import storage as storage_module
+
+        storage._connect()
+        chan = mock_paramiko["sftp"].get_channel.return_value
+        chan.settimeout.assert_called_once_with(storage_module.SFTP_TIMEOUT)
+
+    def test_operations_are_serialized_across_threads(self, storage, mock_paramiko):
+        """[NEGATIVE] Deux threads ne doivent JAMAIS entrer en concurrence dans
+        le client SFTP : sans le verrou, le compteur d'opérations simultanées
+        dépasserait 1."""
+        import threading
+        import time
+
+        storage._connect()
+        active = {"n": 0, "max": 0}
+        guard = threading.Lock()
+
+        def slow_put(*_args, **_kwargs):
+            with guard:
+                active["n"] += 1
+                active["max"] = max(active["max"], active["n"])
+            time.sleep(0.05)
+            with guard:
+                active["n"] -= 1
+
+        mock_paramiko["sftp"].put.side_effect = slow_put
+        threads = [
+            threading.Thread(target=storage.upload, args=("/tmp/x", f"r{i}"))
+            for i in range(5)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert active["max"] == 1, "le canal SFTP a été utilisé en concurrence"
+
+
 # ── Path helpers ─────────────────────────────────────────────────────
 
 class TestSFTPPathHelpers:

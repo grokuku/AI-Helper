@@ -10,6 +10,8 @@ Le hint est un PRÉFIXE DE RÉSOLUTION pour tous les types :
 Aucun « : » n'est inséré quand le hint est absent ou vide.
 """
 
+import pytest
+
 
 def _ensure_user(uid="test-user-123"):
     """Garantit l'existence de l'utilisateur (contraintes FK)."""
@@ -191,3 +193,54 @@ class TestGenerateRouteHint:
         assert r_hint.get_json()["prompt"] == "hair: zzz_ep_hint_kw"
         assert r_none.status_code == 200
         assert r_none.get_json()["prompt"] == "zzz_ep_hint_kw"
+
+
+class TestResolveEpOutsideAppContext:
+    """Le thread ``worker`` de ``/api/enhance`` résout les EP SANS contexte Flask.
+
+    Régression corrigée : ``_resolve_ep_filter_keyword`` appelait
+    ``_get_current_user_id()`` (qui lit ``flask.g``) alors que le ``user_id``
+    était déjà fourni par l'appelant. Dans le thread ``worker`` (aucun contexte
+    application/requête), cet appel levait
+    ``RuntimeError: Working outside of application context``.
+
+    NB : ces tests ne demandent PAS la fixture ``app`` — pytest-flask pousse un
+    contexte de requête dès qu'un test la demande, ce qui masquerait le bug.
+    L'app est importée directement (effet de bord : routes + ``_init_db``).
+    """
+
+    def test_filter_resolution_outside_app_context(self):
+        """Aucun contexte poussé → la résolution EP filtre doit fonctionner."""
+        import sqlite3
+
+        import app as _app_module  # noqa: F401 — routes + _init_db (sans contexte)
+        from db.init import _init_db
+        from extensions import DB_PATH
+        from routes.enhance import _resolve_ep_keywords
+
+        _init_db()
+        uid = "test-user-123"
+        _ensure_user(uid)
+        # Connexion sqlite BRUTE (hors Flask) : reproduit le worker.
+        conn = sqlite3.connect(str(DB_PATH))
+        conn.row_factory = sqlite3.Row
+        try:
+            kw_id, fid = _make_filter(conn, uid, "zzz_noctx_kw")
+            try:
+                out = _resolve_ep_keywords(conn, uid, [
+                    {"type": "filter", "id": fid, "hint": "hair"},
+                ])
+            finally:
+                _drop_filter(conn, kw_id, fid)
+        finally:
+            conn.close()
+        assert out == ["hair: zzz_noctx_kw"]
+
+    def test_negative_control_get_current_user_id_needs_context(self):
+        """[NEGATIVE] Hors contexte, ``_get_current_user_id()`` LEVE : prouve
+        que le chemin worker ne doit jamais en dépendre."""
+        import app as _app_module  # noqa: F401 — app importée, aucun contexte
+        from security.auth import _get_current_user_id
+
+        with pytest.raises(RuntimeError):
+            _get_current_user_id()

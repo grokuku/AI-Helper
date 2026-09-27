@@ -322,6 +322,33 @@ await settle(12);
 ok(!window.document.getElementById("gallery-error").classList.contains("hidden"), "état ERREUR affiché (HTTP 500)");
 ok(window.document.getElementById("gallery-error").textContent.indexOf("Erreur") !== -1, "message d'erreur présent");
 
+/* ═══ 8bis. Auto-rafraîchissement (poll léger) ════════════════════════════ */
+console.log("8bis. Auto-rafraîchissement (poll)");
+ok(typeof AppGallery.pollNow === "function", "AppGallery.pollNow exposé");
+eq(AppGallery.constants.POLL_MS, 15000, "intervalle de poll = 15 s");
+// Retour à un état sain (la section 8 a laissé la liste vide/erreur).
+mediaItems = [];
+for (let i = 1; i <= 120; i++) mediaItems.push(makeItem(i));
+mediaTotal = 120;
+AppGallery.refresh();
+await settle(12);
+eq(AppGallery.state.collection.total, 120, "état sain rétabli avant poll");
+const fetchesBeforePoll = fetchCalls.length;
+// Un média arrive de l'extérieur (node ComfyUI) : tête + total changent.
+mediaItems.unshift(makeItem(999));
+mediaTotal = 121;
+AppGallery.pollNow();
+await settle(15);
+eq(AppGallery.state.collection.total, 121, "poll a détecté le nouveau média et rechargé");
+ok(fetchCalls.length > fetchesBeforePoll, "poll a bien interrogé le serveur");
+// Contrôle négatif : sans changement, le poll ne relance PAS la liste.
+const fetchesBeforeNoop = fetchCalls.length;
+AppGallery.pollNow();
+await settle(15);
+eq(AppGallery.state.collection.total, 121, "[négatif] aucun changement → total stable");
+ok(fetchCalls.length === fetchesBeforeNoop + 1, "[négatif] poll = 1 seule requête de tête (pas de reload)");
+AppGallery.pollStop();
+
 /* ═══ 9. Preuve : AUCUNE brique modifiée ════════════════════════════════ */
 console.log("9. Briques non modifiées (vendor == holaf-lib)");
 const LIB = "/projects/holaf-lib/js/";

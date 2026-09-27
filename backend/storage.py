@@ -21,8 +21,18 @@ Env vars:
 import contextlib
 import logging
 import os
+import threading
 from datetime import datetime
 from pathlib import Path
+
+# ── Timeouts SFTP (anti-blocage) ─────────────────────────────────────
+# Sans timeout, une connexion ou une opération SFTP peut pendre
+# INDÉFINIMENT (hôte injoignable, réseau qui stalle). Comme le serveur
+# Flask est threadé, la requête cliente reste alors bloquée ET — le canal
+# SFTP étant partagé — TOUTES les autres opérations de stockage (vignettes,
+# uploads ComfyUI, downloads) pendent derrière elle : galerie « figée ».
+# Surchargeable via la variable d'environnement ``SFTP_TIMEOUT`` (secondes).
+SFTP_TIMEOUT = float(os.environ.get("SFTP_TIMEOUT", "30"))
 
 # ── Interface ────────────────────────────────────────────────────────
 
@@ -193,6 +203,9 @@ class SFTPStorage(StorageBackend):
         self._ssh = None
         self._sftp = None
         self._open_handles = {}  # chemin_distant → Handle SFTP ouvert en append
+        # paramiko SFTPClient n'est PAS thread-safe : le canal partagé est
+        # sérialisé par ce verrou (réentrant, car _connect le reprend).
+        self._lock = threading.RLock()
 
     def _known_hosts_path(self) -> Path:
         """Fichier known_hosts persistant (TOFU).
@@ -210,62 +223,81 @@ class SFTPStorage(StorageBackend):
             return Path(__file__).resolve().parent / ".sftp_known_hosts"
 
     def _connect(self):
-        """Ouvre la connexion SFTP si pas déjà active."""
-        if self._sftp:
-            try:
-                # Vérifier que la connexion est encore vivante
-                self._sftp.stat(".")
-                return self._sftp
-            except Exception:
-                # Connexion morte, on la reconnecte
-                with contextlib.suppress(Exception):
-                    self._sftp.close()
-                self._sftp = None
-                self._ssh = None
+        """Ouvre la connexion SFTP si pas déjà active (délimitée dans le temps).
 
-        import paramiko
-
-        class _TOFUMissingHostKeyPolicy(paramiko.MissingHostKeyPolicy):
-            """TOFU (Trust On First Use) : mémorise la 1re clé d'hôte
-            rencontrée, refuse ensuite toute clé différente.
-
-            Remplace AutoAddPolicy : un attaquant MITM ne peut plus injecter
-            une clé d'hôte sur une connexion ultérieure (BadHostKeyException,
-            dont le message indique la marche à suivre : supprimer la ligne
-            du fichier known_hosts si le serveur a été légitimement réinstallé).
-            """
-
-            def __init__(self, known_hosts_path):
-                self._path = known_hosts_path
-
-            def missing_host_key(self, client, hostname, key):
-                client.get_host_keys().add(hostname, key.get_name(), key)
+        Tient ``self._lock`` (réentrant) : un seul client SFTP est créé,
+        et son canal est sérialisé pour tous les appelants (paramiko
+        SFTPClient n'est pas thread-safe).
+        """
+        with self._lock:
+            if self._sftp:
                 try:
-                    client.get_host_keys().save(self._path)
-                    logging.info("[SFTP] Nouvelle host key mémorisée (TOFU) pour %s → %s",
-                                 hostname, self._path)
-                except OSError as e:
-                    # Fail-closed : si on ne peut pas persister la clé, on refuse
-                    # plutôt que d'accepter une clé non vérifiée.
-                    raise paramiko.SSHException(
-                        f"Impossible de persister la host key TOFU ({self._path}) : {e}"
-                    ) from e
+                    # Vérifier que la connexion est encore vivante
+                    self._sftp.stat(".")
+                    return self._sftp
+                except Exception:
+                    # Connexion morte, on la reconnecte
+                    with contextlib.suppress(Exception):
+                        self._sftp.close()
+                    self._sftp = None
+                    self._ssh = None
 
-        self._ssh = paramiko.SSHClient()
-        kh_path = self._known_hosts_path()
-        if kh_path.exists():
-            self._ssh.load_host_keys(str(kh_path))
-        self._ssh.set_missing_host_key_policy(_TOFUMissingHostKeyPolicy(str(kh_path)))
+            import paramiko
 
-        if self.key_path:
-            self._ssh.connect(self.host, port=self.port,
-                              username=self.user, key_filename=self.key_path)
-        else:
-            self._ssh.connect(self.host, port=self.port,
-                              username=self.user, password=self.password)
-        self._sftp = self._ssh.open_sftp()
-        logging.info(f"[SFTP] Connected to {self.host}:{self.port} as {self.user}")
-        return self._sftp
+            class _TOFUMissingHostKeyPolicy(paramiko.MissingHostKeyPolicy):
+                """TOFU (Trust On First Use) : mémorise la 1re clé d'hôte
+                rencontrée, refuse ensuite toute clé différente.
+
+                Remplace AutoAddPolicy : un attaquant MITM ne peut plus injecter
+                une clé d'hôte sur une connexion ultérieure (BadHostKeyException,
+                dont le message indique la marche à suivre : supprimer la ligne
+                du fichier known_hosts si le serveur a été légitimement réinstallé).
+                """
+
+                def __init__(self, known_hosts_path):
+                    self._path = known_hosts_path
+
+                def missing_host_key(self, client, hostname, key):
+                    client.get_host_keys().add(hostname, key.get_name(), key)
+                    try:
+                        client.get_host_keys().save(self._path)
+                        logging.info("[SFTP] Nouvelle host key mémorisée (TOFU) pour %s → %s",
+                                     hostname, self._path)
+                    except OSError as e:
+                        # Fail-closed : si on ne peut pas persister la clé, on refuse
+                        # plutôt que d'accepter une clé non vérifiée.
+                        raise paramiko.SSHException(
+                            f"Impossible de persister la host key TOFU ({self._path}) : {e}"
+                        ) from e
+
+            self._ssh = paramiko.SSHClient()
+            kh_path = self._known_hosts_path()
+            if kh_path.exists():
+                self._ssh.load_host_keys(str(kh_path))
+            self._ssh.set_missing_host_key_policy(_TOFUMissingHostKeyPolicy(str(kh_path)))
+
+            connect_kwargs = {
+                "port": self.port,
+                "username": self.user,
+                "timeout": SFTP_TIMEOUT,
+                "banner_timeout": SFTP_TIMEOUT,
+                "auth_timeout": SFTP_TIMEOUT,
+            }
+            if self.key_path:
+                self._ssh.connect(self.host, key_filename=self.key_path, **connect_kwargs)
+            else:
+                self._ssh.connect(self.host, password=self.password, **connect_kwargs)
+            # Keepalive : détecte les connexions mortes au lieu de pendre.
+            with contextlib.suppress(Exception):
+                self._ssh.get_transport().set_keepalive(max(5, int(SFTP_TIMEOUT)))
+            self._sftp = self._ssh.open_sftp()
+            # Timeout socket sur le canal : borne get/put/stat qui stallent.
+            with contextlib.suppress(Exception):
+                chan = self._sftp.get_channel()
+                if chan is not None:
+                    chan.settimeout(SFTP_TIMEOUT)
+            logging.info(f"[SFTP] Connected to {self.host}:{self.port} as {self.user}")
+            return self._sftp
 
     def _full_path(self, remote_path: str) -> str:
         """Retourne le chemin absolu sur le serveur SFTP."""
@@ -290,135 +322,145 @@ class SFTPStorage(StorageBackend):
 
     def create_empty(self, remote_path: str) -> bool:
         """Cree un fichier vide sur le SFTP."""
-        try:
-            sftp = self._connect()
-            full = self._full_path(remote_path)
-            self._mkdir_p(sftp, "/".join(full.split("/")[:-1]))
-            with sftp.open(full, 'wb'):
-                pass  # fichier vide
-            return True
-        except Exception as e:
-            logging.exception(f"[SFTP] create_empty failed: {e}")
-            return False
+        with self._lock:
+            try:
+                sftp = self._connect()
+                full = self._full_path(remote_path)
+                self._mkdir_p(sftp, "/".join(full.split("/")[:-1]))
+                with sftp.open(full, 'wb'):
+                    pass  # fichier vide
+                return True
+            except Exception as e:
+                logging.exception(f"[SFTP] create_empty failed: {e}")
+                return False
 
     def append_chunk(self, remote_path: str, data: bytes) -> bool:
         """Append un chunk directement sur le fichier SFTP (pas de temp local)."""
-        try:
-            sftp = self._connect()
-            full = self._full_path(remote_path)
-            with sftp.open(full, 'ab') as f:
-                f.write(data)
-            return True
-        except Exception as e:
-            logging.exception(f"[SFTP] append_chunk failed: {e}")
-            return False
+        with self._lock:
+            try:
+                sftp = self._connect()
+                full = self._full_path(remote_path)
+                with sftp.open(full, 'ab') as f:
+                    f.write(data)
+                return True
+            except Exception as e:
+                logging.exception(f"[SFTP] append_chunk failed: {e}")
+                return False
 
     def append_chunk_stream(self, remote_path: str, stream, buf_size: int = 65536) -> bool:
         """Stream vers SFTP par buffers de 1MB avec pipelining.
         Garde le handle ouvert pour eviter de chercher la fin du fichier
         a chaque chunk."""
-        try:
-            sftp = self._connect()
-            # Buffer interne paramiko plus gros (2MB au lieu de 32KB)
-            sftp.sftp_chunk_size = 2 * 1024 * 1024
-            full = self._full_path(remote_path)
+        with self._lock:
+            try:
+                sftp = self._connect()
+                # Buffer interne paramiko plus gros (2MB au lieu de 32KB)
+                sftp.sftp_chunk_size = 2 * 1024 * 1024
+                full = self._full_path(remote_path)
 
-            # Reutiliser le handle ouvert si deja cree (evite seek a chaque chunk)
-            if full not in self._open_handles:
-                self._mkdir_p(sftp, "/".join(full.split("/")[:-1]))
-                f = sftp.open(full, 'ab')
-                f.set_pipelined(True)
-                self._open_handles[full] = f
-            else:
-                f = self._open_handles[full]
+                # Reutiliser le handle ouvert si deja cree (evite seek a chaque chunk)
+                if full not in self._open_handles:
+                    self._mkdir_p(sftp, "/".join(full.split("/")[:-1]))
+                    f = sftp.open(full, 'ab')
+                    f.set_pipelined(True)
+                    self._open_handles[full] = f
+                else:
+                    f = self._open_handles[full]
 
-            write_buf = 1024 * 1024
-            while True:
-                buf = stream.read(write_buf)
-                if not buf:
-                    break
-                f.write(buf)
-            return True
-        except Exception as e:
-            self._close_handle_remote(remote_path)
-            logging.exception(f"[SFTP] append_chunk_stream failed: {e}")
-            return False
+                write_buf = 1024 * 1024
+                while True:
+                    buf = stream.read(write_buf)
+                    if not buf:
+                        break
+                    f.write(buf)
+                return True
+            except Exception as e:
+                self._close_handle_remote(remote_path)
+                logging.exception(f"[SFTP] append_chunk_stream failed: {e}")
+                return False
 
     def _close_handle_remote(self, remote_path: str):
-        """Ferme le handle ouvert pour ce chemin distant."""
-        full = self._full_path(remote_path)
-        if full in self._open_handles:
-            with contextlib.suppress(Exception):
-                self._open_handles[full].close()
-            del self._open_handles[full]
+        """Ferme le handle ouvert pour ce chemin distant (sous verrou)."""
+        with self._lock:
+            full = self._full_path(remote_path)
+            if full in self._open_handles:
+                with contextlib.suppress(Exception):
+                    self._open_handles[full].close()
+                del self._open_handles[full]
 
     def close_handle(self, remote_path: str):
         """Ferme le handle SFTP ouvert pour ce chemin."""
         self._close_handle_remote(remote_path)
 
     def upload(self, local_path: str, remote_path: str) -> bool:
-        try:
-            sftp = self._connect()
-            full = self._full_path(remote_path)
-            self._mkdir_p(sftp, "/".join(full.split("/")[:-1]))
-            sftp.put(local_path, full)
-            logging.info(f"[SFTP] Uploaded {local_path} → {full}")
-            return True
-        except Exception as e:
-            logging.exception(f"[SFTP] upload failed: {e}")
-            return False
+        with self._lock:
+            try:
+                sftp = self._connect()
+                full = self._full_path(remote_path)
+                self._mkdir_p(sftp, "/".join(full.split("/")[:-1]))
+                sftp.put(local_path, full)
+                logging.info(f"[SFTP] Uploaded {local_path} → {full}")
+                return True
+            except Exception as e:
+                logging.exception(f"[SFTP] upload failed: {e}")
+                return False
 
     def download(self, remote_path: str, local_path: str) -> bool:
-        try:
-            sftp = self._connect()
-            full = self._full_path(remote_path)
-            sftp.get(full, local_path)
-            return True
-        except Exception as e:
-            logging.exception(f"[SFTP] download failed: {e}")
-            return False
+        with self._lock:
+            try:
+                sftp = self._connect()
+                full = self._full_path(remote_path)
+                sftp.get(full, local_path)
+                return True
+            except Exception as e:
+                logging.exception(f"[SFTP] download failed: {e}")
+                return False
 
     def delete(self, remote_path: str) -> bool:
-        try:
-            sftp = self._connect()
-            full = self._full_path(remote_path)
-            sftp.remove(full)
-            return True
-        except Exception:
-            return False
+        with self._lock:
+            try:
+                sftp = self._connect()
+                full = self._full_path(remote_path)
+                sftp.remove(full)
+                return True
+            except Exception:
+                return False
 
     def exists(self, remote_path: str) -> bool:
-        try:
-            sftp = self._connect()
-            full = self._full_path(remote_path)
-            sftp.stat(full)
-            return True
-        except Exception:
-            return False
+        with self._lock:
+            try:
+                sftp = self._connect()
+                full = self._full_path(remote_path)
+                sftp.stat(full)
+                return True
+            except Exception:
+                return False
 
     def list_dir(self, remote_dir: str) -> list:
-        try:
-            sftp = self._connect()
-            full = self._full_path(remote_dir)
-            return sftp.listdir(full)
-        except Exception:
-            return []
+        with self._lock:
+            try:
+                sftp = self._connect()
+                full = self._full_path(remote_dir)
+                return sftp.listdir(full)
+            except Exception:
+                return []
 
     def get_backend_name(self) -> str:
         return f"sftp://{self.host}:{self.port}{self.base_path}"
 
     def close(self):
         """Ferme proprement la connexion."""
-        try:
-            if self._sftp:
-                self._sftp.close()
-            if self._ssh:
-                self._ssh.close()
-        except Exception:
-            pass
-        finally:
-            self._sftp = None
-            self._ssh = None
+        with self._lock:
+            try:
+                if self._sftp:
+                    self._sftp.close()
+                if self._ssh:
+                    self._ssh.close()
+            except Exception:
+                pass
+            finally:
+                self._sftp = None
+                self._ssh = None
 
 
 # ── Factory ──────────────────────────────────────────────────────────
