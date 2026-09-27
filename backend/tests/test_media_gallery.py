@@ -14,6 +14,9 @@ retirés.
 """
 
 import io
+import os
+import tempfile
+from pathlib import Path
 
 import pytest
 import routes.media as media_module
@@ -85,9 +88,14 @@ def _row(media_id):
 
 @pytest.fixture()
 def media_storage(tmp_path, monkeypatch):
-    """LocalStorage isolé dans un répertoire temporaire (aucune écriture repo)."""
+    """LocalStorage isolé dans un répertoire temporaire (aucune écriture repo).
+
+    Isole AUSSI le cache LOCAL de vignettes (``AIH_THUMB_CACHE_DIR``) sous le
+    même ``tmp_path`` : les tests n'écrivent jamais dans ``<repo>/.cache``.
+    """
     st = LocalStorage(str(tmp_path / "uploads"))
     monkeypatch.setattr(storage_module, "_storage_instance", st, raising=False)
+    monkeypatch.setenv("AIH_THUMB_CACHE_DIR", str(tmp_path / "thumbs"))
     yield st
 
 
@@ -147,11 +155,11 @@ def test_thumbnail_generated_once_then_served_from_cache(client, make_token, med
     assert r1.mimetype == "image/jpeg"
     assert calls["n"] == 1
 
-    # Persistée dans le storage sous media/.thumbs/<user>/…
+    # Écrite dans le CACHE LOCAL, jamais dans le storage.
     thumb_path = media_module._thumbnail_cache_path(_row(mid), 256)
-    assert thumb_path.startswith("media/.thumbs/")
-    assert media_storage.exists(thumb_path)
     assert thumb_path.endswith("_256.jpg")
+    assert os.path.isfile(thumb_path)
+    assert not Path(thumb_path).is_relative_to(media_storage.base_dir)
 
     # 2e appel : servie depuis le cache → aucune régénération.
     r2 = client.get(f"/api/media/{mid}/thumbnail", headers=headers)
@@ -190,14 +198,156 @@ def test_thumbnail_size_snapped_and_cached_per_size(client, make_token, media_st
 
     # 999 → snapé à 512 ; cache distinct de la taille par défaut.
     assert client.get(f"/api/media/{mid}/thumbnail?size=999", headers=headers).status_code == 200
-    assert media_storage.exists(media_module._thumbnail_cache_path(row, 512))
-    assert not media_storage.exists(media_module._thumbnail_cache_path(row, 256))
+    assert os.path.isfile(media_module._thumbnail_cache_path(row, 512))
+    assert not os.path.isfile(media_module._thumbnail_cache_path(row, 256))
 
     assert client.get(f"/api/media/{mid}/thumbnail?size=128", headers=headers).status_code == 200
-    assert media_storage.exists(media_module._thumbnail_cache_path(row, 128))
+    assert os.path.isfile(media_module._thumbnail_cache_path(row, 128))
 
     # Taille non numérique → 400 (bornage strict).
     assert client.get(f"/api/media/{mid}/thumbnail?size=abc", headers=headers).status_code == 400
+
+
+# ── 2bis. Vignettes : cache LOCAL (jamais de copie SFTP) ──────────────
+
+def test_thumbnail_written_locally_never_uploaded_to_storage(
+    client, make_token, media_storage, monkeypatch,
+):
+    """(a) La vignette est écrite EN LOCAL et AUCUN upload storage n'a lieu.
+
+    Contrôle NÉGATIF : réintroduire ``storage.upload`` de la vignette (cache
+    SFTP) ferait rougir ce test (``upload != 0``) ET le fichier local
+    n'existerait pas.
+    """
+    headers = _headers(make_token, "thumb-local")
+    r = _upload(client, headers, _png_bytes(400, 250), filename="loc")
+    mid = r.get_json()["id"]
+
+    uploads = []
+    inner = media_storage
+
+    class _Spy:
+        def __getattr__(self, name):
+            attr = getattr(inner, name)
+            if name in ("upload", "download", "exists", "delete"):
+                def _wrapped(*a, _name=name, _attr=attr, **k):
+                    if _name == "upload":
+                        uploads.append(a)
+                    return _attr(*a, **k)
+                return _wrapped
+            return attr
+
+    monkeypatch.setattr(storage_module, "_storage_instance", _Spy(), raising=False)
+
+    resp = client.get(f"/api/media/{mid}/thumbnail", headers=headers)
+    assert resp.status_code == 200
+    assert resp.data[:3] == b"\xff\xd8\xff"
+
+    thumb_path = media_module._thumbnail_cache_path(_row(mid), 256)
+    assert os.path.isfile(thumb_path)                 # écrit localement
+    assert not Path(thumb_path).is_relative_to(media_storage.base_dir)  # PAS dans le storage
+    assert uploads == []                              # AUCUN upload de vignette
+
+
+def test_thumbnail_second_load_has_zero_storage_access(
+    client, make_token, media_storage, monkeypatch,
+):
+    """(b) PREUVE « 2e chargement = 0 accès storage » (compteur d'appels).
+
+    Le 1er appel télécharge la SOURCE (génération) ; le 2e est servi depuis le
+    cache local, sans le moindre appel à l'abstraction de stockage.
+    """
+    headers = _headers(make_token, "thumb-zero")
+    r = _upload(client, headers, _png_bytes(320, 200), filename="z")
+    mid = r.get_json()["id"]
+
+    counts = {"download": 0, "upload": 0, "exists": 0, "delete": 0, "list_dir": 0}
+    inner = media_storage
+
+    class _Spy:
+        def __getattr__(self, name):
+            attr = getattr(inner, name)
+            if name in counts:
+                def _wrapped(*a, _name=name, _attr=attr, **k):
+                    counts[_name] += 1
+                    return _attr(*a, **k)
+                return _wrapped
+            return attr
+
+    monkeypatch.setattr(storage_module, "_storage_instance", _Spy(), raising=False)
+
+    # 1er chargement : la source est lue du storage, AUCUN upload de vignette.
+    assert client.get(f"/api/media/{mid}/thumbnail", headers=headers).status_code == 200
+    assert counts["download"] >= 1
+    assert counts["upload"] == 0
+
+    # 2e chargement : AUCUN accès storage (fichier local déjà présent).
+    counts.update(dict.fromkeys(counts, 0))
+    assert client.get(f"/api/media/{mid}/thumbnail", headers=headers).status_code == 200
+    assert counts == {"download": 0, "upload": 0, "exists": 0, "delete": 0, "list_dir": 0}
+
+
+def test_thumbnail_cache_dir_override_respected(client, make_token, media_storage, monkeypatch, tmp_path):
+    """(d) ``AIH_THUMB_CACHE_DIR`` surcharge bien le dossier de cache local."""
+    override = tmp_path / "custom-thumbs"
+    monkeypatch.setenv("AIH_THUMB_CACHE_DIR", str(override))
+    headers = _headers(make_token, "thumb-override")
+    r = _upload(client, headers, _png_bytes(), filename="ov")
+    mid = r.get_json()["id"]
+
+    assert media_module._thumb_cache_dir() == str(override)
+    thumb_path = media_module._thumbnail_cache_path(_row(mid), 256)
+    assert Path(thumb_path).is_relative_to(override)
+
+    assert client.get(f"/api/media/{mid}/thumbnail", headers=headers).status_code == 200
+    assert os.path.isfile(thumb_path)
+
+
+def test_thumb_cache_dir_default_under_base_dir_not_tmp(monkeypatch):
+    """Dossier par défaut : ``<BASE_DIR>/.cache/thumbnails`` (PAS /tmp)."""
+    monkeypatch.delenv("AIH_THUMB_CACHE_DIR", raising=False)
+    default = media_module._thumb_cache_dir()
+    assert default == os.path.join(str(media_module.BASE_DIR), ".cache", "thumbnails")
+    assert not default.startswith(tempfile.gettempdir())  # survit aux redémarrages
+
+
+def test_thumbnail_cache_path_shape_per_user_hash_size(monkeypatch):
+    """(e) Clé locale : <cache>/<user sanitizé>/<sha1(id:final_path)>_<taille>.jpg."""
+    monkeypatch.delenv("AIH_THUMB_CACHE_DIR", raising=False)
+    row = {"id": 7, "final_path": "media/u/pic.png", "user_id": "User A/x"}
+    p = media_module._thumbnail_cache_path(row, 256)
+    assert os.path.basename(p).endswith("_256.jpg")
+    # Un sous-dossier par utilisateur (id sanitizé : aucun séparateur/\"..\").
+    user_dir = os.path.basename(os.path.dirname(p))
+    assert user_dir == media_module._sanitize_user_id("User A/x")
+    assert "/" not in user_dir and ".." not in user_dir
+    # Stabilité + sensibilité : même couple → même chemin ; taille ⇒ variante.
+    assert p == media_module._thumbnail_cache_path(dict(row), 256)
+    assert p != media_module._thumbnail_cache_path(row, 512)
+    assert p != media_module._thumbnail_cache_path({**row, "id": 8}, 256)
+
+
+def test_thumbnail_cache_unavailable_reason(client, make_token, media_storage, monkeypatch, tmp_path):
+    """Dossier de cache inutilisable → 404 ``cache_unavailable`` (jamais de crash).
+
+    Contrôle NÉGATIF : si ``_ensure_thumbnail_file`` ne détectait pas l'échec de
+    création du dossier, une exception remonterait (500) au lieu du 404 structuré.
+    """
+    headers = _headers(make_token, "thumb-nocache-dir")
+    r = _upload(client, headers, _png_bytes(), filename="nodir")
+    mid = r.get_json()["id"]
+
+    # Chemin impossible : un parent est un FICHIER, pas un dossier.
+    blocker = tmp_path / "blocker"
+    blocker.write_text("x")
+    monkeypatch.setenv("AIH_THUMB_CACHE_DIR", str(blocker / "sub"))
+
+    resp = client.get(f"/api/media/{mid}/thumbnail", headers=headers)
+    assert resp.status_code == 404
+    body = resp.get_json()
+    assert body["code"] == "thumbnail_unavailable"
+    assert body["reason"] == "cache_unavailable"
+    assert "no-store" in resp.headers.get("Cache-Control", "")
 
 
 # ── 3. Vignette : dégradation propre ──────────────────────────────────
@@ -225,7 +375,7 @@ def test_thumbnail_degradation_without_tools(client, make_token, media_storage, 
     item = client.get("/api/media", headers=headers).get_json()["items"][0]
     assert item["thumb_available"] is False
     # Rien n'a été mis en cache.
-    assert not media_storage.exists(media_module._thumbnail_cache_path(_row(mid), 256))
+    assert not os.path.isfile(media_module._thumbnail_cache_path(_row(mid), 256))
 
 
 def test_thumbnail_error_headers_forbid_durable_cache(client, make_token, media_storage, monkeypatch):
@@ -280,7 +430,7 @@ def test_thumbnail_regenerated_after_tool_recovery(client, make_token, media_sto
     resp = client.get(f"/api/media/{mid}/thumbnail", headers=headers)
     assert resp.status_code == 404
     assert resp.get_json()["reason"] == "no_tools"
-    assert not media_storage.exists(thumb_path)
+    assert not os.path.isfile(thumb_path)
 
     # 2) Outils « revenus » → régénération immédiate + persistance du cache.
     def _pillow_real():
@@ -295,7 +445,7 @@ def test_thumbnail_regenerated_after_tool_recovery(client, make_token, media_sto
     assert resp2.status_code == 200
     assert resp2.mimetype == "image/jpeg"
     assert resp2.data[:3] == b"\xff\xd8\xff"  # magic bytes JPEG (SOI)
-    assert media_storage.exists(thumb_path)
+    assert os.path.isfile(thumb_path)
 
 
 def test_thumbnail_nominal_returns_real_jpeg(client, make_token, media_storage):

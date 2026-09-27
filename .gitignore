@@ -19,6 +19,10 @@ keywords.db
 # ── Cache de références MiniMax Music3 (généré) ───────
 backend/data/
 
+# ── Cache LOCAL des vignettes média (généré, jetable) ──
+# <BASE_DIR>/.cache/thumbnails (ou AIH_THUMB_CACHE_DIR)
+.cache/
+
 # ── Virtual environments ──────────────────────────────
 .venv/
 venv/

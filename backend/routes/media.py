@@ -9,7 +9,7 @@ Flow (calqué sur ``routes/files.py``) :
   2. POST /api/media/chunk         → append un chunk au fichier temporaire
   3. POST /api/media/complete      → range le fichier sous media/<user>/… + métadonnées
   4. GET  /api/media/<id>/download → sert le média (propriétaire ou admin)
-  5. GET  /api/media/<id>/thumbnail → vignette cachée (cache storage + navigateur)
+  5. GET  /api/media/<id>/thumbnail → vignette (cache LOCAL persistant + navigateur)
   6. GET  /api/media/<id>/metadata → dimensions/durée/codec + prompt/workflow
   7. GET  /api/media               → liste paginée + filtres/tri (galerie)
   8. DELETE /api/media/<id>        → corbeille (soft delete, restaurable)
@@ -21,7 +21,9 @@ Contraintes :
   - Authentification obligatoire (``_login_required``) : le ``user_id`` est
     DÉRIVÉ DU TOKEN, jamais fourni par le client.
   - Le fichier final est rangé via ``get_storage()`` (jamais de chemin disque
-    en dur) → fonctionne avec LocalStorage ET SFTPStorage.
+    en dur) → fonctionne avec LocalStorage ET SFTPStorage. Seules les VIGNETTES
+    (donnée dérivée, régénérable) vivent dans un cache LOCAL au backend
+    (``_thumb_cache_dir``), jamais sur le storage — réactivité de la galerie.
   - Sanitization stricte de ``user_id`` / ``subfolder`` / ``filename`` : tout
     segment ``.`` / ``..`` / absolu est neutralisé (confinement anti
     path-traversal).
@@ -400,18 +402,39 @@ def _normalize_thumb_size(raw):
     return min(THUMB_SIZES, key=lambda s: (abs(s - n), s))
 
 
-def _thumbnail_cache_path(row, size):
-    """Chemin storage de la vignette (clé canonique stable).
+def _thumb_cache_dir():
+    """Dossier LOCAL persistant du cache de vignettes (survit aux redémarrages).
 
-    ``<prefix>/.thumbs/<user>/<sha1(id:final_path)>_<size>.jpg`` — l'id et le
+    Les VIGNETTES (donnée dérivée, régénérable, jetable) vivent sur le disque
+    LOCAL du backend — JAMAIS sur le storage (SFTP) : un aller-retour SFTP par
+    vignette rendrait la galerie non réactive. Les MÉDIAS, eux, restent sur le
+    storage (SFTP si configuré).
+
+    Défaut : ``<BASE_DIR>/.cache/thumbnails`` (sous la racine projet, PAS /tmp :
+    un cache sous /tmp disparaîtrait à chaque redémarrage/reboot et serait
+    reconstruit à froid — d'où la latence qu'on veut justement éviter).
+    Surchargeable par ``AIH_THUMB_CACHE_DIR`` (chemin absolu) — utile en
+    déploiement pour poser le cache sur un volume dédié (ex. ``/var/cache/aih``).
+    """
+    override = os.environ.get("AIH_THUMB_CACHE_DIR")
+    if override:
+        return override
+    return os.path.join(str(BASE_DIR), ".cache", "thumbnails")
+
+
+def _thumbnail_cache_path(row, size):
+    """Chemin ABSOLU LOCAL de la vignette (clé canonique stable).
+
+    ``<cache>/<user>/<sha1(id:final_path)>_<size>.jpg`` — l'id et le
     ``final_path`` garantissent l'unicité et l'invalidation naturelle si le
     média change de chemin ; la taille fait partie de la clé (une variante par
-    couple média/taille).
+    couple média/taille). Le fichier vit en LOCAL (voir ``_thumb_cache_dir``),
+    jamais dans le storage : le lire ne coûte aucun accès SFTP.
     """
     key = hashlib.sha1(f"{row['id']}:{row['final_path'] or ''}".encode()).hexdigest()[:24]
-    rel = f"{_media_prefix()}/.thumbs/{_sanitize_user_id(row['user_id'])}/{key}_{size}.jpg"
-    _assert_safe_relpath(rel)
-    return rel
+    return os.path.join(
+        _thumb_cache_dir(), _sanitize_user_id(row['user_id']), f"{key}_{size}.jpg"
+    )
 
 
 def _thumbnail_etag(row, size):
@@ -472,15 +495,19 @@ def _generate_thumbnail(kind, src_path, out_path, size):
 
 
 def _ensure_thumbnail_file(row, size, thumb_path):
-    """Prépare un fichier local de vignette (cache storage ou généré).
+    """Prépare la vignette LOCALE (cache local → génération depuis le storage).
 
-    Ordre : cache storage → génération depuis le média source → persistance du
-    cache (best-effort).
+    Ordre : fichier LOCAL déjà présent → sinon téléchargement de la SOURCE
+    depuis le storage puis génération (Pillow/ffmpeg) et écriture ATOMIQUE du
+    fichier local. AUCUN upload de la vignette vers le storage : elle ne
+    quitte jamais le disque local du backend.
 
-    Retourne ``(chemin_local, None)`` en cas de succès, sinon
-    ``(None, raison)``. La ``raison`` (chaîne courte, stable) rend l'échec
-    DIAGNOSTIQUABLE et est exposée par la route :
+    Retourne ``(chemin_local, None)`` en cas de succès, sinon ``(None, raison)``.
+    La ``raison`` (chaîne courte, stable) rend l'échec DIAGNOSTIQUABLE et est
+    exposée par la route :
 
+      - ``cache_unavailable``  : dossier de cache local non créable / non
+                                 inscriptible (permissions, disque plein) ;
       - ``no_tools``           : ni Pillow ni ffmpeg pour ce type de média
                                  (type non couvert : audio, ou dépendance
                                  manquante dans le déploiement) ;
@@ -490,15 +517,30 @@ def _ensure_thumbnail_file(row, size, thumb_path):
     Aucune donnée sensible n'est journalisée (id + type + disponibilité des
     outils uniquement).
     """
-    storage = get_storage()
-    local_out = os.path.join(TEMP_DIR, f"thumb_{row['id']}_{size}.jpg")
+    # 1) Cache LOCAL déjà présent → servir directement (ZÉRO accès storage).
+    try:
+        if os.path.isfile(thumb_path) and os.path.getsize(thumb_path) > 0:
+            return thumb_path, None
+    except OSError:
+        pass
 
-    # 1) Servir depuis le cache storage si présent (aucun outil requis).
-    if storage.exists(thumb_path) and storage.download(thumb_path, local_out):
-        return local_out, None
+    # 2) Préparer le dossier de cache local (création paresseuse des parents)
+    #    + sonde d'écriture : distingue « cache inutilisable » d'un simple échec
+    #    de génération, pour un ``reason`` exact et une erreur loguée explicite.
+    cache_dir = os.path.dirname(thumb_path)
+    tmp_out = f"{thumb_path}.tmp-{secrets.token_hex(6)}"
+    try:
+        os.makedirs(cache_dir, exist_ok=True)
+        with open(tmp_out, "wb"):
+            pass
+    except OSError as e:
+        logging.error("[media] cache vignettes local inutilisable (%s) : %s", cache_dir, e)
+        return None, "cache_unavailable"
 
-    # 2) Aucune vignette pour l'audio, ou aucun outil disponible.
+    # 3) Aucune vignette pour l'audio, ou aucun outil disponible.
     if not _kind_can_have_thumbnail(row["kind"]):
+        with contextlib.suppress(OSError):
+            os.remove(tmp_out)
         logging.warning(
             "[media] vignette indisponible id=%s kind=%s : aucun outil "
             "(Pillow=%s, ffmpeg=%s) — dépendance manquante ?",
@@ -506,37 +548,35 @@ def _ensure_thumbnail_file(row, size, thumb_path):
         )
         return None, "no_tools"
 
-    # 3) Générer depuis le média source.
+    # 4) Générer depuis le média source (téléchargé du storage).
+    storage = get_storage()
     src_tmp = os.path.join(TEMP_DIR, f"tsrc_{row['id']}{row['ext'] or ''}")
     if not storage.download(row["final_path"], src_tmp):
+        with contextlib.suppress(OSError):
+            os.remove(tmp_out)
         logging.warning(
             "[media] vignette id=%s : média source illisible depuis le storage (%s)",
             row["id"], row["final_path"],
         )
         return None, "source_unavailable"
     try:
-        if not _generate_thumbnail(row["kind"], src_tmp, local_out, size):
+        if not _generate_thumbnail(row["kind"], src_tmp, tmp_out, size):
             logging.warning(
                 "[media] vignette id=%s : génération échouée (kind=%s, Pillow=%s, ffmpeg=%s)",
                 row["id"], row["kind"], _pillow_available(), _ffmpeg_path() is not None,
             )
             return None, "generation_failed"
+        # 5) Publication ATOMIQUE dans le cache local (rename sur le même FS).
+        os.replace(tmp_out, thumb_path)
+    except OSError as e:
+        logging.error("[media] écriture vignette locale impossible (%s) : %s", thumb_path, e)
+        return None, "cache_unavailable"
     finally:
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(OSError):
             os.remove(src_tmp)
-
-    # 4) Persister le cache (copie : LocalStorage.upload DÉPLACE le source).
-    cache_tmp = local_out + ".up"
-    try:
-        shutil.copy(local_out, cache_tmp)
-        if not storage.upload(cache_tmp, thumb_path):
-            logging.warning(f"[media] échec de persistance vignette {thumb_path}")
-    except Exception as e:
-        logging.warning(f"[media] échec de persistance vignette {thumb_path}: {e}")
-    finally:
-        with contextlib.suppress(Exception):
-            os.remove(cache_tmp)
-    return local_out, None
+        with contextlib.suppress(OSError):
+            os.remove(tmp_out)
+    return thumb_path, None
 
 
 def _persist_technical_metadata(media_id, tech):
@@ -729,13 +769,15 @@ def _parse_bulk_ids(data):
 
 
 def _purge_media_row(row):
-    """Suppression DÉFINITIVE : fichier + vignettes en cache (toutes tailles) + ligne.
+    """Suppression DÉFINITIVE : fichier + vignettes locales + ligne.
 
-    Le fichier et ses vignettes sont retirés via ``get_storage()`` (Local ET
-    SFTP). Les clés de vignettes sont recalculées avec la clé canonique de
-    ``/thumbnail`` (une variante par taille de ``THUMB_SIZES``) : aucune donnée
-    n'est laissée orpheline. Best-effort : un fichier déjà absent ne fait pas
-    échouer l'opération (on supprime quand même la ligne).
+    Le FICHIER média est retiré via ``get_storage()`` (Local ET SFTP). Les
+    vignettes vivent dans le CACHE LOCAL (``_thumbnail_cache_path``, une variante
+    par taille de ``THUMB_SIZES``) : elles sont retirées du disque local — aucun
+    orphelin local. Les vignettes éventuellement restées sur le storage (écrites
+    AVANT migration, inoffensives) ne sont PAS touchées ici. Best-effort : un
+    fichier déjà absent ne fait pas échouer l'opération (on supprime quand même
+    la ligne).
     """
     storage = get_storage()
     removed_file = False
@@ -743,8 +785,8 @@ def _purge_media_row(row):
         with contextlib.suppress(Exception):
             removed_file = bool(storage.delete(row["final_path"]))
     for size in THUMB_SIZES:
-        with contextlib.suppress(Exception):
-            storage.delete(_thumbnail_cache_path(row, size))
+        with contextlib.suppress(OSError):
+            os.remove(_thumbnail_cache_path(row, size))
     conn = get_db()
     try:
         conn.execute("DELETE FROM media_files WHERE id = ?", (row["id"],))
@@ -1180,9 +1222,11 @@ def media_thumbnail(media_id):
     stable. La revalidation (``If-None-Match``) renvoie 304 SANS toucher au
     storage.
 
-    Cache serveur : la vignette est générée UNE fois puis persistée dans le
-    storage sous ``media/.thumbs/<user>/<sha1>_<size>.jpg`` ; les appels
-    suivants la servent depuis ce cache.
+    Cache serveur : la vignette est générée UNE fois puis écrite dans un cache
+    LOCAL persistant (``AIH_THUMB_CACHE_DIR`` ou ``<BASE_DIR>/.cache/thumbnails``)
+    sous ``<user>/<sha1>_<size>.jpg`` ; les appels suivants la servent depuis ce
+    fichier local, SANS aucun accès au storage (aucun aller-retour SFTP). Les
+    MÉDIAS sources, eux, restent sur le storage.
 
     ``?size=`` borné à {128, 256, 512} (défaut 256) — toute valeur numérique
     est snappée à la plus proche ; non numérique → 400. Le cache est indexé par
@@ -1259,24 +1303,14 @@ def media_thumbnail(media_id):
         resp.headers['Cache-Control'] = THUMB_ERROR_CACHE_CONTROL
         return resp
 
-    def _cleanup_thumb():
-        with contextlib.suppress(Exception):
-            os.remove(local_thumb)
-
-    try:
-        response = send_file(
-            local_thumb,
-            mimetype='image/jpeg',
-            conditional=True,
-            etag=etag,
-            max_age=THUMB_MAX_AGE,
-        )
-    except Exception:
-        _cleanup_thumb()
-        raise
-
+    response = send_file(
+        local_thumb,
+        mimetype='image/jpeg',
+        conditional=True,
+        etag=etag,
+        max_age=THUMB_MAX_AGE,
+    )
     response.headers['Cache-Control'] = THUMB_CACHE_CONTROL
-    response.call_on_close(_cleanup_thumb)
     return response
 
 

@@ -15,6 +15,7 @@ Contrôles NÉGATIFS (un test doit ROUGIR si la protection disparaît) :
 """
 
 import io
+import os
 
 import pytest
 import routes.media as media_module
@@ -93,9 +94,13 @@ def _list_ids(client, headers, query=""):
 
 @pytest.fixture()
 def media_storage(tmp_path, monkeypatch):
-    """LocalStorage isolé dans un répertoire temporaire (aucune écriture repo)."""
+    """LocalStorage isolé dans un répertoire temporaire (aucune écriture repo).
+
+    Isole aussi le cache LOCAL de vignettes (``AIH_THUMB_CACHE_DIR``).
+    """
     st = LocalStorage(str(tmp_path / "uploads"))
     monkeypatch.setattr(storage_module, "_storage_instance", st, raising=False)
+    monkeypatch.setenv("AIH_THUMB_CACHE_DIR", str(tmp_path / "thumbs"))
     yield st
 
 
@@ -249,23 +254,43 @@ def test_purge_removes_file_thumb_and_row(client, make_token, media_storage):
     row = _row(mid)
     final_path = row["final_path"]
 
-    # Génère et cache la vignette (clé canonique de /thumbnail).
+    # Génère et cache la vignette LOCALE (clé canonique de /thumbnail).
     assert client.get(f"/api/media/{mid}/thumbnail", headers=headers).status_code == 200
     thumb_path = media_module._thumbnail_cache_path(row, 256)
-    assert media_storage.exists(thumb_path)
+    assert os.path.isfile(thumb_path)
 
     client.delete(f"/api/media/{mid}", headers=headers)  # corbeille
     resp = client.delete(f"/api/media/{mid}/purge", headers=headers)
     assert resp.status_code == 200, resp.get_data(as_text=True)
     assert resp.get_json()["purged"] is True
 
-    # Fichier, vignette et ligne : tout a disparu (aucun orphelin).
+    # Fichier (storage), vignette LOCALE et ligne : tout a disparu (aucun orphelin).
     assert not media_storage.exists(final_path)
-    assert not media_storage.exists(thumb_path)
+    assert not os.path.isfile(thumb_path)
     assert _row(mid) is None
     assert mid not in _list_ids(client, headers, "?status=all")
     # Purge d'un id désormais inexistant → 404.
     assert client.delete(f"/api/media/{mid}/purge", headers=headers).status_code == 404
+
+
+def test_purge_removes_all_local_thumb_sizes(client, make_token, media_storage):
+    """(c) Purge supprime la vignette LOCALE pour TOUTES les tailles de THUMB_SIZES."""
+    headers = _headers(make_token, "purge-sizes")
+    mid = _upload(client, headers, _png_bytes(600, 400), filename="ps")
+    row = _row(mid)
+
+    for size in media_module.THUMB_SIZES:
+        assert client.get(
+            f"/api/media/{mid}/thumbnail?size={size}", headers=headers
+        ).status_code == 200
+    thumb_paths = [media_module._thumbnail_cache_path(row, s) for s in media_module.THUMB_SIZES]
+    assert all(os.path.isfile(p) for p in thumb_paths)
+
+    client.delete(f"/api/media/{mid}", headers=headers)
+    assert client.delete(f"/api/media/{mid}/purge", headers=headers).status_code == 200
+
+    # Aucun orphelin local pour AUCUNE taille.
+    assert all(not os.path.isfile(p) for p in thumb_paths)
 
 
 # ── 5. Accès aux médias corbeillés (choix documenté) ──────────────────
