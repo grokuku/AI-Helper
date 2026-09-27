@@ -247,6 +247,9 @@ def _migrate_presets(conn):
         * ``context_source``     TEXT NULL ∈ ('manual','auto','family','unknown').
         * ``context_checked_at`` TEXT NULL — horodatage ISO 8601 UTC de la
           dernière détection/réglage.
+    - ``supports_vision`` INTEGER NOT NULL DEFAULT 0 — le modèle du preset
+      accepte-t-il une image (API vision OpenAI-compatible) ? Utilisé par
+      l'auto-tagging IA. Compat arrière : les presets existants valent 0.
 
     Idempotent (ALTER TABLE uniquement si la colonne manque). Backfill : aucun
     UPDATE nécessaire — NULL est la valeur initiale voulue (= détection auto).
@@ -257,6 +260,11 @@ def _migrate_presets(conn):
     cols_presets = [r[1] for r in conn.execute("PRAGMA table_info(ai_presets)").fetchall()]
     if "is_client_side" not in cols_presets:
         conn.execute("ALTER TABLE ai_presets ADD COLUMN is_client_side INTEGER DEFAULT 0")
+    # Compat arrière : les presets existants deviennent non-vision (0).
+    if "supports_vision" not in cols_presets:
+        conn.execute(
+            "ALTER TABLE ai_presets ADD COLUMN supports_vision INTEGER NOT NULL DEFAULT 0"
+        )
     # ALTER TABLE ... ADD COLUMN sans DEFAULT remplit les lignes existantes à
     # NULL (= détection auto), ce qui est le backfill voulu.
     for col, decl in (
@@ -530,7 +538,7 @@ def _create_post_migration_tables(conn):
     """Crée les tables qui dépendent des migrations.
 
     Inclut : ``filter_unions``, ``enhance_sessions``, ``blobby_memories``,
-    ``shared_workflows`` et ``file_uploads``.
+    ``shared_workflows``, ``file_uploads``, ``media_files`` et ``media_tags``.
 
     Args:
         conn (sqlite3.Connection): La connexion SQLite active.
@@ -659,8 +667,37 @@ def _create_post_migration_tables(conn):
             codec TEXT,
             meta_checked INTEGER DEFAULT 0,
             trashed_at TEXT,
+            -- Favori / « à exposer » : UN SEUL drapeau (0/1), pensé pour la
+            -- future galerie publique épurée (n'affiche que favorite=1).
+            favorite INTEGER NOT NULL DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+    """)
+
+    # ── Table Media tags (tags manuels/IA attachés aux médias) ──
+    # Un média peut porter plusieurs tags ; la colonne ``source`` distingue
+    # l'origine : ``manual`` (saisi par l'utilisateur) vs ``ai`` (auto-tagging
+    # à venir). Les tags IA ne devront JAMAIS écraser les tags manuels : les
+    # deux sources coexistent, d'où une table séparée (pas une colonne texte).
+    # Unicité (média, tag) INSENSIBLE À LA CASSE (``COLLATE NOCASE``) : « Sunset »
+    # et « sunset » sur le MÊME média sont LE MÊME tag — la casse saisie en
+    # premier est conservée (l'insertion suivante est ignorée). La suppression
+    # EN CASCADE est faite explicitement dans ``_purge_media_row`` (routes/media.py)
+    # : la clé étrangère SANS cascade sert de GARDE-FOU (impossible d'insérer un
+    # tag pour un média inexistant, et impossible de supprimer un média encore
+    # référencé sans passer par la purge) — aucune ligne orpheline possible.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS media_tags (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            media_id INTEGER NOT NULL,
+            tag TEXT NOT NULL COLLATE NOCASE,
+            source TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual', 'ai')),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id),
+            FOREIGN KEY (media_id) REFERENCES media_files(id),
+            UNIQUE (media_id, tag)
         )
     """)
 
@@ -736,6 +773,9 @@ def _migrate_media_files(conn):
         # corbeille (NULL si le média est vivant). Le statut correspondant est
         # ``status = 'trashed'`` (colonne ``status`` déjà présente).
         ("trashed_at", "TEXT"),
+        # Favori / « à exposer » (flag unique) : 0 par défaut → compat arrière
+        # (les médias existants deviennent non favoris).
+        ("favorite", "INTEGER NOT NULL DEFAULT 0"),
     ):
         if col not in cols:
             conn.execute(f"ALTER TABLE media_files ADD COLUMN {col} {ddl}")
@@ -763,6 +803,11 @@ def _create_indexes(conn):
     conn.execute("CREATE INDEX IF NOT EXISTS idx_media_files_status ON media_files(status)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_media_files_user_status ON media_files(user_id, status)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_media_files_upload ON media_files(upload_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_media_files_user_favorite ON media_files(user_id, favorite)")
+    # Tags média : (user_id, tag) alimente ``GET /api/media/tags`` (agrégation
+    # par utilisateur) ; (media_id) alimente la lecture des tags d'un média.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_media_tags_user_tag ON media_tags(user_id, tag)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_media_tags_media ON media_tags(media_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_whitelist_uid ON discord_whitelist(discord_uid)")
 
 

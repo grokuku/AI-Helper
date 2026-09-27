@@ -81,6 +81,9 @@ var GALLERY_PH_UNAVAILABLE = '🚫';
 // Valeurs de tri exposées par le backend (GET /api/media?sort=).
 var GALLERY_SORTS = ['created_at_desc', 'created_at_asc', 'name_asc', 'size_desc'];
 
+// Longueur maximale d'un tag (miroir de TAG_MAX_LEN côté backend).
+var GALLERY_TAG_MAX_LEN = 50;
+
 /* ── Helpers purs (testables sans DOM) ───────────────────────────────────── */
 
 /**
@@ -154,7 +157,7 @@ function galleryDownloadUrl(item) {
  *
  * @param {number} page    page 1-indexée
  * @param {number} limit   taille de page
- * @param {object} filters { kind, subfolder, q, from, to, status }
+ * @param {object} filters { kind, subfolder, subfolders, q, from, to, status, favorite, tags }
  * @param {string} sort    valeur de tri backend (déf. created_at_desc)
  */
 function galleryMediaUrl(page, limit, filters, sort) {
@@ -166,10 +169,22 @@ function galleryMediaUrl(page, limit, filters, sort) {
   ];
   if (filters.kind) parts.push('kind=' + encodeURIComponent(filters.kind));
   if (filters.subfolder) parts.push('subfolder=' + encodeURIComponent(filters.subfolder));
+  if (filters.subfolders && filters.subfolders.length) {
+    for (var i = 0; i < filters.subfolders.length; i++) {
+      parts.push('subfolders=' + encodeURIComponent(filters.subfolders[i]));
+    }
+  }
   if (filters.q) parts.push('q=' + encodeURIComponent(filters.q));
   if (filters.from) parts.push('from=' + encodeURIComponent(filters.from));
   if (filters.to) parts.push('to=' + encodeURIComponent(filters.to));
   if (filters.status) parts.push('status=' + encodeURIComponent(filters.status));
+  if (filters.favorite) parts.push('favorite=' + encodeURIComponent(filters.favorite));
+  // Filtre MULTI-tags : paramètre RÉPÉTÉ (sémantique OU côté backend).
+  if (filters.tags && filters.tags.length) {
+    for (var t = 0; t < filters.tags.length; t++) {
+      parts.push('tags=' + encodeURIComponent(filters.tags[t]));
+    }
+  }
   return galleryApiBase() + '/media?' + parts.join('&');
 }
 
@@ -228,6 +243,34 @@ function galleryPrettyJson(raw) {
 }
 
 /**
+ * HTML des chips de tags (rendu par la brique infoPane via `html: true` et
+ * `field.raw`). Chaque chip porte un bouton croix (attribut
+ * `data-gallery-tag-remove`) ; un champ d'ajout est TOUJOURS présent.
+ *
+ * L'`innerHTML` reçoit du contenu ÉCHAPPÉ (`galleryEsc`) : aucun tag ne peut
+ * injecter de HTML. La source (`manual`/`ai`) pilote une classe distincte —
+ * le terrain est prêt pour l'auto-tagging IA (chips IA visuellement différenciées).
+ */
+function galleryTagsFieldHtml(detail) {
+  detail = Array.isArray(detail) ? detail : [];
+  var html = '<span class="gallery-tags">';
+  for (var i = 0; i < detail.length; i++) {
+    var t = detail[i] || {};
+    var name = (t.tag === undefined || t.tag === null) ? '' : String(t.tag);
+    var src = (t.source === 'ai') ? 'ai' : 'manual';
+    html += '<span class="gallery-tag-chip gallery-tag-chip--' + src + '" data-gallery-tag-source="' + src + '">'
+      + '<span class="gallery-tag-name">' + galleryEsc(name) + '</span>'
+      + '<button type="button" class="gallery-tag-remove" data-gallery-tag-remove="' + galleryEsc(name) + '"'
+      + ' title="Retirer ce tag" aria-label="Retirer le tag ' + galleryEsc(name) + '">&#215;</button>'
+      + '</span>';
+  }
+  html += '</span>';
+  html += '<input type="text" class="gallery-tag-input" maxlength="' + GALLERY_TAG_MAX_LEN + '"'
+    + ' placeholder="Ajouter un tag…" aria-label="Ajouter un tag (valider par Entrée)">';
+  return html;
+}
+
+/**
  * Champs du panneau d'informations à partir des métadonnées /metadata.
  * Une valeur vide ('') est omise par la brique (champ masqué).
  */
@@ -243,6 +286,9 @@ function galleryInfoFields(data) {
     { label: 'Durée', value: (data.duration !== null && data.duration !== undefined) ? galleryFormatDuration(data.duration) : '' },
     { label: 'Codec', value: data.codec || '' },
     { label: 'Sous-dossier', value: data.subfolder || '' },
+    { label: 'Favori', value: data.favorite ? '★ Oui' : '' },
+    // Tags : chips interactives (ajout/retrait) — rendu HTML dédié.
+    { label: 'Tags', stacked: true, raw: galleryTagsFieldHtml(data.tags_detail), value: '' },
     { label: 'Ajouté le', value: galleryFormatDate(data.created_at) },
   ];
 }
@@ -282,15 +328,29 @@ function galleryPreviewFields(item) {
     { label: 'Type', value: galleryKindLabel(item.kind) },
     { label: 'Taille', value: galleryFormatBytes(item.size) },
     { label: 'Sous-dossier', value: item.subfolder || '' },
+    { label: 'Favori', value: item.favorite ? '★ Oui' : '' },
+    { label: 'Tags', stacked: true, raw: galleryTagsFieldHtml(item.tags_detail), value: '' },
     { label: 'Ajouté le', value: galleryFormatDate(item.created_at) },
   ];
 }
 
+/**
+ * Focus dans un champ de SAISIE ? Le clavier global doit l'ignorer.
+ * Les CONTRÔLES de choix (checkbox/radio/button) ne sont PAS de la saisie :
+ * les flèches doivent continuer à naviguer dans la grille quand la case à
+ * cocher a le focus (l'hôte neutralise Spécifiquement « Espace » plus bas
+ * pour ne pas doubler l'activation native du navigateur).
+ */
 function galleryIsInputFocused(e) {
   var t = e && e.target;
   if (!t || !t.tagName) return false;
   var tag = t.tagName.toLowerCase();
-  return tag === 'input' || tag === 'textarea' || tag === 'select' || t.isContentEditable === true;
+  if (tag === 'textarea' || tag === 'select' || t.isContentEditable === true) return true;
+  if (tag === 'input') {
+    var type = String(t.type || 'text').toLowerCase();
+    return type !== 'checkbox' && type !== 'radio' && type !== 'button';
+  }
+  return false;
 }
 
 /* ── État de l'onglet ────────────────────────────────────────────────────── */
@@ -312,6 +372,14 @@ var galleryState = {
   view: 'normal',
   filters: {},
   sort: 'created_at_desc',
+  // Filtre DOSSIERS : dossiers sélectionnés (multi, OU) + contrôleur de modale.
+  selectedFolders: [],
+  foldersModal: null,
+  // Filtre TAGS : tags sélectionnés (multi, OU) + contrôleur de modale.
+  selectedTags: [],
+  tagsModal: null,
+  // Filtre FAVORIS : bascule simple (true = n'afficher que les favoris).
+  favoriteOnly: false,
   // Verrou d'actions pendant un appel réseau (désactive les boutons).
   busy: false,
   // Rafraîchissement automatique : timer du poll + listener de visibilité.
@@ -321,6 +389,14 @@ var galleryState = {
   lastRequest: null,
   lastDownload: null,
   lastDownloadBatch: [],
+  // Observable de test : dernier changement de tags d'un média (add/remove).
+  lastTagsRequest: null,
+  // Presets compatibles vision (cache de session) pour l'auto-tag IA.
+  visionPresets: null,
+  // Demande d'annulation de la boucle d'auto-tag (lue entre deux médias).
+  autoTagCancel: false,
+  // Observable de test : dernier lot d'auto-tag lancé (ids + preset_id).
+  lastAutoTagRequest: null,
   // Borne d'attente d'une vignette (surchargeable en test).
   thumbPendingMs: GALLERY_THUMB_PENDING_MS,
 };
@@ -569,12 +645,29 @@ function galleryInit() {
   galleryState.infoPane = window.HolafInfoPane.create(infoEl, {
     preview: galleryPreviewFields,
     resolve: galleryResolveMetadata,
+    // `html: true` autorise le rendu `field.raw` en innerHTML : SEUL le champ
+    // « Tags » l'utilise (contenu ÉCHAPPÉ par `galleryEsc`), les autres
+    // champs restent en textContent (comportement inchangé).
+    html: true,
     actions: [
       {
         id: 'download',
         label: 'Télécharger',
         isEnabled: function (item) { return !!item; },
         run: function (item) { galleryDownloadItem(item); },
+      },
+      {
+        id: 'favorite',
+        label: '★ Favori',
+        isEnabled: function (item) { return !!item; },
+        run: function (item) {
+          return galleryToggleFavorite(item).then(function () {
+            // Re-rend le panneau pour refléter le champ « Favori » à jour.
+            if (galleryState.infoPane && typeof galleryState.infoPane.show === 'function') {
+              galleryState.infoPane.show(item);
+            }
+          });
+        },
       },
     ],
     labels: {
@@ -589,12 +682,19 @@ function galleryInit() {
   });
 
   // 7) Branchements globaux.
+  // Clic dans la ZONE VIDE de la grille → désélection (correctif UX : la
+  // brique ne consomme que les clics sur une cellule, l'hôte peut traiter le
+  // fond sans conflit).
+  gridEl.addEventListener('click', galleryOnGridClick);
   galleryBindCollectionEvents();
   galleryBindKeyHandler();
   galleryBindLightboxEvents();
   galleryBindFilterControls();
   galleryUpdateViewToggle();
   galleryUpdateActionBar();
+  galleryUpdateFoldersButton();
+  galleryUpdateTagsButton();
+  galleryBindInfoPaneEvents();
 
   // 8) Premier chargement.
   galleryHideStates();
@@ -631,7 +731,6 @@ function galleryBindCollectionEvents() {
     // pool de cellules (efficace en scroll infini 'append').
     if (galleryState.grid) galleryState.grid.relayout();
     galleryUpdateCount();
-    galleryPopulateSubfolders();
   });
   col.on('total', galleryUpdateCount);
   col.on('error', function (p) {
@@ -792,10 +891,33 @@ function galleryCellRenderer() {
       var badge = document.createElement('span');
       badge.className = 'gallery-cell-badge';
       el.appendChild(badge);
+      // CASE À COCHER de sélection (correction UX : remplace l'ancienne icône
+      // en haut à gauche). La brique traite tout `<input>` cliqué comme un
+      // TOGGLE unitaire (elle ne touche pas aux autres) et synchronise elle-
+      // même `checked` sur l'état de sélection — aucun besoin de la modifier.
+      var check = document.createElement('input');
+      check.type = 'checkbox';
+      check.className = 'gallery-cell-check';
+      check.title = 'Sélectionner ce média (Ctrl+clic : ajouter à la sélection)';
+      check.setAttribute('aria-label', 'Sélectionner ce média');
+      el.appendChild(check);
       var trash = document.createElement('span');
       trash.className = 'gallery-cell-trash is-hidden';
       trash.textContent = '🗑';
       el.appendChild(trash);
+      // ÉTOILE de FAVORI (« à exposer ») : bouton marqué `data-holaf-action` →
+      // la brique émet onAction() SANS changer la sélection ni ouvrir la
+      // visionneuse. Toujours visible quand le média est favori, sinon au
+      // survol (comme la case à cocher) ; posée en bas-droite (créneau libre,
+      // pas de chevauchement avec case/badge/actions).
+      var fav = document.createElement('button');
+      fav.type = 'button';
+      fav.className = 'gallery-cell-fav';
+      fav.dataset.holafAction = 'favorite';
+      fav.textContent = '☆';
+      fav.title = 'Marquer comme favori';
+      fav.setAttribute('aria-label', 'Marquer comme favori');
+      el.appendChild(fav);
       var actions = document.createElement('div');
       actions.className = 'gallery-cell-actions';
       actions.appendChild(makeAction('download', '⤓', "Télécharger l'original"));
@@ -806,7 +928,9 @@ function galleryCellRenderer() {
       el._gImg = img;
       el._gPh = ph;
       el._gBadge = badge;
+      el._gCheck = check;
       el._gTrash = trash;
+      el._gFav = fav;
       el._gActions = actions;
       el._gToken = 0;
       // Reprise de vignette : URL attendue + drapeau « déjà retenté » (borné).
@@ -847,6 +971,24 @@ function galleryCellRenderer() {
       el.dataset.mediaId = String(item.id);
       el._gBadge.textContent = galleryKindIcon(item.kind);
       el._gBadge.dataset.kind = item.kind || '';
+      // Case à cocher : état reflété (la brique le re-synchronise aussi après
+      // update/sélection, mais on le pose ici pour rester correct même isolé).
+      if (el._gCheck) {
+        el._gCheck.checked = !!(ctx && ctx.selected);
+        el._gCheck.setAttribute('aria-label',
+          'Sélectionner ' + (item.filename || 'ce média'));
+      }
+      // Étoile de favori : étoile pleine + classe d'état quand le média est
+      // favori (l'état visuel de la cellule est posé plus bas).
+      if (el._gFav) {
+        var isFav = !!item.favorite;
+        el._gFav.classList.toggle('is-fav', isFav);
+        el._gFav.textContent = isFav ? '★' : '☆';
+        el._gFav.title = isFav ? 'Retirer des favoris' : 'Marquer comme favori';
+        el._gFav.setAttribute('aria-label',
+          isFav ? 'Retirer des favoris' : 'Marquer comme favori');
+      }
+      el.classList.toggle('gallery-cell--favorite', !!item.favorite);
 
       // UI distincte en corbeille : marqueur + opacité + actions Restaurer/Purger.
       var trashed = galleryIsTrashed(item);
@@ -910,6 +1052,9 @@ function galleryCellRenderer() {
       el._gToken++;
       el._gExpectedUrl = '';
       el._gThumbRetried = false;
+      if (el._gCheck) el._gCheck.checked = false;
+      if (el._gFav) { el._gFav.classList.remove('is-fav'); el._gFav.textContent = '☆'; }
+      el.classList.remove('gallery-cell--favorite');
       galleryCellClearThumbTimer(el);
       if (el._gImg) { el._gImg.removeAttribute('src'); el._gImg.classList.add('gallery-cell-img--hidden'); }
       if (el._gPh) { el._gPh.textContent = ''; el._gPh.classList.add('is-hidden'); }
@@ -924,6 +1069,31 @@ function galleryOnVisibleRange(start, end, ids) {
   var cache = galleryState.thumbCache;
   if (cache && ids && ids.length) cache.onVisible(ids);
   if (col && end >= start) col.ensureRange(start, end);
+}
+
+/**
+ * Clic dans la ZONE VIDE de la grille (fond, padding, zone sous les
+ * vignettes) → vide la sélection et masque la barre d'actions.
+ *
+ * La brique HolafGrid ne consomme QUE les clics sur une cellule
+ * (`[data-holaf-index]`) : un clic sur le fond ne fait rien chez elle, l'hôte
+ * peut donc le traiter sans conflit. On ignore les clics sur une cellule, une
+ * action rapide ou la case à cocher (gérés par la brique/l'hôte), les clics
+ * non primaires, et un clic dans la barre de défilement du conteneur.
+ */
+function galleryOnGridClick(e) {
+  if (!e) return;
+  if (typeof e.button === 'number' && e.button !== 0) return; // clic droit/molette
+  var target = e.target;
+  if (!target || typeof target.closest !== 'function') return;
+  // Ni cellule (même en squelette de chargement), ni action rapide, ni case.
+  if (target.closest('.holaf-grid-cell, [data-holaf-index], [data-holaf-action], input, button')) return;
+  var gridEl = galleryById('gallery-grid');
+  // Clic sur la barre de défilement (bord droit du conteneur) : pas « le vide ».
+  if (gridEl && target === gridEl && typeof e.offsetX === 'number'
+      && gridEl.clientWidth > 0 && e.offsetX >= gridEl.clientWidth) return;
+  if (!gallerySelectedIds().length) return; // rien à vider → aucun travail inutile
+  galleryClearSelection();
 }
 
 function galleryOnSelectionChange(ids, items) {
@@ -959,6 +1129,7 @@ function galleryOnAction(actionId, item, index) {
   else if (actionId === 'delete') galleryDeleteItem(item);
   else if (actionId === 'restore') galleryRestoreItem(item);
   else if (actionId === 'purge') galleryPurgeItem(item);
+  else if (actionId === 'favorite') galleryToggleFavorite(item);
 }
 
 /* ── Visionneuse : renderer média (img/vidéo/audio, PAS d'éditeur) ───────── */
@@ -1087,6 +1258,90 @@ function galleryInjectLightboxDownload() {
   }
 }
 
+/**
+ * Index (dans la collection) de l'item AFFICHÉ par la visionneuse. En temps
+ * normal, l'index de l'hôte (`lightboxIndex`, mis à jour par open/navigate)
+ * est la référence ; s'il est incohérent (ex. openZoom direct sans passer par
+ * la grille), on retrouve l'item parmi les items CHARGÉS de la collection.
+ */
+function galleryLightboxIndexOf(item) {
+  var index = galleryState.lightboxIndex;
+  var col = galleryState.collection;
+  if (!col || !item) return index;
+  var at = (index >= 0 && index < (col.total || 0)) ? col.at(index) : null;
+  if (at && String(at.id) === String(item.id)) return index;
+  var found = -1;
+  col.forEachLoaded(function (it, i) {
+    if (found < 0 && it && String(it.id) === String(item.id)) found = i;
+  });
+  return found >= 0 ? found : index;
+}
+
+/**
+ * Touche « Suppr » en plein écran : envoie l'item AFFICHÉ par la visionneuse à
+ * la corbeille (suppression DOUCE, réversible → donc SANS confirmation, comme
+ * la suppression unitaire de la grille), puis enchaîne sur l'image SUIVANTE.
+ *
+ * Choix documentés :
+ *   - la cible est l'item COURANT de la visionneuse, jamais la sélection ;
+ *   - si l'item supprimé était le DERNIER, on recule sur le précédent ;
+ *   - si c'était le SEUL média, la visionneuse se ferme proprement ;
+ *   - en cas d'échec : toast d'erreur (par galleryDeleteItem) et AUCUNE
+ *     navigation — la visionneuse reste sur l'image courante ;
+ *   - la touche est gérée par l'HÔTE (la brique lightbox ne connaît pas
+ *     « Suppr » et n'est PAS modifiée). L'auto-répétition est ignorée : pas de
+ *     suppressions en chaîne si la touche reste enfoncée.
+ */
+function galleryLightboxDeleteCurrent() {
+  var lb = galleryState.lightbox;
+  if (!lb || !lb.isOpen()) return Promise.resolve(false);
+  var item = galleryState.lightboxItem ||
+    ((typeof lb.current === 'function') ? lb.current() : null);
+  if (!item || galleryState.busy) return Promise.resolve(false);
+  var col = galleryState.collection;
+  var totalBefore = col ? (col.total || 0) : 0;
+  // Index cible APRÈS retrait : les items suivants glissent d'un cran, l'index
+  // courant pointe donc naturellement le suivant ; si l'on supprimait le
+  // dernier, l'index serait hors bornes → on recule d'un cran.
+  var index = galleryLightboxIndexOf(item);
+  var target;
+  if (index < 0) target = 0;
+  else if (index >= totalBefore - 1) target = index - 1;
+  else target = index;
+  return galleryDeleteItem(item).then(function (ok) {
+    if (!ok) return false; // échec : toast déjà affiché, on NE navigue pas
+    galleryLightboxResyncAfterRemoval(target);
+    return true;
+  });
+}
+
+/**
+ * Re-synchronise la visionneuse après le retrait de l'item courant : re-rend
+ * l'item de l'index cible via l'API PUBLIQUE de la brique (`navigate(0)` relit
+ * notre `getIndex()` et re-rend la vue), ou ferme la visionneuse s'il ne reste
+ * plus rien. Aucune brique modifiée.
+ */
+function galleryLightboxResyncAfterRemoval(target) {
+  var lb = galleryState.lightbox;
+  if (!lb || !lb.isOpen()) return;
+  var col = galleryState.collection;
+  var total = col ? (col.total || 0) : 0;
+  if (!total) {
+    galleryState.lightboxIndex = -1;
+    galleryState.lightboxItem = null;
+    try { lb.close(); } catch (e) { /* ignore */ }
+    return;
+  }
+  if (target < 0) target = 0;
+  if (target > total - 1) target = total - 1;
+  galleryState.lightboxItem = null;
+  galleryState.lightboxIndex = target;
+  try {
+    var r = lb.navigate(0); // dir 0 = « reste sur l'index courant, re-rend »
+    if (r && typeof r.catch === 'function') r.catch(function () { /* ignore */ });
+  } catch (e) { /* ignore */ }
+}
+
 /* ── Infos : resolve via GET /api/media/<id>/metadata ────────────────────── */
 
 function galleryResolveMetadata(item, ctx) {
@@ -1125,7 +1380,6 @@ function galleryIsTrashed(item) {
  */
 function galleryReadFilterInputs() {
   var kind = galleryInputValue('gallery-filter-kind');
-  var subfolder = galleryInputValue('gallery-filter-subfolder');
   var q = galleryInputValue('gallery-search');
   var from = galleryInputValue('gallery-filter-from');
   var to = galleryInputValue('gallery-filter-to');
@@ -1134,11 +1388,18 @@ function galleryReadFilterInputs() {
 
   var filters = {};
   if (kind) filters.kind = kind;
-  if (subfolder) filters.subfolder = subfolder;
+  // Dossiers sélectionnés via la MODALE (multi, sémantique OU).
+  var folders = galleryState.selectedFolders || [];
+  if (folders.length) filters.subfolders = folders.slice();
   if (q) filters.q = q;
   if (from) filters.from = from;
   if (to) filters.to = to;
   if (galleryState.view === 'trash') filters.status = 'trashed';
+  // Filtre FAVORIS (bascule toolbar) : « 1 » = n'afficher que les favoris.
+  if (galleryState.favoriteOnly) filters.favorite = '1';
+  // Filtre TAGS (modale, multi-sélection, sémantique OU).
+  var tags = galleryState.selectedTags || [];
+  if (tags.length) filters.tags = tags.slice();
   galleryState.filters = filters;
   return filters;
 }
@@ -1148,16 +1409,22 @@ function galleryApplyFilterChange() {
   galleryReload();
 }
 
-/** Branche les champs de filtre (selects/dates : 'change', nom : 'input') */
+/** Branche les champs de filtre (selects/dates : 'change', nom : 'input'). */
 function galleryBindFilterControls() {
   var selectIds = [
     'gallery-filter-kind', 'gallery-filter-sort',
-    'gallery-filter-subfolder', 'gallery-filter-from', 'gallery-filter-to',
+    'gallery-filter-from', 'gallery-filter-to',
   ];
   for (var i = 0; i < selectIds.length; i++) {
     var el = galleryById(selectIds[i]);
     if (el) el.addEventListener('change', galleryApplyFilterChange);
   }
+  var foldersBtn = galleryById('gallery-filter-folders');
+  if (foldersBtn) foldersBtn.addEventListener('click', galleryOpenFoldersModal);
+  var favBtn = galleryById('gallery-filter-favorite');
+  if (favBtn) favBtn.addEventListener('click', galleryToggleFavoriteFilter);
+  var tagsBtn = galleryById('gallery-filter-tags');
+  if (tagsBtn) tagsBtn.addEventListener('click', galleryOpenTagsModal);
   var search = galleryById('gallery-search');
   if (search) {
     search.addEventListener('input', function () {
@@ -1167,28 +1434,439 @@ function galleryBindFilterControls() {
   }
 }
 
-/** Remplit le datalist des sous-dossiers depuis les items DÉJÀ chargés. */
-function galleryPopulateSubfolders() {
-  var list = galleryById('gallery-subfolders');
-  var col = galleryState.collection;
-  if (!list || !col || typeof col.forEachLoaded !== 'function') return;
-  var seen = {};
-  col.forEachLoaded(function (it) {
-    var sf = it && it.subfolder;
-    if (sf) seen[sf] = true;
+/* ── Filtre DOSSIERS : bouton + modale (liste + comptes) ─────────────────── */
+
+/** Libellé d'un dossier (chaîne vide = racine). */
+function galleryFolderLabel(subfolder) {
+  return subfolder ? subfolder : '(sans dossier)';
+}
+
+/** URL de GET /api/media/folders (statut aligné sur la vue courante). */
+function galleryFoldersUrl() {
+  var base = galleryApiBase() + '/media/folders';
+  return (galleryState.view === 'trash') ? (base + '?status=trashed') : base;
+}
+
+/** Récupère les sous-dossiers ({subfolder,count}) depuis le backend. */
+function galleryFetchFolders() {
+  return fetch(galleryFoldersUrl(), { credentials: 'same-origin' }).then(function (res) {
+    return galleryJson(res).then(function (data) {
+      if (!res.ok || !data || data.error) {
+        throw new Error((data && data.error) || ('HTTP ' + res.status));
+      }
+      return Array.isArray(data.folders) ? data.folders : [];
+    });
   });
-  var names = Object.keys(seen).sort();
-  while (list.firstChild) list.removeChild(list.firstChild);
-  for (var i = 0; i < names.length; i++) {
-    var opt = document.createElement('option');
-    opt.value = names[i];
-    list.appendChild(opt);
+}
+
+/** Met à jour le libellé du bouton selon la sélection courante. */
+function galleryUpdateFoldersButton() {
+  var btn = galleryById('gallery-filter-folders');
+  if (!btn) return;
+  var n = (galleryState.selectedFolders || []).length;
+  if (n > 0) {
+    btn.textContent = 'Dossiers (' + n + ')';
+    btn.title = n + ' dossier(s) sélectionné(s)';
+    btn.setAttribute('aria-label', 'Filtrer par dossiers : ' + n + ' sélectionné(s)');
+  } else {
+    btn.textContent = 'Dossiers : tous';
+    btn.title = 'Tous les dossiers';
+    btn.setAttribute('aria-label', 'Filtrer par dossiers : tous');
   }
+  btn.classList.toggle('is-active', n > 0);
+}
+
+/** Applique une sélection de dossiers (liste) : état + bouton + RELOAD complet. */
+function galleryApplyFolders(list) {
+  var clean = [];
+  var seen = {};
+  (list || []).forEach(function (sf) {
+    var v = (sf === undefined || sf === null) ? '' : String(sf);
+    if (!Object.prototype.hasOwnProperty.call(seen, v)) { seen[v] = true; clean.push(v); }
+  });
+  clean.sort();
+  galleryState.selectedFolders = clean;
+  galleryUpdateFoldersButton();
+  return galleryReload();
+}
+
+/**
+ * Filtre FAVORIS (bascule simple) : n'affiche QUE les médias favoris.
+ * L'état vit dans `galleryState.favoriteOnly` et se traduit par `favorite=1`
+ * dans la requête ; la bascule relance la liste (reset + page 1).
+ */
+function galleryToggleFavoriteFilter() {
+  galleryState.favoriteOnly = !galleryState.favoriteOnly;
+  galleryUpdateFavoriteButton();
+  return galleryReload();
+}
+
+/** Synchronise l'apparence du bouton « Favoris » (actif/inactif). */
+function galleryUpdateFavoriteButton() {
+  var btn = galleryById('gallery-filter-favorite');
+  if (!btn) return;
+  var on = !!galleryState.favoriteOnly;
+  btn.classList.toggle('is-active', on);
+  btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+  btn.title = on ? 'Afficher tous les médias' : 'Afficher uniquement les favoris';
+}
+
+/**
+ * Ouvre la MODALE de sélection des dossiers (déplaçable + redimensionnable via
+ * la brique holaf-modal : options `draggable`/`resizable`). La liste et les
+ * comptes viennent de GET /api/media/folders (PAS des items chargés).
+ */
+function galleryOpenFoldersModal() {
+  if (!window.HolafModal || typeof window.HolafModal.open !== 'function') {
+    galleryToast('Modale indisponible (vendor/holaf).', 'error');
+    return null;
+  }
+  if (galleryState.foldersModal) {
+    try { galleryState.foldersModal.close(); } catch (e) { /* ignore */ }
+    galleryState.foldersModal = null;
+  }
+
+  var selected = {};
+  (galleryState.selectedFolders || []).forEach(function (sf) { selected[sf] = true; });
+  var folders = [];
+
+  var wrap = document.createElement('div');
+  wrap.className = 'gallery-folders';
+
+  var bar = document.createElement('div');
+  bar.className = 'gallery-folders-bar';
+  var search = document.createElement('input');
+  search.type = 'search';
+  search.className = 'gallery-folders-search';
+  search.placeholder = 'Rechercher un dossier…';
+  search.setAttribute('aria-label', 'Rechercher un dossier');
+  bar.appendChild(search);
+  var actions = document.createElement('div');
+  actions.className = 'gallery-folders-actions';
+  function mkAction(label, fn) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'gallery-folders-action';
+    b.textContent = label;
+    b.addEventListener('click', fn);
+    return b;
+  }
+  actions.appendChild(mkAction('Tout', function () { setAll(true); }));
+  actions.appendChild(mkAction('Aucun', function () { setAll(false); }));
+  actions.appendChild(mkAction('Inverser', function () { invertAll(); }));
+  bar.appendChild(actions);
+  wrap.appendChild(bar);
+
+  var status = document.createElement('div');
+  status.className = 'gallery-folders-status';
+  status.setAttribute('role', 'status');
+  wrap.appendChild(status);
+
+  var list = document.createElement('div');
+  list.className = 'gallery-folders-list';
+  wrap.appendChild(list);
+
+  function updateStatus() {
+    var n = Object.keys(selected).length;
+    status.textContent = n === 0 ? 'Tous les dossiers' : (n + ' dossier(s) sélectionné(s)');
+  }
+
+  function render() {
+    while (list.firstChild) list.removeChild(list.firstChild);
+    var q = (search.value || '').trim().toLowerCase();
+    var shown = folders.filter(function (f) {
+      return !q || galleryFolderLabel(f.subfolder).toLowerCase().indexOf(q) !== -1;
+    });
+    if (shown.length === 0) {
+      var empty = document.createElement('div');
+      empty.className = 'gallery-folders-empty';
+      empty.textContent = folders.length === 0 ? 'Aucun dossier.' : 'Aucun résultat.';
+      list.appendChild(empty);
+    }
+    shown.forEach(function (f) {
+      var row = document.createElement('label');
+      row.className = 'gallery-folder-item';
+      var cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.className = 'gallery-folder-check';
+      cb.value = f.subfolder;
+      cb.checked = !!selected[f.subfolder];
+      cb.addEventListener('change', function () {
+        if (cb.checked) selected[f.subfolder] = true;
+        else delete selected[f.subfolder];
+        updateStatus();
+      });
+      var name = document.createElement('span');
+      name.className = 'gallery-folder-name';
+      name.textContent = galleryFolderLabel(f.subfolder);
+      var count = document.createElement('span');
+      count.className = 'gallery-folder-count';
+      count.textContent = '(' + f.count + ')';
+      row.appendChild(cb);
+      row.appendChild(name);
+      row.appendChild(count);
+      list.appendChild(row);
+    });
+    updateStatus();
+  }
+
+  function setAll(on) {
+    folders.forEach(function (f) { if (on) selected[f.subfolder] = true; else delete selected[f.subfolder]; });
+    render();
+  }
+  function invertAll() {
+    folders.forEach(function (f) {
+      if (selected[f.subfolder]) delete selected[f.subfolder];
+      else selected[f.subfolder] = true;
+    });
+    render();
+  }
+  search.addEventListener('input', render);
+
+  var ctrl = window.HolafModal.open({
+    id: 'gallery-folders-modal',
+    title: 'Filtrer par dossiers',
+    size: 'md',
+    width: 420,
+    draggable: true,
+    resizable: true,
+    minWidth: 320,
+    minHeight: 240,
+    storageKey: 'gallery-folders-modal',
+    content: wrap,
+    buttons: [
+      { text: 'Annuler', value: false, type: 'cancel' },
+      {
+        text: 'Appliquer', value: true, type: 'primary', autoFocus: true,
+        onClick: function () { galleryApplyFolders(Object.keys(selected)); },
+      },
+    ],
+    onClose: function () { galleryState.foldersModal = null; },
+  });
+  galleryState.foldersModal = ctrl;
+
+  ctrl.setBusy(true, 'Chargement des dossiers…');
+  galleryFetchFolders().then(function (rows) {
+    folders = rows;
+    render();
+    ctrl.setBusy(false);
+  }).catch(function (err) {
+    folders = [];
+    render();
+    status.textContent = 'Erreur de chargement : ' + ((err && err.message) ? err.message : err);
+    ctrl.setBusy(false);
+  });
+  return ctrl;
+}
+
+/* ── Filtre TAGS : bouton + modale (liste + comptes) ─────────────────────── */
+
+/** Libellé d'un tag (jamais vide côté backend, défensif ici). */
+function galleryTagLabel(tag) {
+  return tag ? String(tag) : '(sans nom)';
+}
+
+/** URL de GET /api/media/tags (statut aligné sur la vue courante). */
+function galleryTagsUrl() {
+  var base = galleryApiBase() + '/media/tags';
+  return (galleryState.view === 'trash') ? (base + '?status=trashed') : base;
+}
+
+/** Récupère les tags ({tag,count}) depuis le backend. */
+function galleryFetchTags() {
+  return fetch(galleryTagsUrl(), { credentials: 'same-origin' }).then(function (res) {
+    return galleryJson(res).then(function (data) {
+      if (!res.ok || !data || data.error) {
+        throw new Error((data && data.error) || ('HTTP ' + res.status));
+      }
+      return Array.isArray(data.tags) ? data.tags : [];
+    });
+  });
+}
+
+/** Met à jour le libellé du bouton selon la sélection courante. */
+function galleryUpdateTagsButton() {
+  var btn = galleryById('gallery-filter-tags');
+  if (!btn) return;
+  var n = (galleryState.selectedTags || []).length;
+  if (n > 0) {
+    btn.textContent = 'Tags (' + n + ')';
+    btn.title = n + ' tag(s) sélectionné(s)';
+    btn.setAttribute('aria-label', 'Filtrer par tags : ' + n + ' sélectionné(s)');
+  } else {
+    btn.textContent = 'Tags : tous';
+    btn.title = 'Tous les tags';
+    btn.setAttribute('aria-label', 'Filtrer par tags : tous');
+  }
+  btn.classList.toggle('is-active', n > 0);
+}
+
+/** Applique une sélection de tags (liste) : état + bouton + RELOAD complet. */
+function galleryApplyTags(list) {
+  var clean = [];
+  var seen = {};
+  (list || []).forEach(function (tag) {
+    var v = (tag === undefined || tag === null) ? '' : String(tag);
+    var key = v.toLowerCase();
+    if (v && !Object.prototype.hasOwnProperty.call(seen, key)) { seen[key] = true; clean.push(v); }
+  });
+  clean.sort();
+  galleryState.selectedTags = clean;
+  galleryUpdateTagsButton();
+  return galleryReload();
+}
+
+/**
+ * Ouvre la MODALE de filtrage par tags (déplaçable + redimensionnable via la
+ * brique holaf-modal). Liste et comptes viennent de GET /api/media/tags.
+ * Réutilise le markup/CSS de la modale de dossiers (.gallery-folders*).
+ */
+function galleryOpenTagsModal() {
+  if (!window.HolafModal || typeof window.HolafModal.open !== 'function') {
+    galleryToast('Modale indisponible (vendor/holaf).', 'error');
+    return null;
+  }
+  if (galleryState.tagsModal) {
+    try { galleryState.tagsModal.close(); } catch (e) { /* ignore */ }
+    galleryState.tagsModal = null;
+  }
+
+  var selected = {};
+  (galleryState.selectedTags || []).forEach(function (tag) { selected[tag] = true; });
+  var tags = [];
+
+  var wrap = document.createElement('div');
+  wrap.className = 'gallery-folders';
+
+  var bar = document.createElement('div');
+  bar.className = 'gallery-folders-bar';
+  var search = document.createElement('input');
+  search.type = 'search';
+  search.className = 'gallery-folders-search';
+  search.placeholder = 'Rechercher un tag…';
+  search.setAttribute('aria-label', 'Rechercher un tag');
+  bar.appendChild(search);
+  var actions = document.createElement('div');
+  actions.className = 'gallery-folders-actions';
+  function mkAction(label, fn) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'gallery-folders-action';
+    b.textContent = label;
+    b.addEventListener('click', fn);
+    return b;
+  }
+  actions.appendChild(mkAction('Tout', function () { setAll(true); }));
+  actions.appendChild(mkAction('Aucun', function () { setAll(false); }));
+  actions.appendChild(mkAction('Inverser', function () { invertAll(); }));
+  bar.appendChild(actions);
+  wrap.appendChild(bar);
+
+  var status = document.createElement('div');
+  status.className = 'gallery-folders-status';
+  status.setAttribute('role', 'status');
+  wrap.appendChild(status);
+
+  var list = document.createElement('div');
+  list.className = 'gallery-folders-list';
+  wrap.appendChild(list);
+
+  function updateStatus() {
+    var n = Object.keys(selected).length;
+    status.textContent = n === 0 ? 'Tous les tags' : (n + ' tag(s) sélectionné(s)');
+  }
+
+  function render() {
+    while (list.firstChild) list.removeChild(list.firstChild);
+    var q = (search.value || '').trim().toLowerCase();
+    var shown = tags.filter(function (f) {
+      return !q || galleryTagLabel(f.tag).toLowerCase().indexOf(q) !== -1;
+    });
+    if (shown.length === 0) {
+      var empty = document.createElement('div');
+      empty.className = 'gallery-folders-empty';
+      empty.textContent = tags.length === 0 ? 'Aucun tag.' : 'Aucun résultat.';
+      list.appendChild(empty);
+    }
+    shown.forEach(function (f) {
+      var row = document.createElement('label');
+      row.className = 'gallery-folder-item';
+      var cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.className = 'gallery-folder-check';
+      cb.value = f.tag;
+      cb.checked = !!selected[f.tag];
+      cb.addEventListener('change', function () {
+        if (cb.checked) selected[f.tag] = true;
+        else delete selected[f.tag];
+        updateStatus();
+      });
+      var name = document.createElement('span');
+      name.className = 'gallery-folder-name gallery-tag-name-cell';
+      name.textContent = galleryTagLabel(f.tag);
+      var count = document.createElement('span');
+      count.className = 'gallery-folder-count';
+      count.textContent = '(' + f.count + ')';
+      row.appendChild(cb);
+      row.appendChild(name);
+      row.appendChild(count);
+      list.appendChild(row);
+    });
+    updateStatus();
+  }
+
+  function setAll(on) {
+    tags.forEach(function (f) { if (on) selected[f.tag] = true; else delete selected[f.tag]; });
+    render();
+  }
+  function invertAll() {
+    tags.forEach(function (f) {
+      if (selected[f.tag]) delete selected[f.tag];
+      else selected[f.tag] = true;
+    });
+    render();
+  }
+  search.addEventListener('input', render);
+
+  var ctrl = window.HolafModal.open({
+    id: 'gallery-tags-modal',
+    title: 'Filtrer par tags',
+    size: 'md',
+    width: 420,
+    draggable: true,
+    resizable: true,
+    minWidth: 320,
+    minHeight: 240,
+    storageKey: 'gallery-tags-modal',
+    content: wrap,
+    buttons: [
+      { text: 'Annuler', value: false, type: 'cancel' },
+      {
+        text: 'Appliquer', value: true, type: 'primary', autoFocus: true,
+        onClick: function () { galleryApplyTags(Object.keys(selected)); },
+      },
+    ],
+    onClose: function () { galleryState.tagsModal = null; },
+  });
+  galleryState.tagsModal = ctrl;
+
+  ctrl.setBusy(true, 'Chargement des tags…');
+  galleryFetchTags().then(function (rows) {
+    tags = rows;
+    render();
+    ctrl.setBusy(false);
+  }).catch(function (err) {
+    tags = [];
+    render();
+    status.textContent = 'Erreur de chargement : ' + ((err && err.message) ? err.message : err);
+    ctrl.setBusy(false);
+  });
+  return ctrl;
 }
 
 /** Réinitialise tous les filtres + tri et relance la liste. */
 function galleryResetFilters() {
-  var ids = ['gallery-filter-kind', 'gallery-filter-subfolder', 'gallery-search', 'gallery-filter-from', 'gallery-filter-to'];
+  var ids = ['gallery-filter-kind', 'gallery-search', 'gallery-filter-from', 'gallery-filter-to'];
   for (var i = 0; i < ids.length; i++) {
     var el = galleryById(ids[i]);
     if (el) el.value = '';
@@ -1196,6 +1874,12 @@ function galleryResetFilters() {
   var sort = galleryById('gallery-filter-sort');
   if (sort) sort.value = 'created_at_desc';
   galleryState.sort = 'created_at_desc';
+  galleryState.selectedFolders = [];
+  galleryUpdateFoldersButton();
+  galleryState.selectedTags = [];
+  galleryUpdateTagsButton();
+  galleryState.favoriteOnly = false;
+  galleryUpdateFavoriteButton();
   galleryReload();
 }
 
@@ -1266,8 +1950,27 @@ function galleryUpdateActionBar() {
   if (label) label.textContent = n + ' média' + (n > 1 ? 's' : '') + ' sélectionné' + (n > 1 ? 's' : '');
   var trash = galleryState.view === 'trash';
   galleryShowButton('gallery-action-delete', !trash);
+  galleryShowButton('gallery-action-favorite', !trash);
+  // Le tag est disponible dans les DEUX vues (une corbeille conserve ses tags).
+  galleryShowButton('gallery-action-tags', true);
   galleryShowButton('gallery-action-restore', trash);
   galleryShowButton('gallery-action-purge', trash);
+  // Auto-tag IA : uniquement hors corbeille (on ne tagge pas la corbeille).
+  galleryShowButton('gallery-action-auto-tag', !trash);
+  var presetSel = galleryById('gallery-auto-tag-preset');
+  if (presetSel) presetSel.classList.toggle('hidden', trash);
+  if (!trash) {
+    // Presets vision mis en cache (pas de refetch à chaque clic de sélection).
+    galleryEnsureVisionPresets(false).then(galleryPopulateAutoTagSelectFrom);
+  }
+  // Libellé du bouton favori selon l'état de la sélection (marquer/démarquer).
+  var favBtn = galleryById('gallery-action-favorite');
+  if (favBtn && !trash) {
+    var items = gallerySelectedItems();
+    var allFav = items.length > 0 && items.every(function (it) { return !!it.favorite; });
+    favBtn.textContent = allFav ? '★ Retirer favori' : '★ Favori';
+    favBtn.title = allFav ? 'Retirer des favoris' : 'Marquer comme favori';
+  }
 }
 
 /** (Interne renderer) masque/affiche une action rapide selon le statut de l'item. */
@@ -1352,6 +2055,160 @@ function galleryAfterLocalRemoval() {
   galleryUpdateCount();
   if (galleryState.grid) galleryState.grid.render(true);
   if (galleryState.collection && galleryState.collection.total === 0) galleryShowEmpty();
+}
+
+/** Re-rend UNE cellule (item modifié sur place : bascule favori optimiste). */
+function galleryRefreshItem(item) {
+  var g = galleryState.grid;
+  if (!g || !item || typeof g.refresh !== 'function') return;
+  try { g.refresh(item.id); } catch (e) { /* ignore */ }
+}
+
+/** Le média doit-il sortir de la vue courante après ce changement de favori ? */
+function galleryFavoriteFilterMismatch(isFav) {
+  return !!galleryState.favoriteOnly && !isFav;
+}
+
+/**
+ * Bascule le FAVORI d'UN média (POST /api/media/<id>/favorite).
+ *
+ * OPTIMISTE : le drapeau est inversé en mémoire puis la cellule re-rendue
+ * immédiatement ; ROLLBACK = restauration de l'ancien drapeau + re-rendu si
+ * l'appel échoue (comme la suppression). Ne touche NI à la sélection NI à la
+ * visionneuse (l'action arrive par `data-holaf-action`). Si un filtre
+ * « Favoris » est actif et que le média cesse d'être favori, un reload complet
+ * le retire de la vue (la vérité serveur est rechargée).
+ */
+function galleryToggleFavorite(item) {
+  if (!item || galleryState.busy) return Promise.resolve(false);
+  var next = !item.favorite;
+  var prev = !!item.favorite;
+  item.favorite = next;
+  galleryRefreshItem(item);
+  gallerySetBusy(true);
+  return galleryApiRequest('POST', '/media/' + encodeURIComponent(item.id) + '/favorite', { favorite: next })
+    .then(function () {
+      galleryToast(next ? 'Ajouté aux favoris.' : 'Retiré des favoris.', 'success');
+      if (galleryFavoriteFilterMismatch(next)) galleryReload();
+      return true;
+    })
+    .catch(function (err) {
+      item.favorite = prev; // ROLLBACK
+      galleryRefreshItem(item);
+      galleryToast('Favori impossible : ' + galleryErrorMessage(err), 'error');
+      return false;
+    })
+    .then(function (r) { gallerySetBusy(false); return r; });
+}
+
+/* ── Tags d'un média : chips du panneau d'infos ──────────────────────────── */
+
+/**
+ * Normalise une saisie de tag CÔTÉ CLIENT (miroir léger de `_normalize_tag`
+ * backend) : trim + espaces multiples réduits, borne 1..50. Le backend RESTE
+ * l'autorité (un tag refusé par le serveur produit un toast d'erreur).
+ *
+ * @returns {string} le tag normalisé, ou '' si invalide.
+ */
+function galleryNormalizeTagInput(raw) {
+  if (raw === undefined || raw === null) return '';
+  var tag = String(raw).replace(/\s+/g, ' ').trim();
+  if (!tag || tag.length > GALLERY_TAG_MAX_LEN) return '';
+  // Caractères manifestement interdits (la virgule est le séparateur du filtre).
+  if (/[,;<>"\\\x00-\x1f]/.test(tag)) return '';
+  return tag;
+}
+
+/**
+ * Branche les ÉVÉNEMENTS des chips de tags du panneau d'infos par DÉLÉGATION
+ * sur la racine de la brique (survit aux re-rendus internes de l'infoPane) :
+ *   - clic sur `.gallery-tag-remove` → retrait du tag ;
+ *   - Entrée dans `.gallery-tag-input` → ajout du tag.
+ * L'item courant est lu via `pane.current()` (jamais capturé dans une closure
+ * obsolète). Idempotent (marqueur `_gTagsBound`).
+ */
+function galleryBindInfoPaneEvents() {
+  var pane = galleryState.infoPane;
+  if (!pane || typeof pane.element !== 'function') return;
+  var root = pane.element();
+  if (!root || root._gTagsBound) return;
+  root._gTagsBound = true;
+  root.addEventListener('click', function (e) {
+    var t = e.target;
+    if (!t || typeof t.closest !== 'function') return;
+    var btn = t.closest('[data-gallery-tag-remove]');
+    if (!btn) return;
+    e.preventDefault();
+    e.stopPropagation();
+    var item = pane.current();
+    if (item) galleryRemoveTag(item, btn.getAttribute('data-gallery-tag-remove'));
+  });
+  root.addEventListener('keydown', function (e) {
+    var t = e.target;
+    if (!t || !t.classList || !t.classList.contains('gallery-tag-input')) return;
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    var item = pane.current();
+    if (item) galleryAddTag(item, t.value);
+  });
+}
+
+/** Un filtre TAGS est-il actif ? (une édition de tags doit rafraîchir la vue). */
+function galleryTagsFilterMismatch() {
+  return (galleryState.selectedTags || []).length > 0;
+}
+
+/**
+ * Applique un ajout/retrait de tags sur UN média (POST /api/media/<id>/tags).
+ * Met à jour l'item EN MÉMOIRE (liste) et rafraîchit le panneau d'infos à
+ * partir de la réponse serveur. Si un filtre tags est actif, recharge la vue.
+ * Non optimiste (la vérité serveur est reflétée) ; verrouille pendant l'appel.
+ */
+function galleryApplyItemTags(item, add, remove) {
+  add = add || [];
+  remove = remove || [];
+  if (!item || galleryState.busy) return Promise.resolve(false);
+  if (!add.length && !remove.length) return Promise.resolve(false);
+  galleryState.lastTagsRequest = { id: item.id, add: add.slice(), remove: remove.slice() };
+  gallerySetBusy(true);
+  return galleryApiRequest('POST', '/media/' + encodeURIComponent(item.id) + '/tags', {
+      add: add, remove: remove,
+    })
+    .then(function (data) {
+      item.tags = Array.isArray(data.tags) ? data.tags : [];
+      item.tags_detail = Array.isArray(data.tags_detail) ? data.tags_detail : [];
+      var pane = galleryState.infoPane;
+      if (pane && typeof pane.show === 'function' && pane.current() && pane.current().id === item.id) {
+        pane.show(item);
+      }
+      var parts = [];
+      if (add.length) parts.push(add.length + ' tag' + (add.length > 1 ? 's' : '') + ' ajouté' + (add.length > 1 ? 's' : ''));
+      if (remove.length) parts.push(remove.length + ' tag' + (remove.length > 1 ? 's' : '') + ' retiré' + (remove.length > 1 ? 's' : ''));
+      galleryToast(parts.join(', ') + '.', 'success');
+      if (galleryTagsFilterMismatch()) galleryReload();
+      return true;
+    })
+    .catch(function (err) {
+      galleryToast('Tags impossibles : ' + galleryErrorMessage(err), 'error');
+      return false;
+    })
+    .then(function (r) { gallerySetBusy(false); return r; });
+}
+
+/** Retire UN tag d'un média (croix sur la chip). */
+function galleryRemoveTag(item, tag) {
+  if (!tag) return Promise.resolve(false);
+  return galleryApplyItemTags(item, [], [tag]);
+}
+
+/** Ajoute UN tag à un média (champ + Entrée). */
+function galleryAddTag(item, raw) {
+  var tag = galleryNormalizeTagInput(raw);
+  if (!tag) {
+    galleryToast('Tag invalide (1..' + GALLERY_TAG_MAX_LEN + ' caractères, sans virgule).', 'error');
+    return Promise.resolve(false);
+  }
+  return galleryApplyItemTags(item, [tag], []);
 }
 
 /* ── Suppression / restauration / purge d'un item ────────────────────────── */
@@ -1443,10 +2300,17 @@ function galleryBulkRequest(method, path, ids, opts) {
   opts = opts || {};
   if (!ids || !ids.length || galleryState.busy) return Promise.resolve(false);
   gallerySetBusy(true);
-  return galleryApiRequest(method, path, { ids: ids })
+  var payload = { ids: ids };
+  if (opts.body && typeof opts.body === 'object') {
+    for (var k in opts.body) {
+      if (Object.prototype.hasOwnProperty.call(opts.body, k)) payload[k] = opts.body[k];
+    }
+  }
+  return galleryApiRequest(method, path, payload)
     .then(function (data) {
       var n = (data.trashed !== undefined) ? data.trashed
         : (data.restored !== undefined) ? data.restored
+        : (data.updated !== undefined) ? data.updated
         : (data.purged !== undefined) ? data.purged : 0;
       var skipped = Array.isArray(data.skipped) ? data.skipped.length : 0;
       var msg = (typeof opts.message === 'function') ? opts.message(n, skipped)
@@ -1460,6 +2324,255 @@ function galleryBulkRequest(method, path, ids, opts) {
       return false;
     })
     .then(function (r) { gallerySetBusy(false); return r; });
+}
+
+/**
+ * Favori GROUPÉ : POST /api/media/favorite { ids, favorite } → récap updated.
+ * Cible calculée sur la sélection : si TOUS les sélectionnés sont déjà favoris
+ * → on démarque ; sinon on marque (bouton unique marquer/démarquer).
+ */
+function galleryBulkFavorite() {
+  var ids = gallerySelectedIds();
+  if (!ids.length) return Promise.resolve(false);
+  var items = gallerySelectedItems();
+  var allFav = items.length > 0 && items.every(function (it) { return !!it.favorite; });
+  var target = !allFav;
+  return galleryBulkRequest('POST', '/media/favorite', ids, {
+    body: { favorite: target },
+    errorLabel: target ? 'Ajout aux favoris' : 'Retrait des favoris',
+    message: function (done, s) {
+      return done + ' média' + (done > 1 ? 's' : '') + ' '
+        + (target ? 'ajouté' : 'retiré') + (done > 1 ? 's' : '') + ' '
+        + (target ? 'aux favoris' : 'des favoris') + gallerySkippedSuffix(s);
+    },
+    after: function () { galleryReload(); },
+  });
+}
+
+/**
+ * Tags GROUPÉS : ouvre une petite modale (tag à ajouter/retirer) puis
+ * POST /api/media/tags ``{ids, add|remove:[tag]}`` → récap ``{updated, skipped}``.
+ * Utile dès maintenant et INDISPENSABLE pour l'auto-tagging IA à venir
+ * (poser un lot de tags sur une sélection).
+ */
+function galleryBulkTags() {
+  var ids = gallerySelectedIds();
+  if (!ids.length) return Promise.resolve(false);
+  if (!window.HolafModal || typeof window.HolafModal.open !== 'function') {
+    galleryToast('Modale indisponible (vendor/holaf).', 'error');
+    return Promise.resolve(false);
+  }
+
+  var wrap = document.createElement('div');
+  wrap.className = 'gallery-tags-action';
+  var hint = document.createElement('p');
+  hint.className = 'gallery-tags-action-hint';
+  hint.textContent = 'Appliquer un tag aux ' + ids.length + ' média'
+    + (ids.length > 1 ? 's' : '') + ' sélectionné' + (ids.length > 1 ? 's' : '') + ' :';
+  wrap.appendChild(hint);
+  var input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'gallery-tags-action-input';
+  input.maxLength = GALLERY_TAG_MAX_LEN;
+  input.placeholder = 'Nom du tag…';
+  input.setAttribute('aria-label', 'Nom du tag à appliquer');
+  wrap.appendChild(input);
+
+  function run(mode) {
+    var tag = galleryNormalizeTagInput(input.value);
+    if (!tag) {
+      galleryToast('Tag invalide (1..' + GALLERY_TAG_MAX_LEN + ' caractères, sans virgule).', 'error');
+      return false; // garde la modale ouverte pour corriger
+    }
+    var removing = (mode === 'remove');
+    galleryBulkRequest('POST', '/media/tags', ids, {
+      body: removing ? { remove: [tag] } : { add: [tag] },
+      errorLabel: removing ? 'Retrait du tag' : 'Ajout du tag',
+      message: function (n, s) {
+        return n + ' média' + (n > 1 ? 's' : '') + ' « ' + tag + ' » '
+          + (removing ? 'retiré' : 'ajouté') + (n > 1 ? 's' : '') + gallerySkippedSuffix(s);
+      },
+      after: function () { galleryReload(); },
+    });
+    return true;
+  }
+
+  var ctrl = window.HolafModal.open({
+    id: 'gallery-tags-action-modal',
+    title: 'Tag des médias sélectionnés',
+    size: 'sm',
+    width: 380,
+    draggable: true,
+    resizable: true,
+    minWidth: 300,
+    minHeight: 170,
+    storageKey: 'gallery-tags-action-modal',
+    content: wrap,
+    buttons: [
+      { text: 'Annuler', value: false, type: 'cancel' },
+      { text: 'Retirer', value: 'remove', onClick: function () { return run('remove'); } },
+      { text: 'Ajouter', value: 'add', type: 'primary', autoFocus: true, onClick: function () { return run('add'); } },
+    ],
+  });
+  // Le champ est l'action principale : on lui donne le focus d'entrée.
+  setTimeout(function () { try { input.focus(); } catch (e) { /* ignore */ } }, 0);
+  return Promise.resolve(ctrl);
+}
+
+/* ── Auto-tagging IA (vision) ────────────────────────────────────────────── */
+
+/**
+ * Presets marqués « compatible vision » (champ `supports_vision`). On ne
+ * propose QUE ceux-là : un preset classique n'accepte pas d'image.
+ */
+function galleryVisionPresets(presets) {
+  return (presets || []).filter(function (p) { return !!(p && p.supports_vision); });
+}
+
+/** GET /api/presets → liste brute (rejette si indisponible). */
+function galleryFetchPresets() {
+  return fetch(galleryApiBase() + '/presets', { credentials: 'same-origin' }).then(function (res) {
+    return galleryJson(res).then(function (data) {
+      if (!res.ok || !Array.isArray(data)) {
+        throw new Error((data && data.error) || ('HTTP ' + res.status));
+      }
+      return data;
+    });
+  });
+}
+
+/**
+ * Presets vision disponibles (cache de session). `force` refait l'appel (ex.
+ * l'utilisateur vient d'activer « compatible vision » dans Paramètres).
+ */
+function galleryEnsureVisionPresets(force) {
+  if (!force && galleryState.visionPresets) return Promise.resolve(galleryState.visionPresets);
+  return galleryFetchPresets().then(function (presets) {
+    galleryState.visionPresets = galleryVisionPresets(presets);
+    return galleryState.visionPresets;
+  }).catch(function () {
+    if (!galleryState.visionPresets) galleryState.visionPresets = [];
+    return galleryState.visionPresets;
+  });
+}
+
+/** Remplit le sélecteur de preset vision (défaut = premier ; conserve le choix). */
+function galleryPopulateAutoTagSelectFrom(vision) {
+  var sel = galleryById('gallery-auto-tag-preset');
+  if (!sel) return;
+  vision = vision || [];
+  var prev = sel.value;
+  while (sel.firstChild) sel.removeChild(sel.firstChild);
+  vision.forEach(function (p) {
+    var opt = document.createElement('option');
+    opt.value = String(p.id);
+    opt.textContent = p.name || ('Preset ' + p.id);
+    sel.appendChild(opt);
+  });
+  if (!vision.length) {
+    var emptyOpt = document.createElement('option');
+    emptyOpt.value = '';
+    emptyOpt.textContent = 'Aucun preset vision';
+    sel.appendChild(emptyOpt);
+  }
+  var hasPrev = vision.some(function (p) { return String(p.id) === prev; });
+  sel.value = hasPrev ? prev : (vision.length ? String(vision[0].id) : '');
+}
+
+/** Affiche la progression « n/total » pendant/après la boucle d'auto-tag. */
+function galleryUpdateAutoTagProgress(done, total, finished) {
+  var el = galleryById('gallery-autotag-progress');
+  if (!el) return;
+  if (!total) { el.classList.add('hidden'); el.textContent = ''; return; }
+  el.classList.remove('hidden');
+  el.textContent = finished
+    ? 'Auto-tag : ' + done + '/' + total + ' traité' + (done > 1 ? 's' : '')
+    : 'Auto-tag en cours… ' + done + '/' + total;
+}
+
+/** Bascule l'état « exécution auto-tag » (bouton Annuler + verrou du sélecteur). */
+function gallerySetAutoTagRunning(on) {
+  var cancel = galleryById('gallery-action-autotag-cancel');
+  if (cancel) cancel.classList.toggle('hidden', !on);
+  var btn = galleryById('gallery-action-auto-tag');
+  if (btn) btn.disabled = !!on;
+  var sel = galleryById('gallery-auto-tag-preset');
+  if (sel) sel.disabled = !!on;
+}
+
+/** Demande l'annulation : la boucle s'arrête entre deux médias. */
+function galleryCancelAutoTag() {
+  galleryState.autoTagCancel = true;
+}
+
+/**
+ * Boucle d'auto-tag sur la SÉLECTION : UN appel par média
+ * (POST /api/media/<id>/auto-tag {preset_id}) → progression + ANNULATION.
+ * Récap final (toast) distinguant succès / ignorés / erreurs, puis reload.
+ */
+function galleryRunAutoTag(ids, presetId) {
+  if (!ids || !ids.length || galleryState.busy) return Promise.resolve(false);
+  var total = ids.length;
+  var done = 0, tagged = 0, skipped = 0, errors = 0, addedTags = 0;
+  galleryState.autoTagCancel = false;
+  galleryState.lastAutoTagRequest = { ids: ids.slice(), preset_id: presetId };
+  gallerySetAutoTagRunning(true);
+  gallerySetBusy(true);
+  galleryUpdateAutoTagProgress(0, total);
+  return new Promise(function (resolve) {
+    function finish(cancelled) {
+      galleryState.autoTagCancel = false;
+      gallerySetAutoTagRunning(false);
+      gallerySetBusy(false);
+      galleryUpdateAutoTagProgress(done, total, true);
+      var msg = tagged + ' média' + (tagged > 1 ? 's' : '') + ' auto-taggé' + (tagged > 1 ? 's' : '')
+        + ' (' + addedTags + ' tag' + (addedTags > 1 ? 's' : '') + ')';
+      if (skipped) msg += ' • ' + skipped + ' ignoré' + (skipped > 1 ? 's' : '');
+      if (errors) msg += ' • ' + errors + ' erreur' + (errors > 1 ? 's' : '');
+      if (cancelled) msg += ' • annulé';
+      galleryToast(msg, errors ? 'warning' : 'success');
+      galleryReload();
+      resolve(true);
+    }
+    function step() {
+      if (galleryState.autoTagCancel) { finish(true); return; }
+      if (done >= total) { finish(false); return; }
+      var id = ids[done];
+      galleryApiRequest('POST', '/media/' + encodeURIComponent(id) + '/auto-tag', { preset_id: presetId })
+        .then(function (data) {
+          var at = (data && data.auto_tag) || {};
+          if (at.status === 'tagged') { tagged++; addedTags += (at.added || 0); }
+          else { skipped++; }
+        })
+        .catch(function () { errors++; })
+        .then(function () {
+          done++;
+          galleryUpdateAutoTagProgress(done, total);
+          step();
+        });
+    }
+    step();
+  });
+}
+
+/**
+ * Action « 🤖 Auto-tag (IA) » : cible la sélection avec le preset vision choisi.
+ * Les presets sont RECHARGÉS à chaque clic (l'utilisateur peut avoir activé/
+ * retiré « compatible vision » dans Paramètres entre-temps). Sans preset vision
+ * configuré → message actionnable (aucun appel).
+ */
+function galleryBulkAutoTag() {
+  var ids = gallerySelectedIds();
+  if (!ids.length) return Promise.resolve(false);
+  return galleryEnsureVisionPresets(true).then(function (vision) {
+    galleryPopulateAutoTagSelectFrom(vision);
+    var sel = galleryById('gallery-auto-tag-preset');
+    if (!vision.length || !sel || !sel.value) {
+      galleryToast('Aucun preset compatible vision. Coche « Compatible vision » sur un preset dans Paramètres > Provider LLM.', 'warning');
+      return false;
+    }
+    return galleryRunAutoTag(ids, parseInt(sel.value, 10));
+  });
 }
 
 /** Suppression groupée (corbeille) : POST /api/media/delete { ids }. */
@@ -1604,8 +2717,20 @@ function galleryBindKeyHandler() {
   galleryKeyHandler = function (e) {
     if (!galleryState.started || galleryLocalMode()) return;
     if (galleryIsInputFocused(e)) return;
+    var t = e && e.target;
+    // Espace sur la CASE À COCHER focalisée : le navigateur gère nativement le
+    // toggle (il émet un click → la brique met la sélection à jour). Ne pas le
+    // traiter ici, sinon double toggle (clavier hôte + activation native).
+    if (e.key === ' ' && t && t.classList && t.classList.contains('gallery-cell-check')) return;
     var lb = galleryState.lightbox;
     if (lb && lb.isOpen()) {
+      // « Suppr » = corbeille de l'item AFFICHÉ. Touche gérée par l'hôte : la
+      // brique lightbox ne la connaît pas (on ne la modifie pas).
+      if (e.key === 'Delete' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        if (!e.repeat) galleryLightboxDeleteCurrent();
+        return;
+      }
       if (lb.handleKey(e)) e.preventDefault();
       return;
     }
@@ -1723,13 +2848,46 @@ window.AppGallery = {
   setView: gallerySetView,
   resetFilters: galleryResetFilters,
   readFilters: galleryReadFilterInputs,
+  // FILTRE DOSSIERS (bouton + modale multi-dossiers)
+  openFoldersModal: galleryOpenFoldersModal,
+  applyFolders: galleryApplyFolders,
+  fetchFolders: galleryFetchFolders,
+  foldersUrl: galleryFoldersUrl,
+  updateFoldersButton: galleryUpdateFoldersButton,
+  folderLabel: galleryFolderLabel,
+  // FILTRE TAGS (bouton + modale multi-tags)
+  openTagsModal: galleryOpenTagsModal,
+  applyTags: galleryApplyTags,
+  fetchTags: galleryFetchTags,
+  tagsUrl: galleryTagsUrl,
+  updateTagsButton: galleryUpdateTagsButton,
+  tagLabel: galleryTagLabel,
+  // TAGS d'un média (chips du panneau d'infos)
+  tagsFieldHtml: galleryTagsFieldHtml,
+  normalizeTagInput: galleryNormalizeTagInput,
+  bindInfoPaneEvents: galleryBindInfoPaneEvents,
+  applyItemTags: galleryApplyItemTags,
+  addTag: galleryAddTag,
+  removeTag: galleryRemoveTag,
+  // FILTRE FAVORIS (bascule toolbar)
+  toggleFavoriteFilter: galleryToggleFavoriteFilter,
+  updateFavoriteButton: galleryUpdateFavoriteButton,
   clearSelection: galleryClearSelection,
   selectedIds: gallerySelectedIds,
   selectedItems: gallerySelectedItems,
   deleteItem: galleryDeleteItem,
+  deleteLightboxCurrent: galleryLightboxDeleteCurrent,
+  toggleFavorite: galleryToggleFavorite,
   restoreItem: galleryRestoreItem,
   purgeItem: galleryPurgeItem,
   bulkDelete: galleryBulkDelete,
+  bulkFavorite: galleryBulkFavorite,
+  bulkTags: galleryBulkTags,
+  bulkAutoTag: galleryBulkAutoTag,
+  runAutoTag: galleryRunAutoTag,
+  cancelAutoTag: galleryCancelAutoTag,
+  visionPresets: galleryVisionPresets,
+  ensureVisionPresets: galleryEnsureVisionPresets,
   bulkRestore: galleryBulkRestore,
   bulkPurge: galleryBulkPurge,
   bulkDownload: galleryBulkDownload,
@@ -1749,6 +2907,7 @@ window.AppGallery = {
     THUMB_PENDING_MS: GALLERY_THUMB_PENDING_MS,
     POLL_MS: GALLERY_POLL_MS,
     SORTS: GALLERY_SORTS.slice(),
+    TAG_MAX_LEN: GALLERY_TAG_MAX_LEN,
   },
   state: galleryState,
 };

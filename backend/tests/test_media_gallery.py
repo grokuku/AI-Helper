@@ -777,3 +777,129 @@ def test_list_without_params_is_backward_compatible(client, make_token, media_st
     # Champs galerie ajoutés (superset).
     assert item["thumb"] == f"/api/media/{item['id']}/thumbnail"
     assert "thumb_available" in item
+
+
+# ── 5bis. Liste des sous-dossiers (alimente la modale de filtres) ──────
+
+def test_folders_requires_auth(client):
+    """NEGATIVE : sans token, la liste des dossiers refuse (401)."""
+    assert client.get("/api/media/folders").status_code == 401
+
+
+def test_folders_counts_sorted_exclude_trashed(client, make_token, media_storage):
+    """Comptes EXACTS par dossier, triés par nom, corbeillés EXCLUS par défaut.
+
+    Contrôle NÉGATIF : oublier l'exclusion des corbeillés ferait passer le
+    dossier « a » de 1 à 2 (rouge).
+    """
+    headers = _headers(make_token, "fold-cnt")
+    _seed_list(client, headers)  # a:1 (alpha), a/b:1 (beta), c:1 (gamma)
+    _upload(client, headers, b"root", kind="image", ext=".png", filename="root", subfolder="")
+    r = _upload(client, headers, b"trashme", kind="image", ext=".png", filename="t", subfolder="a")
+    assert client.delete(f"/api/media/{r.get_json()['id']}", headers=headers).status_code == 200
+
+    body = client.get("/api/media/folders", headers=headers).get_json()
+    assert body["folders"] == [
+        {"subfolder": "", "count": 1},
+        {"subfolder": "a", "count": 1},
+        {"subfolder": "a/b", "count": 1},
+        {"subfolder": "c", "count": 1},
+    ]
+    assert body["total"] == 4  # somme des comptes
+
+
+def test_folders_status_param(client, make_token, media_storage):
+    """``status`` cohérent avec la liste : trashed / all / invalide."""
+    headers = _headers(make_token, "fold-status")
+    _upload(client, headers, b"keep", filename="k", subfolder="x")
+    r = _upload(client, headers, b"gone", filename="g", subfolder="x")
+    client.delete(f"/api/media/{r.get_json()['id']}", headers=headers)
+
+    assert client.get("/api/media/folders", headers=headers).get_json()["folders"] == [
+        {"subfolder": "x", "count": 1}]
+    trashed = client.get("/api/media/folders?status=trashed", headers=headers).get_json()
+    assert trashed["folders"] == [{"subfolder": "x", "count": 1}] and trashed["total"] == 1
+    all_folders = client.get("/api/media/folders?status=all", headers=headers).get_json()
+    assert all_folders["folders"] == [{"subfolder": "x", "count": 2}]
+    assert client.get("/api/media/folders?status=nope", headers=headers).status_code == 400
+
+
+def test_folders_isolation_between_users(client, make_token, media_storage):
+    """Chaque utilisateur ne voit QUE ses dossiers (user_id du token)."""
+    headers_a = _headers(make_token, "fold-a")
+    headers_b = _headers(make_token, "fold-b")
+    _upload(client, headers_a, b"a1", filename="a1", subfolder="shared")
+    _upload(client, headers_a, b"a2", filename="a2", subfolder="onlyA")
+    _upload(client, headers_b, b"b1", filename="b1", subfolder="shared")
+
+    assert client.get("/api/media/folders", headers=headers_a).get_json() == {
+        "folders": [{"subfolder": "onlyA", "count": 1}, {"subfolder": "shared", "count": 1}],
+        "total": 2,
+    }
+    assert client.get("/api/media/folders", headers=headers_b).get_json() == {
+        "folders": [{"subfolder": "shared", "count": 1}], "total": 1,
+    }
+
+
+# ── 5ter. Filtre MULTI-dossiers (subfolders) ──────────────────────────
+
+def _names(client, headers, query=""):
+    body = client.get(f"/api/media?{query}" if query else "/api/media", headers=headers).get_json()
+    return sorted(i["filename"] for i in body["items"]), body["total"]
+
+
+def test_list_subfolders_multi_or_exact(client, make_token, media_storage):
+    """``subfolders`` : OU, correspondance EXACTE, répétition ET virgules."""
+    headers = _headers(make_token, "multi-or")
+    _upload(client, headers, b"1", filename="alpha", subfolder="a")
+    _upload(client, headers, b"2", filename="beta", subfolder="b")
+    _upload(client, headers, b"3", filename="gamma", subfolder="c")
+
+    ns, total = _names(client, headers, "subfolders=a&subfolders=c")
+    assert ns == ["alpha.png", "gamma.png"] and total == 2
+    ns, _ = _names(client, headers, "subfolders=a,c")  # séparateur virgule
+    assert ns == ["alpha.png", "gamma.png"]
+
+    # EXACT : « a » ne ramène PAS « a/b » (contrairement au `subfolder` singulier).
+    _upload(client, headers, b"4", filename="delta", subfolder="a/b")
+    ns, _ = _names(client, headers, "subfolders=a")
+    assert ns == ["alpha.png"]
+
+    # RACINE : valeur présente mais vide.
+    _upload(client, headers, b"5", filename="root", subfolder="")
+    ns, _ = _names(client, headers, "subfolders=")
+    assert ns == ["root.png"]
+
+    # Absence du paramètre = pas de filtre.
+    _, total = _names(client, headers)
+    assert total == 5
+
+
+def test_list_subfolders_combines_with_other_filters(client, make_token, media_storage):
+    """Multi-dossiers combiné aux autres filtres (ET) et à ``subfolder``."""
+    headers = _headers(make_token, "multi-and")
+    _upload(client, headers, b"1", kind="image", ext=".png", filename="alpha", subfolder="a")
+    _upload(client, headers, b"2", kind="video", ext=".mp4", filename="beta", subfolder="a")
+    _upload(client, headers, b"3", kind="video", ext=".mp4", filename="gamma", subfolder="b")
+
+    ns, _ = _names(client, headers, "subfolders=a&subfolders=b&kind=video")
+    assert ns == ["beta.mp4", "gamma.mp4"]
+    ns, _ = _names(client, headers, "subfolders=b&q=gam")
+    assert ns == ["gamma.mp4"]
+    # `subfolder` (singulier, préfixe) ET `subfolders` (pluriel, exact) se combinent.
+    ns, _ = _names(client, headers, "subfolder=a&subfolders=a")
+    assert ns == ["alpha.png", "beta.mp4"]
+
+
+def test_list_subfolders_invalid_400_and_backward_compatible(client, make_token, media_storage):
+    """Valeur invalide → 400 ; ``subfolder`` singulier NON cassé (préfixe)."""
+    headers = _headers(make_token, "multi-neg")
+    _upload(client, headers, b"1", filename="alpha", subfolder="a")
+    _upload(client, headers, b"2", filename="beta", subfolder="a/b")
+
+    assert client.get("/api/media?subfolders=..", headers=headers).status_code == 400
+    # Pluriel EXACT vs singulier PRÉFIXE (compat) : les deux cohabitent.
+    assert [i["filename"] for i in client.get("/api/media?subfolders=a", headers=headers).get_json()["items"]] == ["alpha.png"]
+    assert sorted(i["filename"] for i in client.get("/api/media?subfolder=a", headers=headers).get_json()["items"]) == ["alpha.png", "beta.png"]
+    # Un unique élément vide = racine (aucun média racine ici) → total 0.
+    assert client.get("/api/media?subfolders=", headers=headers).get_json()["total"] == 0

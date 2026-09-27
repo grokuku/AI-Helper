@@ -480,14 +480,31 @@
     /* ===== Galerie média (onglet Galerie) — styles de l'ADAPTATEUR =====
        Les briques holaf (grille/visionneuse/panneau) injectent leur propre CSS
        scopé (.holaf-grid-*, .holaf-lightbox-*, .holaf-infopane-*). Ici : la
-       cellule hôte (vignette + badge) et le média de la visionneuse. */
-    #gallery-grid { --hl-gap: 12px; }
+       cellule hôte (vignette + badge + case à cocher) et le média de la
+       visionneuse. */
+    /* La grille est une SURFACE DE SÉLECTION D'IMAGES : aucun texte à
+       sélectionner. `user-select: none` supprime l'« overlay jaune » natif du
+       glisser-sélectionner du navigateur, et la sélection est faite par la
+       case à cocher. Contreparties vérifiées : les compteurs/libellés vivent
+       HORS de #gallery-grid (barre d'outils) et le panneau d'infos reste
+       sélectionnable (règle dédiée #gallery-info plus bas — on y copie
+       prompt/workflow). */
+    #gallery-grid {
+      --hl-gap: 12px;
+      user-select: none;
+      -webkit-user-select: none;
+    }
     .gallery-cell {
       position: relative;
       border-radius: 10px;
       overflow: hidden;
       background-color: var(--bg-body);
       border: 1px solid rgba(148, 163, 184, 0.28);
+      /* Ceinture + bretelles : aucun drag natif de l'image, aucune sélection
+         de texte même si une cellule portait du texte à l'avenir. */
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-user-drag: none;
     }
     .gallery-cell-img {
       width: 100%;
@@ -495,6 +512,7 @@
       object-fit: cover;
       display: block;
       background-color: var(--bg-body);
+      -webkit-user-drag: none; /* pas de « ghost image » au glisser */
     }
     .gallery-cell-img--hidden { display: none; }
     .gallery-cell-ph {
@@ -515,9 +533,11 @@
     .gallery-cell-ph--pending { color: var(--text-secondary); opacity: 0.75; }
     .gallery-cell-ph--error { color: #e11d48; }
     .gallery-cell-ph--unavailable { color: #d97706; }
+    /* Badge de TYPE (🖼️/▶/🎵) : déplacé en BAS à gauche — le créneau haut
+       gauche est désormais réservé à la case à cocher de sélection. */
     .gallery-cell-badge {
       position: absolute;
-      top: 6px;
+      bottom: 6px;
       left: 6px;
       font-size: 11px;
       line-height: 1;
@@ -526,6 +546,50 @@
       background: rgba(0, 0, 0, 0.55);
       color: #fff;
       pointer-events: none;
+      opacity: 0.9;
+    }
+    /* Case à cocher de SÉLECTION (remplace l'icône en haut à gauche) :
+       vide = non sélectionné, cochée = sélectionné. Un clic dessus AJOUTE ou
+       RETIRE l'image sans toucher aux autres (la brique traite <input> comme
+       un toggle). Boîte CUSTOM (appearance:none) : lisible sur tout média
+       (vignette claire ou sombre), remplie à la couleur d'accent du thème
+       quand cochée ; apparition renforcée au survol / focus. */
+    .gallery-cell-check {
+      appearance: none;
+      -webkit-appearance: none;
+      position: absolute;
+      top: 6px;
+      left: 6px;
+      z-index: 4;
+      width: 20px;
+      height: 20px;
+      margin: 0;
+      padding: 0;
+      cursor: pointer;
+      border: 2px solid rgba(255, 255, 255, 0.92);
+      border-radius: 6px;
+      background-color: rgba(15, 23, 42, 0.42);
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+      opacity: 0.72;
+      transition: opacity 0.12s, transform 0.12s,
+                  background-color 0.12s, border-color 0.12s;
+    }
+    .gallery-cell:hover .gallery-cell-check,
+    .gallery-cell:focus-within .gallery-cell-check,
+    .gallery-cell-check:hover { opacity: 1; }
+    .gallery-cell-check:hover { transform: scale(1.1); }
+    .gallery-cell-check:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 1px;
+    }
+    .gallery-cell-check:checked {
+      opacity: 1;
+      background-color: var(--accent);
+      border-color: var(--accent);
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='none' stroke='%23fff' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round' d='M3.2 8.6l3.2 3.2 6.4-6.6'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: center;
+      background-size: 12px 12px;
     }
     .holaf-grid-cell--selected .gallery-cell,
     .holaf-grid-cell.holaf-grid-cell--selected {
@@ -537,6 +601,14 @@
       max-height: 100%;
       object-fit: contain;
       display: block;
+    }
+    /* Le PANNEAU D'INFOS reste SÉLECTIONNABLE (copie prompt/workflow) : la règle
+       user-select:none ne porte que sur #gallery-grid, jamais sur cette zone.
+       Règle explicite = garde-fou contre une future règle trop large. */
+    #gallery-info,
+    #gallery-info * {
+      user-select: text;
+      -webkit-user-select: text;
     }
     .gallery-lightbox-video { max-width: 100%; max-height: 100%; }
     .gallery-lightbox-audio { min-width: 320px; }
@@ -571,6 +643,71 @@
       background: var(--input-bg);
       color: var(--text-primary);
     }
+    .gallery-filter-btn {
+      font-size: 12px;
+      padding: 3px 10px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--input-bg);
+      color: var(--text-primary);
+      cursor: pointer;
+      transition: background-color 0.15s, border-color 0.15s, color 0.15s;
+    }
+    .gallery-filter-btn:hover:not(.is-active) { border-color: var(--accent); color: var(--accent); }
+    .gallery-filter-btn.is-active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+    /* Contenu de la MODALE « dossiers » (holaf-modal, options draggable/resizable).
+       Le contenu hérite du thème de la modale (--hm-*) — pas des vars de page. */
+    .gallery-folders { display: flex; flex-direction: column; gap: 8px; height: 100%; }
+    .gallery-folders-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .gallery-folders-search {
+      flex: 1;
+      min-width: 140px;
+      font-size: 12px;
+      padding: 3px 8px;
+      border: 1px solid var(--hm-border);
+      border-radius: 6px;
+      background: var(--hm-bg-input);
+      color: var(--hm-text);
+    }
+    .gallery-folders-search:focus { outline: none; border-color: var(--hm-accent); }
+    .gallery-folders-actions { display: flex; gap: 4px; }
+    .gallery-folders-action {
+      font-size: 12px;
+      padding: 3px 10px;
+      border: 1px solid var(--hm-border);
+      border-radius: 6px;
+      background: var(--hm-bg-secondary);
+      color: var(--hm-text-secondary);
+      cursor: pointer;
+    }
+    .gallery-folders-action:hover { color: var(--hm-accent); border-color: var(--hm-accent); }
+    .gallery-folders-status { font-size: 11px; color: var(--hm-text-secondary); }
+    .gallery-folders-list {
+      flex: 1 1 auto;
+      min-height: 120px;
+      overflow-y: auto;
+      border: 1px solid var(--hm-border);
+      border-radius: 6px;
+      background: var(--hm-bg-input);
+    }
+    .gallery-folder-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 10px;
+      font-size: 12px;
+      color: var(--hm-text);
+      cursor: pointer;
+    }
+    .gallery-folder-item:hover { background: var(--hm-bg-secondary); }
+    .gallery-folder-check { flex-shrink: 0; }
+    .gallery-folder-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .gallery-folder-count { color: var(--hm-text-secondary); font-variant-numeric: tabular-nums; }
+    .gallery-folders-empty { padding: 12px; font-size: 12px; color: var(--hm-text-secondary); text-align: center; }
     .gallery-action-btn {
       border: 1px solid var(--border);
       background: var(--bg-body);
@@ -591,6 +728,10 @@
        libellés restent insécables et la rangée se replie proprement. */
     #gallery-actions .gallery-action-btn { white-space: nowrap; }
     #gallery-actions-label { line-height: 1.2; }
+    /* Sélecteur du preset « compatible vision » pour l'auto-tag IA : borné en
+       largeur (noms longs tronqués) pour ne pas casser la rangée d'actions. */
+    #gallery-auto-tag-preset { max-width: 160px; }
+    #gallery-autotag-progress { line-height: 1.2; }
 
     /* Cellule : actions au survol + marqueur corbeille */
     .gallery-cell-actions {
@@ -635,4 +776,108 @@
     .gallery-cell-trash.is-hidden { display: none; }
     .gallery-cell--trashed { opacity: 0.62; }
     .gallery-cell--trashed .gallery-cell-img { filter: grayscale(0.5); }
+    /* ÉTOILE de FAVORI (« à exposer ») : bouton en BAS-DROITE (créneau libre,
+       sans chevauchement avec la case haut-gauche, le badge bas-gauche ni les
+       actions haut-droite). Discrète au repos, pleine + ambre quand favori. */
+    .gallery-cell-fav {
+      position: absolute;
+      bottom: 4px;
+      right: 4px;
+      width: 24px;
+      height: 24px;
+      padding: 0;
+      border: 0;
+      border-radius: 6px;
+      background: rgba(0, 0, 0, 0.55);
+      color: #fff;
+      font-size: 14px;
+      line-height: 1;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0.55;
+      transition: opacity 0.12s, transform 0.12s,
+                  background-color 0.12s, color 0.12s;
+    }
+    .gallery-cell:hover .gallery-cell-fav,
+    .gallery-cell:focus-within .gallery-cell-fav,
+    .gallery-cell-fav:hover { opacity: 1; }
+    .gallery-cell-fav:hover { transform: scale(1.1); background: rgba(0, 0, 0, 0.8); }
+    .gallery-cell-fav:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+    .gallery-cell-fav.is-fav {
+      opacity: 1;
+      color: #fbbf24;
+      background: rgba(0, 0, 0, 0.72);
+    }
+    /* État visuel d'une cellule FAVORIE : liseré ambre (distinct du liseré de
+       sélection qui reste en --accent ; les deux peuvent coexister). */
+    .gallery-cell--favorite {
+      border-color: #f59e0b;
+      box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.5);
+    }
+    /* ── Tags média : chips du panneau d'infos + modale d'action + modale de
+       filtrage. ── */
+    .gallery-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      margin: 2px 0 4px;
+    }
+    .gallery-tag-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      max-width: 100%;
+      padding: 1px 4px 1px 8px;
+      border: 1px solid var(--accent);
+      border-radius: 999px;
+      background: color-mix(in srgb, var(--accent) 12%, transparent);
+      color: var(--text-primary);
+      font-size: 11px;
+      line-height: 1.6;
+    }
+    .gallery-tag-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    /* Source « ai » : préparée pour l'auto-tagging — teinte distincte + préfixe
+       🤖 via ::before (aucune chip IA n'existe encore aujourd'hui). */
+    .gallery-tag-chip--ai {
+      border-style: dashed;
+      border-color: #8b5cf6;
+      background: rgba(139, 92, 246, 0.12);
+    }
+    .gallery-tag-chip--ai .gallery-tag-name::before { content: '🤖 '; }
+    .gallery-tag-remove {
+      border: 0;
+      background: transparent;
+      color: inherit;
+      cursor: pointer;
+      opacity: 0.6;
+      font-size: 12px;
+      line-height: 1;
+      padding: 0 2px;
+    }
+    .gallery-tag-remove:hover { opacity: 1; color: #e11d48; }
+    .gallery-tag-input {
+      width: 100%;
+      margin-top: 2px;
+      font-size: 12px;
+      padding: 3px 8px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--input-bg);
+      color: var(--text-primary);
+    }
+    .gallery-tag-name-cell { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    /* Contenu de la modale « Tag des médias sélectionnés ». */
+    .gallery-tags-action { display: flex; flex-direction: column; gap: 8px; }
+    .gallery-tags-action-hint { font-size: 12px; color: var(--hm-text-secondary); margin: 0; }
+    .gallery-tags-action-input {
+      font-size: 13px;
+      padding: 5px 8px;
+      border: 1px solid var(--hm-border);
+      border-radius: 6px;
+      background: var(--hm-bg-input);
+      color: var(--hm-text);
+    }
+    .gallery-tags-action-input:focus { outline: none; border-color: var(--hm-accent); }
     .gallery-lightbox-download { font-size: 18px; }

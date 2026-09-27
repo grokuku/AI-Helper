@@ -262,6 +262,8 @@
       document.getElementById('preset-form-context').value = '';
       document.getElementById('preset-form-key').placeholder = 'API Key (optionnel)';
       document.getElementById('preset-form-global').checked = false;
+      document.getElementById('preset-form-client').checked = false;
+      document.getElementById('preset-form-vision').checked = false;
       document.getElementById('preset-models-datalist').innerHTML = '';
       renderPresetContextBadge(null);
       showPresetContextHint('', null);
@@ -435,6 +437,7 @@
         html += '<div><span class="font-medium text-slate-700 dark:text-slate-200">' + escapeHtml(p.name) + '</span>';
         if (p.is_global) html += ' <span class="text-indigo-500">🌐 global</span>';
         if (p.is_client_side) html += ' <span class="text-amber-500">🖥️ client</span>';
+        if (p.supports_vision) html += ' <span class="text-violet-500">👁 vision</span>';
         if (p.owner_name && !p.is_global) html += ' <span class="text-slate-400">(' + escapeHtml(p.owner_name) + ')</span>';
         html += '<br><span class="text-slate-400">' + escapeHtml(p.model) + ' @ ' + escapeHtml(p.base_url) + '</span>';
         var ctx = presetContextInlineHtml(p);
@@ -463,6 +466,8 @@
         document.getElementById('preset-form-key').value = '';
         document.getElementById('preset-form-key').placeholder = '••••••• (inchangé)';
         document.getElementById('preset-form-global').checked = p.is_global;
+        document.getElementById('preset-form-client').checked = !!p.is_client_side;
+        document.getElementById('preset-form-vision').checked = !!p.supports_vision;
         var ctxEl = document.getElementById('preset-form-context');
         ctxEl.value = (p.context_length !== null && p.context_length !== undefined) ? String(p.context_length) : '';
         renderPresetContextBadge(p.context_source || null);
@@ -480,6 +485,7 @@
       var model = document.getElementById('preset-form-model').value.trim();
       var isGlobal = document.getElementById('preset-form-global').checked ? 1 : 0;
       var isClient = document.getElementById('preset-form-client').checked ? 1 : 0;
+      var supportsVision = document.getElementById('preset-form-vision').checked ? 1 : 0;
       var editId = document.getElementById('preset-form-name').dataset.editId;
 
       var ctxRaw = document.getElementById('preset-form-context').value.trim();
@@ -497,7 +503,7 @@
       if (!url) { showModal('Preset', 'URL requise', 'error'); return; }
 
       try {
-        var body = { name: name, base_url: url, api_key: key, model: model, is_global: isGlobal, is_client_side: isClient, context_length: contextLength };
+        var body = { name: name, base_url: url, api_key: key, model: model, is_global: isGlobal, is_client_side: isClient, supports_vision: supportsVision, context_length: contextLength };
         var method = 'POST';
         var endpoint = '/presets';
         if (editId) {

@@ -664,6 +664,9 @@
               <label class="inline-flex items-center gap-1 text-xs text-slate-500 dark:text-slate-400">
                 <input type="checkbox" id="preset-form-client" class="rounded"> Client-side
               </label>
+              <label class="inline-flex items-center gap-1 text-xs text-slate-500 dark:text-slate-400">
+                <input type="checkbox" id="preset-form-vision" class="rounded"> Compatible vision (analyse d'images)
+              </label>
               <div class="flex gap-2">
                 <button onclick="savePreset()" class="px-3 py-1.5 text-xs font-medium bg-indigo-600 text-white rounded-md hover:bg-indigo-500">Sauvegarder</button>
                 <button onclick="clearPresetForm()" class="px-3 py-1.5 text-xs text-slate-500 hover:text-slate-700 border border-slate-300 rounded-md">Nouveau</button>
@@ -1013,9 +1016,12 @@
             <option value="video">Vidéos</option>
             <option value="audio">Audio</option>
           </select>
-          <input id="gallery-filter-subfolder" type="text" list="gallery-subfolders" placeholder="Sous-dossier"
-                 class="gallery-filter-input" aria-label="Filtrer par sous-dossier" style="width:11rem">
-          <datalist id="gallery-subfolders"></datalist>
+          <button type="button" id="gallery-filter-folders" class="gallery-filter-btn"
+                  aria-haspopup="dialog" aria-label="Filtrer par dossiers" title="Tous les dossiers">Dossiers : tous</button>
+          <button type="button" id="gallery-filter-tags" class="gallery-filter-btn"
+                  aria-haspopup="dialog" aria-label="Filtrer par tags" title="Tous les tags">Tags : tous</button>
+          <button type="button" id="gallery-filter-favorite" class="gallery-filter-btn"
+                  aria-pressed="false" aria-label="Afficher uniquement les favoris" title="Afficher uniquement les favoris">★ Favoris</button>
           <input id="gallery-search" type="search" placeholder="Rechercher un nom…"
                  class="gallery-filter-input" aria-label="Rechercher par nom" style="width:13rem">
           <label for="gallery-filter-from" class="text-slate-500 dark:text-slate-400 ml-1">Du</label>
@@ -1063,15 +1069,27 @@
               <div class="flex flex-wrap items-center gap-2">
                 <button type="button" id="gallery-action-download" data-gallery-action onclick="galleryBulkDownload()"
                         class="gallery-action-btn" title="Télécharger les originaux sélectionnés">⤓ Télécharger</button>
+                <button type="button" id="gallery-action-favorite" data-gallery-action onclick="galleryBulkFavorite()"
+                        class="gallery-action-btn" title="Marquer comme favori">★ Favori</button>
+                <button type="button" id="gallery-action-tags" data-gallery-action onclick="galleryBulkTags()"
+                        class="gallery-action-btn" title="Ajouter ou retirer un tag">🏷 Tag</button>
                 <button type="button" id="gallery-action-delete" data-gallery-action onclick="galleryBulkDelete()"
                         class="gallery-action-btn gallery-action-btn--danger" title="Mettre à la corbeille">🗑 Supprimer</button>
                 <button type="button" id="gallery-action-restore" data-gallery-action onclick="galleryBulkRestore()"
                         class="gallery-action-btn hidden" title="Restaurer les médias">♻ Restaurer</button>
                 <button type="button" id="gallery-action-purge" data-gallery-action onclick="galleryBulkPurge()"
                         class="gallery-action-btn gallery-action-btn--danger hidden" title="Supprimer définitivement">✖ Supprimer définitivement</button>
+                <select id="gallery-auto-tag-preset" class="gallery-action-btn"
+                        title="Preset compatible vision à utiliser pour l'auto-tag"
+                        aria-label="Preset compatible vision"></select>
+                <button type="button" id="gallery-action-auto-tag" data-gallery-action onclick="galleryBulkAutoTag()"
+                        class="gallery-action-btn" title="Taguer les images sélectionnées avec l'IA (preset compatible vision)">🤖 Auto-tag (IA)</button>
+                <button type="button" id="gallery-action-autotag-cancel" class="gallery-action-btn hidden" onclick="galleryCancelAutoTag()"
+                        title="Interrompre l'auto-tag en cours">✖ Annuler l'auto-tag</button>
                 <button type="button" onclick="galleryClearSelection()"
                         class="text-xs text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 px-2 py-1">Désélectionner</button>
               </div>
+              <div id="gallery-autotag-progress" class="hidden text-xs font-medium text-indigo-600 dark:text-indigo-300" role="status" aria-live="polite"></div>
             </div>
           </div>
         </div>
@@ -1192,6 +1210,7 @@
   <script type="module" src="/vendor/holaf/holaf-lightbox.js"></script>
   <script type="module" src="/vendor/holaf/holaf-infopane.js"></script>
   <script type="module" src="/vendor/holaf/holaf-toast.js"></script>
+  <script type="module" src="/vendor/holaf/holaf-modal.js"></script>
   <!-- Adaptateur galerie (script classique, comme les autres app-*.js) -->
   <script src="/js/app-gallery.js" id="script-gallery"></script>
 </body>

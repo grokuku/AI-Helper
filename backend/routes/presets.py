@@ -131,6 +131,26 @@ def _parse_context_length_input(value):
     return value, 'manual', datetime.now(timezone.utc).isoformat(), None
 
 
+def _parse_supports_vision(value):
+    """Valide le flag ``supports_vision`` fourni par un client (POST/PUT).
+
+    Args:
+        value: valeur JSON brute (bool, int 0/1, str, None, …).
+
+    Returns:
+        tuple: ``(flag, error)`` où ``flag`` ∈ {0, 1} et ``error`` un message
+        (str) ou ``None``. Absent/``null`` = 0 (non-vision) ; un booléen JSON
+        ou les entiers 0/1 par tolérance API ; toute autre valeur est refusée.
+    """
+    if value is None:
+        return 0, None
+    if isinstance(value, bool):
+        return int(value), None
+    if isinstance(value, int) and value in (0, 1):
+        return value, None
+    return None, "supports_vision doit être un booléen (true/false) ou 0/1"
+
+
 # ── Presets ─────────────────────────────────────────────────────────
 
 @app.route('/api/presets', methods=['GET', 'POST'])
@@ -170,6 +190,8 @@ def presets():
                 'model': r['model'],
                 'is_global': bool(r['is_global']),
                 'is_client_side': bool(_row_get(r, 'is_client_side', 0)),
+                # Compat vision (auto-tagging IA) : faux par défaut.
+                'supports_vision': bool(_row_get(r, 'supports_vision', 0)),
                 'owner_name': r['display_name'] or r['username'] or '',
                 'created_at': r['created_at'],
                 # Fenêtre de contexte (None = détection auto à l'exécution).
@@ -187,10 +209,15 @@ def presets():
     model = data.get('model', '').strip()
     is_global = int(data.get('is_global', 0))
     is_client_side = int(data.get('is_client_side', 0))
+    supports_vision, vision_err = _parse_supports_vision(data.get('supports_vision'))
 
     if not name or not base_url:
         conn.close()
         return jsonify({'error': 'Nom et URL requis'}), 400
+
+    if vision_err:
+        conn.close()
+        return jsonify({'error': vision_err}), 400
 
     # context_length (optionnel) : entier > 0 → réglage manuel ; null/absent/'' → auto.
     ctx_len, ctx_src, ctx_at, ctx_err = _parse_context_length_input(data.get('context_length'))
@@ -216,8 +243,8 @@ def presets():
 
     enc = encrypt_api_key(api_key)
     cur.execute(
-        "INSERT INTO ai_presets (user_id, name, engine, base_url, api_key_encrypted, model, is_global, is_client_side, context_length, context_source, context_checked_at) VALUES (?, ?, 'openai', ?, ?, ?, ?, ?, ?, ?, ?)",
-        (user_id if not is_global else None, name, base_url, enc, model, is_global, is_client_side, ctx_len, ctx_src, ctx_at)
+        "INSERT INTO ai_presets (user_id, name, engine, base_url, api_key_encrypted, model, is_global, is_client_side, supports_vision, context_length, context_source, context_checked_at) VALUES (?, ?, 'openai', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (user_id if not is_global else None, name, base_url, enc, model, is_global, is_client_side, supports_vision, ctx_len, ctx_src, ctx_at)
     )
     conn.commit()
     pid = cur.lastrowid
@@ -261,6 +288,7 @@ def single_preset(preset_id):
             'model': row['model'],
             'is_global': bool(row['is_global']),
             'is_client_side': bool(_row_get(row, 'is_client_side', 0)),
+            'supports_vision': bool(_row_get(row, 'supports_vision', 0)),
             'created_at': row['created_at'],
             'context_length': _row_get(row, 'context_length', None),
             'context_source': _row_get(row, 'context_source', None),
@@ -331,6 +359,18 @@ def single_preset(preset_id):
     else:
         enc = row['api_key_encrypted']  # garder l'ancienne
 
+    # supports_vision (optionnel) : clé ABSENTE → valeur existante inchangée
+    # (les clients pré-remplissent le champ et le renvoient tel quel) ; valeur
+    # fournie → validée strictement (bool ou 0/1).
+    stored_vision = int(_row_get(row, 'supports_vision', 0) or 0)
+    if 'supports_vision' in data:
+        new_vision, vision_err = _parse_supports_vision(data.get('supports_vision'))
+        if vision_err:
+            conn.close()
+            return jsonify({'error': vision_err}), 400
+    else:
+        new_vision = stored_vision
+
     # Si on tente de passer en global (ou rester global), il faut etre admin
     new_is_global = int(data.get('is_global', row['is_global']))
     if new_is_global and not row['is_global']:
@@ -350,6 +390,7 @@ def single_preset(preset_id):
         cur.execute("""
             UPDATE ai_presets
             SET name = ?, base_url = ?, api_key_encrypted = ?, model = ?, is_client_side = ?, is_global = ?,
+                supports_vision = ?,
                 context_length = ?, context_source = ?, context_checked_at = ?, updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
         """, (
@@ -359,13 +400,15 @@ def single_preset(preset_id):
             data.get('model', row['model']),
             int(data.get('is_client_side', _row_get(row, 'is_client_side', 0))),
             new_is_global,
+            new_vision,
             context_update[0], context_update[1], context_update[2],
             preset_id
         ))
     else:
         cur.execute("""
             UPDATE ai_presets
-            SET name = ?, base_url = ?, api_key_encrypted = ?, model = ?, is_client_side = ?, is_global = ?, updated_at = CURRENT_TIMESTAMP
+            SET name = ?, base_url = ?, api_key_encrypted = ?, model = ?, is_client_side = ?, is_global = ?,
+                supports_vision = ?, updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
         """, (
             data.get('name', row['name']),
@@ -374,6 +417,7 @@ def single_preset(preset_id):
             data.get('model', row['model']),
             int(data.get('is_client_side', _row_get(row, 'is_client_side', 0))),
             new_is_global,
+            new_vision,
             preset_id
         ))
     conn.commit()
@@ -407,9 +451,10 @@ def duplicate_preset(preset_id):
 
     cur = conn.cursor()
     cur.execute("""
-        INSERT INTO ai_presets (user_id, name, engine, base_url, api_key_encrypted, model, is_global, is_client_side, context_length, context_source, context_checked_at)
-        VALUES (?, ? || ' (copie)', ?, ?, ?, ?, 0, ?, ?, ?, ?)
+        INSERT INTO ai_presets (user_id, name, engine, base_url, api_key_encrypted, model, is_global, is_client_side, supports_vision, context_length, context_source, context_checked_at)
+        VALUES (?, ? || ' (copie)', ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
     """, (user_id, row['name'], row['engine'], row['base_url'], row['api_key_encrypted'], row['model'], _row_get(row, 'is_client_side', 0),
+          int(_row_get(row, 'supports_vision', 0) or 0),
           _row_get(row, 'context_length', None), _row_get(row, 'context_source', None), _row_get(row, 'context_checked_at', None)))
     conn.commit()
     pid = cur.lastrowid

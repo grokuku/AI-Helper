@@ -9,6 +9,9 @@
 //   4. vignettes : URL .../thumbnail?size=… (stratégie 'url', aucun revoke) ;
 //   5. slider : change la taille de grille ET la taille demandée au serveur ;
 //   6. sélection → panneau d'informations (prompt + workflow copiables) ;
+//   6bis. correctifs UX : user-select:none sur la grille (fin de l'overlay
+//        jaune) SANS casser compteurs/panneau d'infos, et case à cocher de
+//        sélection (vide/cochée) ;
 //   7. double-clic → visionneuse (img/vidéo/audio) + navigation ‹/› ;
 //   8. états vide / erreur ;
 //   9. preuve : les fichiers vendor/holaf/*.js sont BYTE-IDENTIQUES à holaf-lib.
@@ -342,6 +345,72 @@ ok(fetchCalls.some((u) => u.indexOf("/api/media/1/metadata") !== -1), "metadata 
 const fieldValues = Array.prototype.map.call(paneRoot.querySelectorAll(".holaf-infopane-field-value"), (e) => e.textContent).join(" | ");
 ok(fieldValues.indexOf("512 × 512 px") !== -1, "résolution 512 × 512 px");
 ok(fieldValues.indexOf("Image") !== -1, "type Image");
+
+/* ═══ 6bis. UX : user-select + case à cocher de sélection ════════════════ */
+console.log("6bis. Correctifs UX (user-select, case à cocher)");
+{
+  // Règles CSS de l'hôte : parseur minimal (bloc → sélecteurs + déclarations).
+  // Les commentaires sont retirés AVANT parsing (ils peuvent contenir du texte
+  // et des virgules, voire « user-select » en prose).
+  const css = readFileSync(resolve(HERE, "..", "css", "app.css"), "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, "");
+  const decls = (needle) => {
+    let out = "";
+    const re = /([^{}]+)\{([^{}]*)\}/g;
+    let m;
+    while ((m = re.exec(css))) {
+      const hit = m[1].split(",").map((s) => s.trim()).some((s) =>
+        s === needle || s.indexOf(needle + " ") === 0 || s.indexOf(needle + ":") === 0);
+      if (hit) out += m[2] + ";";
+    }
+    return out;
+  };
+  const gridCss = decls("#gallery-grid");
+  ok(/user-select\s*:\s*none/.test(gridCss), "[point 1] user-select:none sur la grille (fin de l'overlay jaune)");
+  ok(/-webkit-user-select\s*:\s*none/.test(gridCss), "[point 1] -webkit-user-select:none sur la grille");
+  ok(/user-select\s*:\s*none/.test(decls(".gallery-cell")), "[point 1] user-select:none sur la cellule");
+  const infoCss = decls("#gallery-info");
+  ok(/user-select\s*:\s*text/.test(infoCss), "[point 1] panneau d'infos explicitement sélectionnable (copie prompt/workflow)");
+  ok(!/user-select\s*:\s*none/.test(infoCss), "[négatif] le panneau d'infos n'est PAS en user-select:none");
+  // Contrôle négatif : la règle ne doit pas être GLOBALE (html/body/*).
+  {
+    let globalNone = false;
+    const re = /([^{}]+)\{([^{}]*)\}/g;
+    let m;
+    while ((m = re.exec(css))) {
+      const sels = m[1].split(",").map((s) => s.trim());
+      if (sels.some((s) => s === "*" || s === "html" || s === "body" || s === ":root")
+          && /user-select\s*:\s*none/.test(m[2])) globalNone = true;
+    }
+    ok(!globalNone, "[négatif] aucun user-select:none global (html/body/*)");
+  }
+  // Compteurs / libellés utiles HORS grille → jamais affectés par la règle.
+  const gridEl = window.document.getElementById("gallery-grid");
+  ok(!gridEl.contains(window.document.getElementById("gallery-count")), "[négatif] compteur de médias hors grille (non affecté)");
+  ok(!gridEl.contains(window.document.getElementById("gallery-selected")), "[négatif] libellé de sélection hors grille (non affecté)");
+  ok(!gridEl.contains(paneRoot), "[négatif] panneau d'infos hors grille (reste copiable)");
+  eq(cellEl(0).querySelector(".gallery-cell-img").draggable, false, "[point 1] vignette non draggable (drag natif neutralisé)");
+  // Case à cocher : style hôte présent (boîte custom + état coché rempli).
+  ok(/appearance\s*:\s*none/.test(decls(".gallery-cell-check")), "[point 3] case custom (appearance:none) → contraste maîtrisé");
+  ok(/border/.test(decls(".gallery-cell-check")), "[point 3] case bordée (visible sur vignette claire comme sombre)");
+  ok(/background-color\s*:\s*var\(--accent\)/.test(decls(".gallery-cell-check:checked")), "[point 3] état coché rempli à la couleur du thème (var(--accent))");
+}
+// (3) Case à cocher dans la cellule : vide/cochée reflète la sélection.
+{
+  AppGallery.clearSelection();
+  await settle();
+  const c0 = cellEl(0).querySelector(".gallery-cell-check");
+  ok(!!c0, "[point 3] case à cocher présente dans la cellule (haut gauche)");
+  eq(c0 && c0.type, "checkbox", "[point 3] case = <input type=checkbox>");
+  eq(c0 && c0.checked, false, "[point 3] case VIDE quand non sélectionné");
+  click(cellEl(0));
+  await settle();
+  eq(c0.checked, true, "[point 3] case COCHÉE quand sélectionnée");
+  AppGallery.clearSelection();
+  await settle();
+  eq(c0.checked, false, "[point 3] case redevenue vide après désélection");
+  ok(!!cellEl(0).querySelector(".gallery-cell-badge"), "[négatif] badge de TYPE conservé (information non perdue)");
+}
 
 /* ═══ 7. Double-clic → visionneuse ═══════════════════════════════════════ */
 console.log("7. Visionneuse (lightbox)");

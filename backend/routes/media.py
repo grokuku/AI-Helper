@@ -12,10 +12,16 @@ Flow (calqué sur ``routes/files.py``) :
   5. GET  /api/media/<id>/thumbnail → vignette (cache LOCAL persistant + navigateur)
   6. GET  /api/media/<id>/metadata → dimensions/durée/codec + prompt/workflow
   7. GET  /api/media               → liste paginée + filtres/tri (galerie)
+  7bis. GET /api/media/folders      → sous-dossiers + nombre de médias (modale)
+  7ter. GET /api/media/tags         → tags + nombre de médias (modale filtres)
+  7quater. POST /api/media/<id>/tags → ajout/retrait de tags (manuel) sur UN média
+  7quinquies. POST /api/media/tags   → ajout/retrait de tags GROUPÉ (multi-select)
   8. DELETE /api/media/<id>        → corbeille (soft delete, restaurable)
   9. POST /api/media/delete        → corbeille groupée (multi-select UI)
  10. POST /api/media/<id>/restore  → restaure un média corbeillé (variante groupée /restore)
  11. DELETE /api/media/<id>/purge  → suppression DÉFINITIVE (fichier + ligne)
+ 12. POST /api/media/<id>/auto-tag → auto-tag IA d'UN média image (preset vision)
+ 13. POST /api/media/auto-tag      → auto-tag IA GROUPÉ borné (≤ 5) → récap
 
 Contraintes :
   - Authentification obligatoire (``_login_required``) : le ``user_id`` est
@@ -33,6 +39,7 @@ Contraintes :
     fichier compagnon).
 """
 
+import base64
 import contextlib
 import hashlib
 import logging
@@ -45,6 +52,11 @@ import tempfile
 from datetime import timezone
 
 from context import *
+from security.llm_url import (
+    LLM_URL_OPTIN_HINT,
+    _safe_llm_post,
+    _validate_llm_base_url,
+)
 from storage import get_storage
 
 CHUNK_SIZE = 25 * 1024 * 1024  # 25 MB par chunk (cohérent avec files.py)
@@ -84,6 +96,18 @@ _EXT_BY_KIND = {
     "audio": {".wav", ".mp3", ".flac"},
 }
 _SAFE_EXT_RE = re.compile(r"^\.[A-Za-z0-9]{1,8}$")
+
+# ── Tags média ────────────────────────────────────────────────────────
+# Un tag est une chaîne courte, normalisée (trim + espaces réduits), bornée
+# en longueur et restreinte à des caractères « raisonnables » (lettres — y
+# compris accentuées via \w Unicode —, chiffres, espaces et quelques
+# ponctuations usuelles). La VIRGULE est volontairement EXCLUE : elle sert de
+# séparateur dans le paramètre de filtre ``?tags=a,b``.
+TAG_MAX_LEN = 50
+# Borne de sécurité du nombre de tags traités par requête (anti-DoS payload).
+MAX_TAGS = 200
+_TAG_ALLOWED_RE = re.compile(r"^[\w \-.\+#&/()'@]+$", re.UNICODE)
+_TAG_SPACES_RE = re.compile(r"\s+")
 
 _MIME_BY_EXT = {
     ".png": "image/png",
@@ -175,6 +199,54 @@ def _sanitize_filename(name):
     return _sanitize_segment(name) or "untitled"
 
 
+def _normalize_tag(raw):
+    """Normalise un tag saisi (``None`` si invalide).
+
+    Normalisation : trim + réduction des espaces multiples à UN espace.
+    Validation : non vide, longueur <= ``TAG_MAX_LEN``, caractères autorisés
+    uniquement (``_TAG_ALLOWED_RE``). La CASSE est conservée telle que saisie
+    (l'unicité insensible à la casse est assurée en base par ``COLLATE
+    NOCASE`` ; c'est la 1re saisie qui reste visible).
+    """
+    if not isinstance(raw, str):
+        return None
+    tag = _TAG_SPACES_RE.sub(" ", raw).strip()
+    if not tag or len(tag) > TAG_MAX_LEN:
+        return None
+    if not _TAG_ALLOWED_RE.match(tag):
+        return None
+    return tag
+
+
+def _parse_tag_list(value):
+    """Valide une liste de tags (``add``/``remove``) → liste normalisée dédupliquée.
+
+    Retourne ``[]`` si ``value`` est ``None`` (champ absent) ; ``None`` si
+    ``value`` n'est pas une liste OU si AU MOINS un élément est invalide
+    (l'appelant renvoie alors 400). Le dédoublonnage est INSENSIBLE À LA CASSE
+    (``casefold``) et préserve l'ordre + la casse de la 1re occurrence. Une
+    liste trop volumineuse (> ``MAX_TAGS``) est refusée.
+    """
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        return None
+    out = []
+    seen = set()
+    for raw in value:
+        tag = _normalize_tag(raw)
+        if tag is None:
+            return None
+        key = tag.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(tag)
+    if len(out) > MAX_TAGS:
+        return None
+    return out
+
+
 def _normalize_ext(ext):
     ext = str(ext or "").strip().lower()
     if ext and not ext.startswith("."):
@@ -227,15 +299,415 @@ def _resolve_collision(storage, remote_path):
     raise RuntimeError("Impossible de trouver un nom de fichier libre sur le stockage")
 
 
-def _media_json(row):
+# ── Tags média : accès base ───────────────────────────────────────────
+
+def _media_tags_rows(media_id):
+    """Lignes de tags d'UN média, triées (nom, insensible à la casse)."""
+    conn = get_db()
+    try:
+        return conn.execute(
+            "SELECT tag, source FROM media_tags WHERE media_id = ? "
+            "ORDER BY tag COLLATE NOCASE ASC, id ASC",
+            (media_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+
+def _tags_by_media(media_ids):
+    """Tags de PLUSIEURS médias en UNE requête → ``{media_id: [lignes…]}``.
+
+    Évite le N+1 de la liste paginée : ``_media_json`` reçoit alors les lignes
+    déjà chargées au lieu de requêter une fois par média.
+    """
+    ids = list(media_ids)
+    if not ids:
+        return {}
+    placeholders = ",".join("?" for _ in ids)
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT media_id, tag, source FROM media_tags "
+            f"WHERE media_id IN ({placeholders}) "
+            "ORDER BY tag COLLATE NOCASE ASC, id ASC",
+            ids,
+        ).fetchall()
+    finally:
+        conn.close()
+    out = {}
+    for r in rows:
+        out.setdefault(r["media_id"], []).append(r)
+    return out
+
+
+def _tags_payload(tag_rows):
+    """(liste de chaînes, liste ``{tag, source}``) à partir des lignes de tags."""
+    tag_rows = tag_rows or []
+    return (
+        [r["tag"] for r in tag_rows],
+        [{"tag": r["tag"], "source": r["source"]} for r in tag_rows],
+    )
+
+
+def _add_tags(conn, user_id, media_id, tags):
+    """Ajoute des tags ``manual`` (``INSERT OR IGNORE``) → nombre créé.
+
+    ``INSERT OR IGNORE`` s'appuie sur la contrainte ``UNIQUE(media_id, tag)``
+    avec ``COLLATE NOCASE`` : un tag déjà présent dans une AUTRE casse est
+    silencieusement ignoré → la casse de la 1re saisie est conservée.
+    """
+    added = 0
+    for tag in tags:
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO media_tags (user_id, media_id, tag, source) "
+            "VALUES (?, ?, ?, 'manual')",
+            (user_id, media_id, tag),
+        )
+        added += cur.rowcount
+    return added
+
+
+def _remove_tags(conn, media_id, tags):
+    """Retire des tags d'un média (égalité NOCASE via la collation de colonne).
+
+    Retourne le nombre de tags effectivement supprimés.
+    """
+    removed = 0
+    for tag in tags:
+        cur = conn.execute(
+            "DELETE FROM media_tags WHERE media_id = ? AND tag = ?",
+            (media_id, tag),
+        )
+        removed += cur.rowcount
+    return removed
+
+
+# ── Auto-tagging IA (vision) ───────────────────────────────────────────
+# Un modèle « compatible vision » (API OpenAI-compatible) analyse une image
+# RÉDUITE (~512 px, JPEG) envoyée en data-URL base64 et renvoie des tags. Les
+# tags produits sont stockés avec ``source='ai'`` via ``INSERT OR IGNORE`` :
+# ils ne peuvent JAMAIS écraser un tag manuel (unicité ``COLLATE NOCASE``).
+#
+# Découpage volontaire : UNE image par appel HTTP côté front (pas de lot dans
+# un seul appel long). Le front boucle sur la sélection → progression visible
+# et ANNULATION naturelle (la boucle s'arrête entre deux médias). Le lot borné
+# ``POST /api/media/auto-tag`` (≤ ``AUTO_TAG_MAX_BATCH``) reste disponible pour
+# les clients programmatiques (récap par média).
+VISION_IMAGE_MAX_PX = 512
+VISION_TAG_MAX = 12
+# Borne du lot borné serveur : un lot = N appels LLM SÉQUENTIELS. On refuse
+# au-delà pour ne jamais immobiliser un worker durablement.
+AUTO_TAG_MAX_BATCH = 5
+# Délai explicite (connexion, lecture) : un modèle de vision peut être lent.
+VISION_TIMEOUT = (5, 60)
+
+# Prompt SYSTÈME (rôle) — texte EXACT envoyé au modèle.
+VISION_SYSTEM_PROMPT = (
+    "You are an expert image-tagging assistant. You receive one image and must "
+    "return a JSON array of concise tags describing its visible content."
+)
+
+# Prompt UTILISATEUR (texte EXACT) — l'image suit en partie ``image_url``.
+VISION_USER_PROMPT = (
+    "Tag this image. Return 5 to 12 tags as a JSON array of strings, ordered "
+    "from the most to the least relevant. Use English, lowercase, single words "
+    "or very short phrases (e.g. \"sunset\", \"beach\", \"long hair\"). Do not "
+    "include generic words like \"image\", \"photo\", \"picture\", \"art\" or "
+    "\"artwork\". Output ONLY the JSON array, with no explanation and no "
+    "markdown code fence."
+)
+
+# Tags génériques/vides écartés systématiquement (bruit d'un modèle de vision).
+_VISION_GENERIC_TAGS = frozenset({
+    "image", "images", "photo", "photos", "picture", "pictures",
+    "photograph", "photography", "art", "artwork", "illustration",
+    "render", "rendering", "drawing", "painting", "wallpaper",
+    "screenshot", "digital art", "ai", "ai generated", "generated",
+    "graphic", "jpeg", "jpg", "png",
+})
+
+
+def _parse_preset_id(value):
+    """Valide ``preset_id`` d'un corps JSON → ``(int|None, err)``.
+
+    Absent/``null`` → ``(None, None)`` (choix automatique du preset vision).
+    Booléen ou non-entier → ``(None, (response, 400))`` (validation stricte).
+    """
+    if value is None:
+        return None, None
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None, (jsonify({'error': "preset_id doit être un entier", 'reason': 'bad_preset_id'}), 400)
+    return value, None
+
+
+def _resolve_vision_preset(conn, user_id, preset_id):
+    """Résout le preset de vision à utiliser pour l'auto-tagging.
+
+    Returns:
+        tuple: ``(row, err)`` où ``err`` est un couple ``(response, status)``
+        prêt à être retourné (ou ``None``), et ``row`` la ligne ``ai_presets``.
+
+    - ``preset_id`` fourni : doit être visible (global ou propriétaire) sinon
+      404 (anti-énumération), et marqué ``supports_vision=1`` sinon 400 ;
+    - absent : premier preset **vision** visible (global d'abord, puis nom) ;
+    - aucun preset vision → 400 actionnable (message explicite).
+    """
+    if preset_id is not None:
+        row = conn.execute(
+            "SELECT * FROM ai_presets WHERE id = ? AND (user_id = ? OR is_global = 1)",
+            (preset_id, user_id),
+        ).fetchone()
+        if not row:
+            return None, (jsonify({'error': 'Preset introuvable', 'reason': 'preset_not_found'}), 404)
+        if not _row_get(row, 'supports_vision', 0):
+            return None, (jsonify({
+                'error': "Ce preset n'est pas marqué « compatible vision ». "
+                         "Coche « compatible vision » dans Paramètres > Provider LLM.",
+                'reason': 'preset_not_vision',
+            }), 400)
+        return row, None
+    row = conn.execute(
+        "SELECT * FROM ai_presets WHERE supports_vision = 1 AND (user_id = ? OR is_global = 1) "
+        "ORDER BY is_global DESC, name COLLATE NOCASE ASC LIMIT 1",
+        (user_id,),
+    ).fetchone()
+    if not row:
+        return None, (jsonify({
+            'error': "Aucun preset compatible vision. Coche « compatible vision » sur un "
+                     "preset dans Paramètres > Provider LLM.",
+            'reason': 'no_vision_preset',
+        }), 400)
+    return row, None
+
+
+def _vision_image_b64(row, max_px=VISION_IMAGE_MAX_PX):
+    """Prépare une image RÉDUITE (~512 px JPEG) encodée en base64.
+
+    Réutilise la logique de vignette existante (Pillow puis repli ffmpeg, cache
+    local) : un seul chemin de génération d'image réduite, déjà éprouvé par la
+    galerie. Retourne ``(base64, raison)`` : ``base64`` (SANS le préfixe
+    ``data:``) ou ``None`` + une raison courte (``no_tools`` /
+    ``source_unavailable`` / ``generation_failed``).
+    """
+    size = min(THUMB_SIZES, key=lambda s: (abs(s - max_px), s))
+    thumb_path = _thumbnail_cache_path(row, size)
+    local, reason = _ensure_thumbnail_file(row, size, thumb_path)
+    if not local:
+        return None, reason
+    try:
+        with open(local, 'rb') as fh:
+            data = fh.read()
+    except OSError:
+        return None, 'source_unavailable'
+    if not data:
+        return None, 'generation_failed'
+    return base64.b64encode(data).decode('ascii'), None
+
+
+def _vision_try_json(text):
+    """``json.loads`` tolérant (``None`` si invalide)."""
+    try:
+        return json.loads(text)
+    except (ValueError, TypeError):
+        return None
+
+
+def _vision_extract_content(content):
+    """Texte d'un message assistant (str, ou liste de parts OpenAI)."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, dict) and isinstance(part.get('text'), str):
+                parts.append(part['text'])
+            elif isinstance(part, str):
+                parts.append(part)
+        return "\n".join(parts)
+    return ''
+
+
+def _vision_parse_tags(raw):
+    """Extrait une liste de tags propres de la réponse brute du modèle.
+
+    Tolère : tableau JSON, objet ``{"tags": [...]}`` (ou labels/keywords),
+    fences Markdown `````json`````` et listes à puces. Chaque candidat passe par
+    ``_normalize_tag`` (autorité de normalisation partagée), les doublons
+    (insensibles à la casse) et les tags génériques sont écartés, et le nombre
+    est borné à ``VISION_TAG_MAX``.
+    """
+    text = _vision_extract_content(raw).strip()
+    if not text:
+        return []
+    unfenced = re.sub(r'^```[a-zA-Z0-9_-]*\s*', '', text)
+    unfenced = re.sub(r'\s*```\s*$', '', unfenced).strip()
+    parsed = _vision_try_json(unfenced)
+    if parsed is None:
+        match = re.search(r'\[.*\]', text, re.S)
+        if match:
+            parsed = _vision_try_json(match.group(0))
+    if isinstance(parsed, dict):
+        parsed = parsed.get('tags') or parsed.get('labels') or parsed.get('keywords')
+    candidates = []
+    if isinstance(parsed, list):
+        candidates = [c for c in parsed if isinstance(c, str)]
+    else:
+        # Repli texte : une ligne par tag, liste à puces tolérée, virgules éclatées.
+        for line in re.split(r'[\r\n]+', text):
+            line = re.sub(r'^\s*(?:[-*•]|\d+[.)])\s*', '', line)
+            for token in re.split(r'[,;]', line):
+                token = token.strip().strip('"\'')
+                if token:
+                    candidates.append(token)
+    out = []
+    seen = set()
+    for cand in candidates:
+        tag = _normalize_tag(cand)
+        if tag is None:
+            continue
+        key = tag.casefold()
+        if key in seen or key in _VISION_GENERIC_TAGS:
+            continue
+        seen.add(key)
+        out.append(tag)
+        if len(out) >= VISION_TAG_MAX:
+            break
+    return out
+
+
+def _call_vision_llm(preset_row, image_b64):
+    """Envoie l'image au modèle de vision du preset (OpenAI-compatible).
+
+    Rejoue la politique anti-SSRF PARTAGÉE (``_validate_llm_base_url`` +
+    ``_safe_llm_post``), utilise la clé API DÉCHIFFRÉE, et n'expose JAMAIS la
+    clé ni l'URL dans la réponse ou les logs.
+
+    Returns:
+        tuple: ``(content, status, detail)``. ``status='ok'`` → ``content`` est
+        le texte du message assistant ; sinon ``content`` est ``None`` et
+        ``status`` ∈ {'blocked','unreachable','llm_error','bad_response'}.
+    """
+    base_url = (preset_row['base_url'] or '').rstrip('/')
+    api_key = decrypt_api_key(preset_row['api_key_encrypted'])
+    model = preset_row['model']
+
+    err = _validate_llm_base_url(base_url)
+    if err:
+        logging.warning("[media] auto-tag LLM refusé (preset %s) : %s", preset_row['id'], err)
+        return None, 'blocked', f"{err}. {LLM_URL_OPTIN_HINT}"
+
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": VISION_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": VISION_USER_PROMPT},
+                    {"type": "image_url",
+                     "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
+                ],
+            },
+        ],
+        "temperature": 0.2,
+        "max_tokens": 300,
+    }
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    try:
+        resp = _safe_llm_post(
+            f"{base_url}/chat/completions", payload, headers=headers, timeout=VISION_TIMEOUT
+        )
+    except ValueError:
+        # Refus anti-SSRF en cours d'appel (redirection, résolution tardive…).
+        return None, 'blocked', 'Fournisseur refusé (protection SSRF).'
+    except Exception as exc:
+        logging.warning("[media] auto-tag LLM injoignable (preset %s) : %s", preset_row['id'], exc)
+        return None, 'unreachable', 'Fournisseur LLM injoignable.'
+
+    if not resp.ok:
+        logging.warning("[media] auto-tag LLM HTTP %s (preset %s)", resp.status_code, preset_row['id'])
+        return None, 'llm_error', f"Le fournisseur LLM a renvoyé HTTP {resp.status_code}."
+
+    try:
+        data = resp.json()
+    except Exception:
+        return None, 'bad_response', 'Réponse non-JSON du fournisseur LLM.'
+
+    choices = data.get('choices') if isinstance(data, dict) else None
+    message = choices[0].get('message') if choices and isinstance(choices[0], dict) else None
+    content = message.get('content') if isinstance(message, dict) else None
+    if content is None:
+        return None, 'bad_response', 'Réponse du fournisseur LLM sans contenu.'
+    return content, 'ok', None
+
+
+def _add_ai_tags(conn, user_id, media_id, tags):
+    """Ajoute des tags ``ai`` (``INSERT OR IGNORE``) → nombre créé.
+
+    La contrainte ``UNIQUE(media_id, tag)`` ``COLLATE NOCASE`` ignore un tag
+    déjà présent QUELLE QUE SOIT sa source : un tag manuel identique n'est donc
+    JAMAIS converti ni dupliqué (il reste ``manual``).
+    """
+    added = 0
+    for tag in tags:
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO media_tags (user_id, media_id, tag, source) "
+            "VALUES (?, ?, ?, 'ai')",
+            (user_id, media_id, tag),
+        )
+        added += cur.rowcount
+    return added
+
+
+def _auto_tag_media(row, user_id, preset_row):
+    """Auto-tag IA d'UN média (image) → dict de récap (écrit les tags ``ai``).
+
+    Statuts : ``tagged`` / ``skipped`` (raison ``not_image`` ou ``no_tags``) /
+    ``error`` (raison ``no_tools`` / ``source_unavailable`` / ``generation_failed``
+    / ``blocked`` / ``unreachable`` / ``llm_error`` / ``bad_response``).
+    """
+    if row['kind'] != 'image':
+        return {'status': 'skipped', 'reason': 'not_image', 'added': 0, 'ai_tags': [],
+                'detail': 'Seules les images sont prises en charge pour le moment.'}
+    image_b64, why = _vision_image_b64(row)
+    if not image_b64:
+        return {'status': 'error', 'reason': why, 'added': 0, 'ai_tags': [],
+                'detail': f"Image non préparable ({why})."}
+    content, status, detail = _call_vision_llm(preset_row, image_b64)
+    if status != 'ok':
+        return {'status': 'error', 'reason': status, 'added': 0, 'ai_tags': [],
+                'detail': detail}
+    tags = _vision_parse_tags(content)
+    if not tags:
+        return {'status': 'skipped', 'reason': 'no_tags', 'added': 0, 'ai_tags': [],
+                'detail': 'Aucun tag exploitable renvoyé par le modèle.'}
+    conn = get_db()
+    try:
+        added = _add_ai_tags(conn, user_id, row['id'], tags)
+        conn.commit()
+    finally:
+        conn.close()
+    return {'status': 'tagged', 'added': added, 'ai_tags': tags}
+
+
+def _media_json(row, tag_rows=None):
     """Sérialise une ligne ``media_files`` pour l'API (contrat figé).
 
     Superset rétro-compatible : les clés historiques sont conservées, on
-    ajoute ``thumb`` (URL GET de la vignette, immuable → cache navigateur) et
+    ajoute ``thumb`` (URL GET de la vignette, immuable → cache navigateur),
     ``thumb_available`` (la vignette est-elle produisible dans cet
-    environnement : image=Pillow|ffmpeg, vidéo=ffmpeg, audio=non).
+    environnement : image=Pillow|ffmpeg, vidéo=ffmpeg, audio=non) et les TAGS :
+    ``tags`` (liste de chaînes) + ``tags_detail`` (``{tag, source}`` — prépare
+    la distinction manuel/IA). ``tag_rows`` (optionnel) permet à la liste
+    paginée de fournir un lot déjà chargé (pas de N+1).
     """
     media_id = row["id"]
+    if tag_rows is None:
+        tag_rows = _media_tags_rows(media_id)
+    tags, tags_detail = _tags_payload(tag_rows)
     filename = f"{row['filename']}{row['ext']}" if row["filename"] else ""
     return {
         "id": media_id,
@@ -250,6 +722,12 @@ def _media_json(row):
         "has_prompt": bool(row["has_prompt"]),
         "has_workflow": bool(row["has_workflow"]),
         "kind": row["kind"],
+        # Favori / « à exposer » : drapeau unique booléen (future galerie
+        # publique). Toujours exposé, dans la liste comme dans /metadata.
+        "favorite": bool(row["favorite"]),
+        # Tags (manuel/IA) : liste de chaînes + détail (source) pour l'UI.
+        "tags": tags,
+        "tags_detail": tags_detail,
         # État corbeille (soft delete) : l'UI peut identifier un média corbeillé.
         "status": row["status"],
         "trashed": row["status"] == "trashed",
@@ -653,6 +1131,7 @@ def _metadata_json(row):
     height = row["height"]
     duration_ms = row["duration_ms"]
     ratio = round(width / height, 4) if (width and height) else None
+    tags, tags_detail = _tags_payload(_media_tags_rows(row["id"]))
     return {
         "id": row["id"],
         "filename": f"{row['filename']}{row['ext']}" if row["filename"] else "",
@@ -671,6 +1150,11 @@ def _metadata_json(row):
         "workflow": row["workflow_json"] or "",
         "has_prompt": bool(row["has_prompt"]),
         "has_workflow": bool(row["has_workflow"]),
+        "favorite": bool(row["favorite"]),
+        # Tags (manuel/IA) : liste de chaînes + détail (source). Utile au
+        # panneau d'infos ET à l'auto-tagging IA à venir.
+        "tags": tags,
+        "tags_detail": tags_detail,
     }
 
 
@@ -743,6 +1227,40 @@ def _set_trashed(media_id, trashed):
         conn.close()
 
 
+def _set_favorite(media_id, favorite):
+    """Applique le drapeau favori (idempotent) et retourne la ligne à jour.
+
+    ``favorite`` est un booléen Python → stocké 0/1. Aucune autre colonne n'est
+    touchée (le média reste ``complete``/``trashed``, la corbeille est
+    indépendante du favori).
+    """
+    conn = get_db()
+    try:
+        conn.execute(
+            "UPDATE media_files SET favorite = ? WHERE id = ?",
+            (1 if favorite else 0, media_id),
+        )
+        conn.commit()
+        return conn.execute(
+            "SELECT * FROM media_files WHERE id = ?", (media_id,)
+        ).fetchone()
+    finally:
+        conn.close()
+
+
+def _parse_favorite(value):
+    """Valide le booléen ``favorite`` d'un body JSON (``None`` si invalide).
+
+    Accepte un booléen JSON (``true``/``false``) ou les entiers 0/1 par
+    tolérance API ; toute autre valeur (chaîne, null, absent) est refusée.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    return None
+
+
 def _parse_bulk_ids(data):
     """Valide ``{ids: [...]}`` → liste d'entiers uniques (ou ``None`` si invalide).
 
@@ -789,6 +1307,13 @@ def _purge_media_row(row):
             os.remove(_thumbnail_cache_path(row, size))
     conn = get_db()
     try:
+        # SUPPRESSION DES TAGS : EXPLICITE (la cascade demandée vit ICI). Elle
+        # doit précéder la suppression de la ligne média, car la clé étrangère
+        # ``media_tags.media_id`` (sans cascade) REFUSE de laisser un média
+        # référencé → aucune ligne de tag orpheline possible. La corbeille
+        # (soft delete) NE passe PAS par ici → elle conserve les tags : seule
+        # la purge les efface avec le média.
+        conn.execute("DELETE FROM media_tags WHERE media_id = ?", (row["id"],))
         conn.execute("DELETE FROM media_files WHERE id = ?", (row["id"],))
         conn.commit()
     finally:
@@ -1043,12 +1568,146 @@ def _normalize_dt(value, end):
     return val
 
 
+def _status_clause(args):
+    """Clause WHERE de statut, PARTAGÉE par la liste et la liste des dossiers.
+
+    - absent / ``complete`` → médias VIVANTS (``status='complete'``), les
+      corbeillés sont donc EXCLUS par défaut ;
+    - ``trashed`` → uniquement la corbeille ;
+    - ``all`` → aucune clause (tous les statuts).
+
+    Retourne ``""`` (aucune clause), la clause SQL, ou ``None`` si la valeur
+    est invalide (l'appelant renvoie alors 400).
+    """
+    status = (args.get("status") or "").strip().lower()
+    if status == "all":
+        return ""
+    if status == "trashed":
+        return "status = 'trashed'"
+    if status in ("", "complete"):
+        return "status = 'complete'"
+    return None
+
+
+def _favorite_clause(args):
+    """Clause WHERE du filtre favori (``favorite=1`` / ``favorite=0``).
+
+    - absent / vide → aucune clause (pas de filtre, comportement historique) ;
+    - ``1``/``true`` → médias favoris ; ``0``/``false`` → médias non favoris ;
+    - toute autre valeur → ``None`` (l'appelant renvoie alors 400).
+
+    Retourne ``""`` (aucun filtre), la clause SQL, ou ``None`` si invalide.
+    """
+    raw = (args.get("favorite") or "").strip().lower()
+    if raw == "":
+        return ""
+    if raw in ("1", "true"):
+        return "favorite = 1"
+    if raw in ("0", "false"):
+        return "favorite = 0"
+    return None
+
+
+def _subfolder_param_values(args):
+    """Valeurs BRUTES du paramètre ``subfolders`` (liste), tolérant un dict.
+
+    ``request.args`` est un MultiDict (``getlist``) ; on accepte aussi un dict
+    simple pour les appels internes/tests.
+    """
+    getlist = getattr(args, "getlist", None)
+    if callable(getlist):
+        return list(getlist("subfolders"))
+    value = args.get("subfolders") if hasattr(args, "get") else None
+    return [value] if value else []
+
+
+def _parse_subfolders(args):
+    """Liste dédupliquée des sous-dossiers du filtre MULTI ``subfolders``.
+
+    Accepte le paramètre RÉPÉTÉ (``?subfolders=a&subfolders=b``) ET/OU séparé
+    par des virgules (``?subfolders=a,b``). Chaque valeur est sanitizée (mêmes
+    règles que l'upload) ; une valeur NON vide qui se réduit à du vide est
+    invalide → ``None`` (l'appelant renvoie 400).
+
+    Convention RACINE : une valeur PRÉSENTE mais VIDE (``?subfolders=``) désigne
+    le dossier racine (``subfolder = ''``) ; l'ABSENCE du paramètre = aucun
+    filtre. L'ordre des valeurs est conservé (déduplication stable).
+    """
+    values = _subfolder_param_values(args)
+    if not values:
+        return []  # paramètre absent → aucun filtre
+    out = []
+    seen = set()
+    for value in values:
+        for raw in str(value).split(","):
+            if raw == "":
+                safe = ""  # valeur présente mais vide = dossier RACINE
+            else:
+                raw = raw.strip()
+                if raw == "":
+                    continue  # espaces parasites → ignorés
+                safe = _sanitize_subfolder(raw)
+                if not safe:
+                    return None  # valeur invalide (ex. « .. ») → 400
+            if safe not in seen:
+                seen.add(safe)
+                out.append(safe)
+    return out
+
+
+def _tags_param_values(args):
+    """Valeurs BRUTES du paramètre ``tags`` (liste), tolérant un dict.
+
+    Même mécanique que ``_subfolder_param_values`` : ``request.args`` est un
+    MultiDict (``getlist``) ; on accepte aussi un dict simple pour les appels
+    internes/tests.
+    """
+    getlist = getattr(args, "getlist", None)
+    if callable(getlist):
+        return list(getlist("tags"))
+    value = args.get("tags") if hasattr(args, "get") else None
+    return [value] if value else []
+
+
+def _parse_tags_filter(args):
+    """Liste dédupliquée des tags du filtre MULTI ``tags`` (sémantique OU).
+
+    Accepte le paramètre RÉPÉTÉ (``?tags=a&tags=b``) ET/OU séparé par des
+    virgules (``?tags=a,b``). Chaque valeur est normalisée (``_normalize_tag``) ;
+    une valeur NON vide invalide → ``None`` (l'appelant renvoie 400).
+
+    Convention : l'ABSENCE du paramètre = aucun filtre ; un segment vide
+    (``?tags=`` ou ``?tags=a,,b``) est simplement IGNORÉ (contrairement à
+    ``subfolders`` où le vide signifie « racine », un tag vide n'a pas de sens).
+    L'ordre est conservé (déduplication stable, insensible à la casse).
+    """
+    values = _tags_param_values(args)
+    if not values:
+        return []
+    out = []
+    seen = set()
+    for value in values:
+        for raw in str(value).split(","):
+            raw = raw.strip()
+            if raw == "":
+                continue
+            tag = _normalize_tag(raw)
+            if tag is None:
+                return None
+            key = tag.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(tag)
+    return out
+
+
 def _build_list_filters(user_id, args):
     """Construit (where_sql, params) pour la liste, d'après les filtres optionnels.
 
     Tous les filtres sont OPTIONNELS : absents → comportement historique
     (médias ``complete`` de l'utilisateur, SANS les corbeillés). Retourne
-    ``None`` si un filtre est invalide (type/sous-dossier/statut).
+    ``None`` si un filtre est invalide (type/sous-dossier(s)/statut/tags).
     """
     where = ["user_id = ?"]
     params = [user_id]
@@ -1056,15 +1715,11 @@ def _build_list_filters(user_id, args):
     # Statut : par défaut (absent ou ``complete``) les médias VIVANTS → les
     # corbeillés sont EXCLUS (non-régression du comportement historique).
     # ``status=trashed`` expose la corbeille ; ``status=all`` lève le filtre.
-    status = (args.get("status") or "").strip().lower()
-    if status == "all":
-        pass
-    elif status == "trashed":
-        where.append("status = 'trashed'")
-    elif status in ("", "complete"):
-        where.append("status = 'complete'")
-    else:
+    status_clause = _status_clause(args)
+    if status_clause is None:
         return None
+    if status_clause:
+        where.append(status_clause)
 
     kind = (args.get("kind") or "").strip().lower()
     if kind:
@@ -1083,6 +1738,35 @@ def _build_list_filters(user_id, args):
         params.append(safe)
         params.append(_escape_like(safe) + "/%")
 
+    # Filtre MULTI-dossiers : sémantique OU, correspondance EXACTE (chaque
+    # dossier sélectionné dans la modale), cohérente avec les comptes exacts de
+    # ``GET /api/media/folders``. Combiné EN PLUS de ``subfolder`` (ET) quand
+    # les deux sont présents. Une liste vide = pas de filtre.
+    subfolders = _parse_subfolders(args)
+    if subfolders is None:
+        return None
+    if subfolders:
+        placeholders = ",".join("?" for _ in subfolders)
+        where.append("subfolder IN (" + placeholders + ")")
+        params.extend(subfolders)
+
+    # Filtre TAGS : sémantique OU (UNION) — un média ressort dès qu'il porte AU
+    # MOINS un des tags demandés. Choix justifié dans ``media_list`` (cohérent
+    # avec ``subfolders`` : un filtre multi-sélection élargit la vue, ne la
+    # rétrécit pas). Sous-requête sur ``media_tags`` (colonne ``tag`` COLLATE
+    # NOCASE → correspondance insensible à la casse). Absent / vide = pas de
+    # filtre.
+    tags = _parse_tags_filter(args)
+    if tags is None:
+        return None
+    if tags:
+        placeholders = ",".join("?" for _ in tags)
+        where.append(
+            "id IN (SELECT media_id FROM media_tags WHERE tag IN ("
+            + placeholders + "))"
+        )
+        params.extend(tags)
+
     q = (args.get("q") or "").strip()
     if q:
         where.append("filename LIKE ? ESCAPE '\\'")
@@ -1098,6 +1782,14 @@ def _build_list_filters(user_id, args):
         where.append("created_at <= ?")
         params.append(_normalize_dt(to, end=True))
 
+    # Filtre FAVORI (flag unique « à exposer ») : ``favorite=1`` n'expose que
+    # les favoris, ``favorite=0`` que les non-favoris ; absent = pas de filtre.
+    favorite_clause = _favorite_clause(args)
+    if favorite_clause is None:
+        return None
+    if favorite_clause:
+        where.append(favorite_clause)
+
     return " AND ".join(where), params
 
 
@@ -1109,16 +1801,36 @@ def media_list():
       - ``page`` (déf. 1), ``limit`` (déf. 50, max 200) ;
       - ``kind`` ∈ image|video|audio ;
       - ``subfolder`` : dossier exact OU préfixe de segment (``a/b``) ;
+      - ``subfolders`` : filtre MULTI-dossiers (OU, correspondance exacte).
+        Paramètre RÉPÉTÉ (``?subfolders=a&subfolders=b``) et/ou séparé par des
+        virgules (``?subfolders=a,b``). Une valeur vide (``?subfolders=``)
+        désigne le dossier RACINE. Absent = aucun filtre ; valeur invalide → 400.
+        Voir aussi ``GET /api/media/folders`` (liste + comptes pour la modale) ;
       - ``q`` : recherche sur ``filename`` (LIKE, insensible aux jokers) ;
       - ``from`` / ``to`` : plage ``created_at`` (date ou date-heure) ;
       - ``status`` : ``complete`` (déf.) | ``trashed`` (corbeille) | ``all`` ;
+      - ``favorite`` : ``1``/``true`` (favoris) | ``0``/``false`` (non favoris).
+        Absent = pas de filtre ; valeur invalide → 400 ;
+      - ``tags`` : filtre MULTI-tags, SÉMANTIQUE OU (union) — un média ressort
+        dès qu'il porte AU MOINS un des tags demandés. Paramètre RÉPÉTÉ
+        (``?tags=a&tags=b``) et/ou séparé par des virgules (``?tags=a,b``).
+        Absent = aucun filtre ; tag invalide → 400. Voir aussi
+        ``GET /api/media/tags`` (liste + comptes pour la modale) ;
       - ``sort`` : created_at_desc | created_at_asc | name_asc | name_desc |
         size_desc | size_asc (déf. created_at_desc ≡ comportement historique).
 
+    Pourquoi OU (et non ET) pour ``tags`` ? Un filtre multi-sélection à cases
+    à cocher ÉLARGIT naturellement la vue quand on coche un élément de plus
+    (symétrie avec ``subfolders``) ; un ET ferait au contraire disparaître les
+    médias dès qu'un tag coché n'est pas présent sur eux (vue vide dès le 2e
+    tag sans co-occurrence), ce qui surprend pour un simple parcours. Le ET
+    reste exprimable en enchaînant ``tags`` ET un autre filtre (p.ex. ``q``).
+
     Sans aucun paramètre, la réponse est IDENTIQUE à l'historique
     (mêmes clés, même ordre ``id DESC``), avec en plus ``thumb`` /
-    ``thumb_available`` et les champs corbeille ``status``/``trashed`` /
-    ``trashed_at``. Les médias corbeillés sont EXCLUS par défaut.
+    ``thumb_available``, les champs corbeille ``status``/``trashed`` /
+    ``trashed_at`` et les tags (``tags``/``tags_detail``). Les médias corbeillés
+    sont EXCLUS par défaut.
     """
     guard = _login_required()
     if guard:
@@ -1141,7 +1853,7 @@ def media_list():
 
     built = _build_list_filters(user_id, request.args)
     if built is None:
-        return jsonify({'error': 'filtre invalide (kind/subfolder/status)'}), 400
+        return jsonify({'error': 'filtre invalide (kind/subfolder/subfolders/status/favorite/tags)'}), 400
     where_sql, params = built
 
     conn = get_db()
@@ -1157,12 +1869,336 @@ def media_list():
     finally:
         conn.close()
 
+    # Tags : UN chargement groupé pour toute la page (pas de N+1).
+    tags_map = _tags_by_media([r["id"] for r in rows])
     return jsonify({
-        'items': [_media_json(r) for r in rows],
+        'items': [_media_json(r, tags_map.get(r["id"])) for r in rows],
         'total': total,
         'page': page,
         'limit': limit,
     })
+
+
+@app.route('/api/media/folders', methods=['GET'])
+def media_folders():
+    """Liste des sous-dossiers de l'utilisateur courant, avec le NOMBRE de médias.
+
+    Alimente la MODALE de sélection des dossiers de la galerie (le datalist
+    « sous-dossier » ne voyait que les items déjà chargés).
+
+    Agrégation en BASE (``GROUP BY subfolder``), jamais de parcours Python des
+    médias. Mêmes règles d'accès que la liste : ``user_id`` DÉRIVÉ du token
+    (aucun paramètre client), corbeillés EXCLUS par défaut.
+
+    Paramètre optionnel :
+      - ``status`` : ``complete`` (déf., SANS les corbeillés) | ``trashed``
+        (comptes de la corbeille) | ``all`` (tous statuts) — mêmes valeurs que
+        la liste, pour rester cohérent avec la vue courante.
+
+    Réponse STABLE et TRIÉE (nom, insensible à la casse) :
+      ``{"folders": [{"subfolder": "a/b", "count": 2}, …], "total": 5}``
+    où ``subfolder`` est la chaîne brute du dossier (``""`` = racine) et
+    ``total`` la somme des comptes (nombre de médias représentés).
+    """
+    guard = _login_required()
+    if guard:
+        return guard
+    user_id = _get_current_user_id()
+
+    status_clause = _status_clause(request.args)
+    if status_clause is None:
+        return jsonify({'error': 'filtre invalide (status)'}), 400
+
+    where = ["user_id = ?"]
+    params = [user_id]
+    if status_clause:
+        where.append(status_clause)
+    where_sql = " AND ".join(where)
+
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT COALESCE(subfolder, '') AS sf, COUNT(*) AS n "
+            f"FROM media_files WHERE {where_sql} "
+            "GROUP BY sf ORDER BY sf COLLATE NOCASE ASC",
+            params,
+        ).fetchall()
+    finally:
+        conn.close()
+
+    folders = [{'subfolder': r['sf'], 'count': r['n']} for r in rows]
+    total = sum(f['count'] for f in folders)
+    return jsonify({'folders': folders, 'total': total})
+
+
+@app.route('/api/media/tags', methods=['GET'])
+def media_tags_list():
+    """Liste des tags de l'utilisateur courant, avec le NOMBRE de médias.
+
+    Alimente la MODALE de filtrage par tags de la galerie (pendant de
+    ``GET /api/media/folders`` pour les dossiers). Agrégation en BASE
+    (``GROUP BY tag``), jamais de parcours Python des médias. ``user_id``
+    DÉRIVÉ du token (aucun paramètre client) ; corbeillés EXCLUS par défaut.
+
+    Paramètre optionnel :
+      - ``status`` : ``complete`` (déf., SANS les corbeillés) | ``trashed``
+        (comptes de la corbeille) | ``all`` (tous statuts) — mêmes valeurs que
+        la liste, pour rester cohérent avec la vue courante.
+
+    Réponse TRIÉE (nom, insensible à la casse) :
+      ``{"tags": [{"tag": "ciel", "count": 3}, …], "total": 3}``
+    où ``count`` = nombre de MÉDIAS DISTINCTS portant le tag et ``total`` la
+    somme des comptes. Le regroupement est INSENSIBLE À LA CASSE (la colonne
+    est ``COLLATE NOCASE``) : les variantes de casse d'un même tag fusionnent,
+    la représentation retenue étant la plus petite au sens NOCASE.
+    """
+    guard = _login_required()
+    if guard:
+        return guard
+    user_id = _get_current_user_id()
+
+    status_clause = _status_clause(request.args)
+    if status_clause is None:
+        return jsonify({'error': 'filtre invalide (status)'}), 400
+
+    where = ["t.user_id = ?"]
+    params = [user_id]
+    if status_clause:
+        # ``_status_clause`` produit une clause sur les colonnes de media_files
+        # → on la qualifie avec l'alias ``m`` de la jointure.
+        where.append("m." + status_clause)
+    where_sql = " AND ".join(where)
+
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT MIN(t.tag) AS tag, COUNT(DISTINCT t.media_id) AS n "
+            "FROM media_tags t JOIN media_files m ON m.id = t.media_id "
+            f"WHERE {where_sql} "
+            "GROUP BY t.tag ORDER BY t.tag COLLATE NOCASE ASC",
+            params,
+        ).fetchall()
+    finally:
+        conn.close()
+
+    tags = [{'tag': r['tag'], 'count': r['n']} for r in rows]
+    total = sum(t['count'] for t in tags)
+    return jsonify({'tags': tags, 'total': total})
+
+
+@app.route('/api/media/<int:media_id>/tags', methods=['POST'])
+def media_tags_update(media_id):
+    """Ajoute/retire des tags sur UN média (propriétaire ou admin).
+
+    Body ``{"add": [...], "remove": [...]}`` (au moins l'un des deux) :
+      - ``add`` : tags à ajouter (source ``manual``) ;
+      - ``remove`` : tags à retirer.
+
+    Normalisation + unicité INSENSIBLE À LA CASSE : « Sunset » puis « sunset »
+    ne créent PAS de doublon (la casse de la 1re saisie est conservée).
+    ``remove`` s'applique AVANT ``add`` (un tag présent dans les deux listes
+    est donc finalement AJOUTÉ). 400 si les listes sont invalides ou toutes deux
+    vides, 404 si le média n'existe pas, 403 s'il appartient à autrui (hors
+    admin). Retourne l'item sérialisé (``_media_json``, tags inclus).
+    """
+    guard = _login_required()
+    if guard:
+        return guard
+    user_id = _get_current_user_id()
+
+    row = _fetch_media(media_id)
+    err = _media_owner_guard(row, user_id)
+    if err:
+        return err
+
+    data = request.get_json(silent=True) or {}
+    add = _parse_tag_list(data.get("add"))
+    remove = _parse_tag_list(data.get("remove"))
+    if add is None or remove is None:
+        return jsonify({'error': 'tags invalides (add/remove : listes de chaînes, 1..50 caractères)'}), 400
+    if not add and not remove:
+        return jsonify({'error': 'add ou remove requis'}), 400
+
+    conn = get_db()
+    try:
+        _remove_tags(conn, media_id, remove)
+        _add_tags(conn, user_id, media_id, add)
+        conn.commit()
+    finally:
+        conn.close()
+
+    updated = _fetch_media(media_id)
+    logging.info(f"[media] Tags {media_id} : +{len(add)} / -{len(remove)} (user={user_id})")
+    return jsonify(_media_json(updated))
+
+
+@app.route('/api/media/tags', methods=['POST'])
+def media_tags_bulk():
+    """Tags GROUPÉS (multi-select UI) : ``{ids, add, remove}`` → récap.
+
+    Traite chaque id autorisé (propriétaire ou admin, média rangé existant) et
+    IGNORE les autres SANS échouer l'appel. Retourne
+    ``{updated: <n>, skipped: [<ids>]}`` (échec partiel impossible). Au moins
+    l'un de ``add``/``remove`` est requis (sinon 400). Indispensable pour
+    l'auto-tagging IA à venir (poser un lot de tags sur une sélection).
+    """
+    guard = _login_required()
+    if guard:
+        return guard
+    user_id = _get_current_user_id()
+
+    data = request.get_json(silent=True) or {}
+    ids = _parse_bulk_ids(data)
+    if ids is None:
+        return jsonify({'error': f"ids doit être une liste d'entiers (max {MAX_BULK_IDS})"}), 400
+    add = _parse_tag_list(data.get("add"))
+    remove = _parse_tag_list(data.get("remove"))
+    if add is None or remove is None:
+        return jsonify({'error': 'tags invalides (add/remove : listes de chaînes, 1..50 caractères)'}), 400
+    if not add and not remove:
+        return jsonify({'error': 'add ou remove requis'}), 400
+
+    admin = is_admin(user_id)
+    updated = []
+    skipped = []
+    conn = get_db()
+    try:
+        for mid in ids:
+            row = conn.execute(
+                "SELECT * FROM media_files WHERE id = ?", (mid,)
+            ).fetchone()
+            if (not row or row['status'] not in _MEDIA_STATUSES
+                    or not row['final_path']
+                    or (row['user_id'] != user_id and not admin)):
+                skipped.append(mid)
+                continue
+            _remove_tags(conn, mid, remove)
+            _add_tags(conn, user_id, mid, add)
+            updated.append(mid)
+        conn.commit()
+    finally:
+        conn.close()
+
+    logging.info(f"[media] Tags groupés : {len(updated)} ok, {len(skipped)} ignorés")
+    return jsonify({'updated': len(updated), 'skipped': skipped})
+
+
+@app.route('/api/media/<int:media_id>/auto-tag', methods=['POST'])
+def media_auto_tag(media_id):
+    """Auto-tag IA d'UN média image via un preset « compatible vision ».
+
+    Body ``{"preset_id": <int>}`` (optionnel : sans ``preset_id``, le premier
+    preset vision visible est utilisé). L'image est RÉDUITE (~512 px JPEG) puis
+    envoyée en data-URL base64 à ``{base_url}/chat/completions`` du preset ; la
+    réponse est parsée en liste de tags, normalisés et écrits en ``source='ai'``
+    via ``INSERT OR IGNORE`` (JAMAIS d'écrasement d'un tag manuel).
+
+    Un seul média par appel → le front boucle sur la sélection (progression +
+    annulation naturelle). Réponses :
+      - 200 ``{media, auto_tag:{status:'tagged', added, ai_tags}}`` ;
+      - 200 ``{media, auto_tag:{status:'skipped', reason:'not_image'|'no_tags'}}`` ;
+      - 400 ``preset_id`` invalide / preset non-vision / aucun preset vision ;
+      - 403 média d'autrui (hors admin), 404 média ou preset introuvable ;
+      - 502 fournisseur refusé (SSRF) / injoignable / HTTP d'erreur / réponse
+        illisible, ou image non préparable. La clé API n'est jamais renvoyée.
+    """
+    guard = _login_required()
+    if guard:
+        return guard
+    user_id = _get_current_user_id()
+
+    row = _fetch_media(media_id)
+    err = _media_owner_guard(row, user_id)
+    if err:
+        return err
+
+    data = request.get_json(silent=True) or {}
+    preset_id, perr = _parse_preset_id(data.get('preset_id'))
+    if perr:
+        return perr
+
+    conn = get_db()
+    try:
+        preset_row, preset_err = _resolve_vision_preset(conn, user_id, preset_id)
+    finally:
+        conn.close()
+    if preset_err:
+        return preset_err
+
+    recap = _auto_tag_media(row, user_id, preset_row)
+
+    if recap['status'] == 'tagged':
+        updated = _fetch_media(media_id)
+        logging.info(
+            "[media] auto-tag %s : +%s tag(s) IA (preset=%s)", media_id, recap['added'], preset_row['id']
+        )
+        return jsonify({'media': _media_json(updated), 'auto_tag': recap})
+    if recap['status'] == 'skipped':
+        return jsonify({'media': _media_json(row), 'auto_tag': recap})
+    return jsonify({
+        'error': recap.get('detail') or 'Auto-tag impossible',
+        'reason': recap['reason'],
+        'auto_tag': recap,
+    }), 502
+
+
+@app.route('/api/media/auto-tag', methods=['POST'])
+def media_auto_tag_bulk():
+    """Auto-tag IA GROUPÉ et BORNÉ (≤ ``AUTO_TAG_MAX_BATCH``) → récap par média.
+
+    Body ``{"ids": [...], "preset_id": <int>?}``. Chaque id est auto-taggé
+    indépendamment (même logique que la variante unitaire) ; un id inaccessible
+    est « ignoré » sans faire échouer l'appel. Retourne
+    ``{results:[{id,status,added,ai_tags,reason?}], tagged, skipped, errors}``.
+    Au-delà de la borne, 400 ``batch_too_large`` (jamais d'appel LLM long).
+    """
+    guard = _login_required()
+    if guard:
+        return guard
+    user_id = _get_current_user_id()
+
+    data = request.get_json(silent=True) or {}
+    ids = _parse_bulk_ids(data)
+    if ids is None:
+        return jsonify({'error': f"ids doit être une liste d'entiers (max {AUTO_TAG_MAX_BATCH})"}), 400
+    if len(ids) > AUTO_TAG_MAX_BATCH:
+        return jsonify({
+            'error': f"auto-tag groupé limité à {AUTO_TAG_MAX_BATCH} médias par requête",
+            'reason': 'batch_too_large',
+        }), 400
+    preset_id, perr = _parse_preset_id(data.get('preset_id'))
+    if perr:
+        return perr
+
+    conn = get_db()
+    try:
+        preset_row, preset_err = _resolve_vision_preset(conn, user_id, preset_id)
+    finally:
+        conn.close()
+    if preset_err:
+        return preset_err
+
+    results = []
+    tagged = skipped = errors = 0
+    for mid in ids:
+        row = _fetch_media(mid)
+        if _media_owner_guard(row, user_id):
+            results.append({'id': mid, 'status': 'skipped', 'reason': 'not_accessible'})
+            skipped += 1
+            continue
+        recap = _auto_tag_media(row, user_id, preset_row)
+        results.append({'id': mid, **recap})
+        if recap['status'] == 'tagged':
+            tagged += 1
+        elif recap['status'] == 'skipped':
+            skipped += 1
+        else:
+            errors += 1
+
+    logging.info(
+        "[media] auto-tag groupé : %s taggés, %s ignorés, %s erreurs", tagged, skipped, errors
+    )
+    return jsonify({'results': results, 'tagged': tagged, 'skipped': skipped, 'errors': errors})
 
 
 @app.route('/api/media/<int:media_id>/download', methods=['GET'])
@@ -1502,6 +2538,85 @@ def media_restore_bulk():
 
     logging.info(f"[media] Restauration groupée : {len(restored)} ok, {len(skipped)} ignorés")
     return jsonify({'restored': len(restored), 'skipped': skipped})
+
+
+@app.route('/api/media/<int:media_id>/favorite', methods=['POST'])
+def media_favorite(media_id):
+    """Bascule le FAVORI d'un média (propriétaire ou admin).
+
+    Body ``{"favorite": true|false}``. Le flag est un booléen simple (0/1 en
+    base) ; il est exposé par ``_media_json`` (liste) et ``_metadata_json``.
+    404 si le média n'existe pas (ou n'est pas rangé), 403 s'il appartient à
+    autrui (hors admin), 400 si ``favorite`` n'est pas un booléen.
+    Idempotent : rejouer la même valeur ne change rien.
+    """
+    guard = _login_required()
+    if guard:
+        return guard
+    user_id = _get_current_user_id()
+
+    row = _fetch_media(media_id)
+    err = _media_owner_guard(row, user_id)
+    if err:
+        return err
+
+    data = request.get_json(silent=True) or {}
+    favorite = _parse_favorite(data.get('favorite'))
+    if favorite is None:
+        return jsonify({'error': 'favorite doit être un booléen'}), 400
+
+    updated = _set_favorite(media_id, favorite)
+    logging.info(f"[media] Favori {media_id} = {favorite} (user={user_id})")
+    return jsonify(_media_json(updated))
+
+
+@app.route('/api/media/favorite', methods=['POST'])
+def media_favorite_bulk():
+    """Favori GROUPÉ (multi-select UI) : ``{ids: [...], favorite: bool}``.
+
+    Traite chaque id autorisé (propriétaire ou admin, média rangé existant) et
+    IGNORE les autres SANS échouer l'appel. Retourne un récap
+    ``{updated: <n>, skipped: [<ids>]}`` (échec partiel impossible).
+    """
+    guard = _login_required()
+    if guard:
+        return guard
+    user_id = _get_current_user_id()
+
+    data = request.get_json(silent=True) or {}
+    ids = _parse_bulk_ids(data)
+    if ids is None:
+        return jsonify({'error': f"ids doit être une liste d'entiers (max {MAX_BULK_IDS})"}), 400
+    favorite = _parse_favorite(data.get('favorite'))
+    if favorite is None:
+        return jsonify({'error': 'favorite doit être un booléen'}), 400
+
+    admin = is_admin(user_id)
+    updated = []
+    skipped = []
+    conn = get_db()
+    try:
+        value = 1 if favorite else 0
+        for mid in ids:
+            row = conn.execute(
+                "SELECT * FROM media_files WHERE id = ?", (mid,)
+            ).fetchone()
+            if (not row or row['status'] not in _MEDIA_STATUSES
+                    or not row['final_path']
+                    or (row['user_id'] != user_id and not admin)):
+                skipped.append(mid)
+                continue
+            conn.execute(
+                "UPDATE media_files SET favorite = ? WHERE id = ?",
+                (value, mid),
+            )
+            updated.append(mid)
+        conn.commit()
+    finally:
+        conn.close()
+
+    logging.info(f"[media] Favori groupé ({favorite}) : {len(updated)} ok, {len(skipped)} ignorés")
+    return jsonify({'updated': len(updated), 'skipped': skipped})
 
 
 @app.route('/api/media/<int:media_id>/purge', methods=['DELETE'])
