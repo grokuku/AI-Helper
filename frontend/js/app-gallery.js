@@ -49,6 +49,12 @@ var GALLERY_THUMB_SIZES = [128, 256, 512];
 // Debounce de la recherche par nom (ms) avant de relancer la liste.
 var GALLERY_SEARCH_DEBOUNCE = 350;
 
+// Reprise UNIQUE et bornée d'une vignette après un échec de chargement <img>
+// (un <img> en erreur ne se recharge pas tout seul, la cellule resterait
+// bloquée sur l'état d'erreur). Délai court (ms) : laisse passer un aléa
+// réseau transitoire, puis on renonce et on affiche l'état d'erreur.
+var GALLERY_THUMB_RETRY_MS = 1500;
+
 // Valeurs de tri exposées par le backend (GET /api/media?sort=).
 var GALLERY_SORTS = ['created_at_desc', 'created_at_asc', 'name_asc', 'size_desc'];
 
@@ -95,6 +101,20 @@ function galleryJson(res) {
 
 function galleryThumbUrl(item, size) {
   return galleryApiBase() + '/media/' + encodeURIComponent(item.id) + '/thumbnail?size=' + size;
+}
+
+/**
+ * Ajoute un cache-buster `_retry=` à une URL de vignette (PUR).
+ *
+ * Utilisé UNIQUEMENT pour la reprise après échec : force le navigateur (et un
+ * éventuel cache heuristique) à redemander l'image. On ne touche PAS au param
+ * `size` — le backend ignore les paramètres inconnus, le cache serveur/navigateur
+ * reste indexé par (média, taille) et l'ETag est inchangé.
+ */
+function galleryThumbRetryUrl(url, attempt) {
+  if (!url) return url;
+  var sep = (url.indexOf('?') === -1) ? '?' : '&';
+  return url + sep + '_retry=' + (attempt || 1);
 }
 
 function galleryDownloadUrl(item) {
@@ -606,12 +626,33 @@ function galleryCellRenderer() {
       el._gTrash = trash;
       el._gActions = actions;
       el._gToken = 0;
+      // Reprise de vignette : URL attendue + drapeau « déjà retenté » (borné).
+      el._gExpectedUrl = '';
+      el._gThumbRetried = false;
       img.addEventListener('load', function () {
         el._gPh.classList.add('is-hidden');
         img.classList.remove('gallery-cell-img--hidden');
       });
       img.addEventListener('error', function () {
-        galleryCellShowThumbError(el, img.getAttribute('src'));
+        // Reprise UNIQUE et bornée : un <img> en erreur ne se recharge pas
+        // seul → la cellule resterait sur l'état d'erreur même après
+        // correction côté serveur (ex. Pillow installé). On retente UNE fois
+        // avec un cache-buster, puis on affiche l'état d'erreur.
+        var base = el._gExpectedUrl;
+        if (base && !el._gThumbRetried) {
+          el._gThumbRetried = true;
+          setTimeout(function () {
+            // Cellule recyclée / autre média entre-temps → ne rien écraser.
+            if (el._gExpectedUrl !== base) return;
+            // L'erreur a masqué l'<img> (`display:none`) : on lui redonne une
+            // boîte et on force un chargement EAGER (sinon `loading=lazy`
+            // pourrait ne jamais déclencher le rechargement).
+            img.classList.remove('gallery-cell-img--hidden');
+            img.loading = 'eager';
+            img.src = galleryThumbRetryUrl(base, 1);
+          }, GALLERY_THUMB_RETRY_MS);
+        }
+        galleryCellShowThumbError(el, base || img.getAttribute('src'));
       });
       return el;
     },
@@ -638,6 +679,8 @@ function galleryCellRenderer() {
       // (outil backend absent : Pillow/ffmpeg) → état d'erreur DISTINCT + trace
       // en debug, pour qu'un placeholder ne masque plus un problème réel.
       if (!item.thumb_available) {
+        el._gExpectedUrl = '';
+        el._gThumbRetried = false;
         img.classList.add('gallery-cell-img--hidden');
         img.removeAttribute('src');
         ph.textContent = galleryKindIcon(item.kind);
@@ -663,11 +706,15 @@ function galleryCellRenderer() {
       var cache = galleryState.thumbCache;
       var cached = cache.peek(item.id);
       if (cached) {
+        el._gExpectedUrl = cached;
+        el._gThumbRetried = false;
         img.src = cached;
         return;
       }
       cache.request(item, window.HolafThumbCache.PRIORITY_HIGH).then(function (url) {
         if (el._gToken !== token || !url) return; // cellule recyclée entre-temps
+        el._gExpectedUrl = url;
+        el._gThumbRetried = false;
         img.src = url;
       }).catch(function () {
         if (el._gToken !== token) return;
@@ -677,6 +724,8 @@ function galleryCellRenderer() {
 
     release: function (el) {
       el._gToken++;
+      el._gExpectedUrl = '';
+      el._gThumbRetried = false;
       if (el._gImg) { el._gImg.removeAttribute('src'); el._gImg.classList.add('gallery-cell-img--hidden'); }
       if (el._gPh) { el._gPh.textContent = ''; el._gPh.classList.add('is-hidden'); }
       galleryCellResetPh(el);
@@ -1471,6 +1520,7 @@ window.AppGallery = {
   setDisplaySize: gallerySetDisplaySize,
   serverThumbSize: galleryServerThumbSize,
   thumbUrl: galleryThumbUrl,
+  thumbRetryUrl: galleryThumbRetryUrl,
   downloadUrl: galleryDownloadUrl,
   mediaUrl: galleryMediaUrl,
   infoFields: galleryInfoFields,
@@ -1508,6 +1558,7 @@ window.AppGallery = {
     DISPLAY_DEFAULT: GALLERY_DISPLAY_DEFAULT,
     THUMB_SIZES: GALLERY_THUMB_SIZES.slice(),
     SEARCH_DEBOUNCE: GALLERY_SEARCH_DEBOUNCE,
+    THUMB_RETRY_MS: GALLERY_THUMB_RETRY_MS,
     SORTS: GALLERY_SORTS.slice(),
   },
   state: galleryState,

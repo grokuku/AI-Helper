@@ -58,6 +58,12 @@ THUMB_SIZE_DEFAULT = 256
 # `private` : pas de cache partagé (réponses liées à la session/cookie).
 THUMB_CACHE_CONTROL = "private, max-age=31536000, immutable"
 THUMB_MAX_AGE = 31536000
+# Une réponse d'ERREUR de vignette (404 « indisponible », 400 taille invalide)
+# ne doit JAMAIS être mémorisée durablement : sinon le navigateur (ou un cache
+# intermédiaire, le 404 étant « heuristiquement cacheable » par défaut) pourrait
+# resservir l'échec — p.ex. après installation de Pillow, la vignette resterait
+# cassée. `no-store` est la directive la plus stricte (aucune conservation).
+THUMB_ERROR_CACHE_CONTROL = "no-store, max-age=0"
 # Bornes temporelles des sous-processus ffmpeg/ffprobe (sécurité DoS).
 FFPROBE_TIMEOUT = 30
 FFMPEG_TIMEOUT = 60
@@ -397,7 +403,16 @@ def _thumbnail_cache_path(row, size):
 
 
 def _thumbnail_etag(row, size):
-    """ETag stable (l'URL est immuable), SANS quotes : version pour invalidation."""
+    """ETag stable (l'URL est immuable), SANS quotes : version pour invalidation.
+
+    L'empreinte couvre ``thumb:v1:<id>:<size>:<final_path>``. Le contenu d'un
+    média est IMMUABLE (uploadé une seule fois, ``final_path`` figé pour un id
+    donné) : la vignette d'un (média, taille) ne peut donc pas changer sans
+    changer d'URL. ``thumb:v1`` est une VERSION DE STRATÉGIE de génération :
+    toute modification de ``_generate_thumbnail`` (outil/format/qualité) doit
+    incrémenter ce préfixe — sinon un ``304`` pourrait resservir une vignette
+    produite par l'ancienne génération.
+    """
     return hashlib.sha1(
         f"thumb:v1:{row['id']}:{size}:{row['final_path'] or ''}".encode()
     ).hexdigest()
@@ -1138,6 +1153,13 @@ def media_thumbnail(media_id):
     dépendance RUNTIME déclarée (``requirements.txt``) : son absence est la
     cause n°1 d'un ``reason: no_tools`` en production.
 
+    Pas de CACHE NÉGATIF : une génération en échec n'écrit RIEN (ni fichier de
+    cache storage, ni marqueur, ni colonne) ; ``thumb_available`` est recalculé
+    à chaque appel. Les réponses d'ERREUR portent ``Cache-Control: no-store``
+    pour qu'aucun cache (navigateur/intermédiaire — un 404 est « heuristiquement
+    cacheable ») ne fige l'échec : après correction (ex. Pillow installé) un
+    simple appel régénère la vignette.
+
     Corbeille : la vignette d'un média corbeillé reste servie au propriétaire
     (et à un admin), afin que la corbeille puisse afficher une miniature ; les
     médias corbeillés sont toutefois exclus de la liste par défaut.
@@ -1150,11 +1172,17 @@ def media_thumbnail(media_id):
     row = _fetch_media(media_id)
     err = _media_owner_guard(row, user_id)
     if err:
-        return err
+        # 403/404 d'accès : jamais mis en cache durablement non plus.
+        err_resp, err_status = err
+        err_resp.headers['Cache-Control'] = THUMB_ERROR_CACHE_CONTROL
+        return err_resp, err_status
 
     size = _normalize_thumb_size(request.args.get('size'))
     if size is None:
-        return jsonify({'error': 'size invalide (128/256/512)'}), 400
+        resp = jsonify({'error': 'size invalide (128/256/512)'})
+        resp.status_code = 400
+        resp.headers['Cache-Control'] = THUMB_ERROR_CACHE_CONTROL
+        return resp
 
     etag = _thumbnail_etag(row, size)
     etag_header = f'"{etag}"'
@@ -1175,12 +1203,17 @@ def media_thumbnail(media_id):
             "[media] thumbnail 404 id=%s kind=%s size=%s reason=%s",
             media_id, row['kind'], size, reason,
         )
-        return jsonify({
+        # Aucune mise en cache (même heuristique) : la vignette DOIT pouvoir
+        # être régénérée au prochain appel dès que la cause est levée.
+        resp = jsonify({
             'error': 'Vignette indisponible pour ce média',
             'code': 'thumbnail_unavailable',
             'reason': reason,
             'kind': row['kind'],
-        }), 404
+        })
+        resp.status_code = 404
+        resp.headers['Cache-Control'] = THUMB_ERROR_CACHE_CONTROL
+        return resp
 
     def _cleanup_thumb():
         with contextlib.suppress(Exception):

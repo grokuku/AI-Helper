@@ -1035,22 +1035,7 @@
             Réinitialiser
           </button>
         </div>
-        <!-- Barre d'actions contextuelle (≥1 sélection) -->
-        <div id="gallery-actions" class="hidden px-4 py-2 shrink-0 flex flex-wrap items-center gap-2 bg-indigo-50 dark:bg-indigo-900/20 border-b border-indigo-100 dark:border-indigo-900/40">
-          <span id="gallery-actions-label" class="text-xs font-medium text-indigo-600 dark:text-indigo-300"></span>
-          <div class="flex-1"></div>
-          <button type="button" id="gallery-action-download" data-gallery-action onclick="galleryBulkDownload()"
-                  class="gallery-action-btn" title="Télécharger les originaux sélectionnés">⤓ Télécharger</button>
-          <button type="button" id="gallery-action-delete" data-gallery-action onclick="galleryBulkDelete()"
-                  class="gallery-action-btn gallery-action-btn--danger" title="Mettre à la corbeille">🗑 Supprimer</button>
-          <button type="button" id="gallery-action-restore" data-gallery-action onclick="galleryBulkRestore()"
-                  class="gallery-action-btn hidden" title="Restaurer les médias">♻ Restaurer</button>
-          <button type="button" id="gallery-action-purge" data-gallery-action onclick="galleryBulkPurge()"
-                  class="gallery-action-btn gallery-action-btn--danger hidden" title="Supprimer définitivement">✖ Supprimer définitivement</button>
-          <button type="button" onclick="galleryClearSelection()"
-                  class="text-xs text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 px-2 py-1">Désélectionner</button>
-        </div>
-        <!-- Corps : grille virtualisée (gauche) + panneau d'informations (droite) -->
+        <!-- Corps : grille virtualisée (gauche) + colonne droite (infos + actions) -->
         <div class="flex-1 flex overflow-hidden min-h-0">
           <div class="flex-1 relative min-w-0">
             <div id="gallery-grid" class="absolute inset-0 overflow-y-auto p-3"></div>
@@ -1066,7 +1051,29 @@
             </div>
             <div id="gallery-error" class="hidden absolute inset-0 flex items-center justify-center text-sm text-rose-500 dark:text-rose-400 text-center px-6"></div>
           </div>
-          <aside id="gallery-info" class="shrink-0 overflow-y-auto border-l border-slate-200 dark:border-slate-700" style="width: 320px; min-width: 200px;"></aside>
+          <!-- Colonne de droite : panneau d'informations (haut, défilable) + barre
+               d'actions de sélection EN PIED. La barre vit DANS la colonne : son
+               apparition/disparition ne change que la hauteur du panneau, JAMAIS
+               celle de la grille → aucun reflow du layout principal. -->
+          <div id="gallery-side" class="shrink-0 flex flex-col border-l border-slate-200 dark:border-slate-700" style="width: 320px; min-width: 200px;">
+            <aside id="gallery-info" class="flex-1 overflow-y-auto min-h-0"></aside>
+            <!-- Barre d'actions contextuelle (≥1 sélection) : en pied de colonne -->
+            <div id="gallery-actions" class="hidden shrink-0 px-3 py-3 flex flex-col gap-2 bg-indigo-50 dark:bg-indigo-900/20 border-t border-indigo-100 dark:border-indigo-900/40">
+              <span id="gallery-actions-label" class="text-xs font-medium text-indigo-600 dark:text-indigo-300"></span>
+              <div class="flex flex-wrap items-center gap-2">
+                <button type="button" id="gallery-action-download" data-gallery-action onclick="galleryBulkDownload()"
+                        class="gallery-action-btn" title="Télécharger les originaux sélectionnés">⤓ Télécharger</button>
+                <button type="button" id="gallery-action-delete" data-gallery-action onclick="galleryBulkDelete()"
+                        class="gallery-action-btn gallery-action-btn--danger" title="Mettre à la corbeille">🗑 Supprimer</button>
+                <button type="button" id="gallery-action-restore" data-gallery-action onclick="galleryBulkRestore()"
+                        class="gallery-action-btn hidden" title="Restaurer les médias">♻ Restaurer</button>
+                <button type="button" id="gallery-action-purge" data-gallery-action onclick="galleryBulkPurge()"
+                        class="gallery-action-btn gallery-action-btn--danger hidden" title="Supprimer définitivement">✖ Supprimer définitivement</button>
+                <button type="button" onclick="galleryClearSelection()"
+                        class="text-xs text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 px-2 py-1">Désélectionner</button>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 

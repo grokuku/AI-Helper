@@ -228,6 +228,76 @@ def test_thumbnail_degradation_without_tools(client, make_token, media_storage, 
     assert not media_storage.exists(media_module._thumbnail_cache_path(_row(mid), 256))
 
 
+def test_thumbnail_error_headers_forbid_durable_cache(client, make_token, media_storage, monkeypatch):
+    """ANTI-CACHE NÉGATIF : les ERREURS de vignette ne sont PAS cacheables.
+
+    Un 404 est « heuristiquement cacheable » (RFC 7234) : sans ``no-store`` le
+    navigateur (ou un cache intermédiaire) pourrait resservir le 404 APRÈS
+    correction (Pillow installé) → vignette définitivement cassée. On impose
+    donc ``no-store`` et l'absence d'ETag/entête de cache longue.
+    """
+    monkeypatch.setattr(media_module, "_pillow_available", lambda: False)
+    monkeypatch.setattr(media_module, "_ffmpeg_path", lambda: None)
+    headers = _headers(make_token, "thumb-nocache")
+    r = _upload(client, headers, _png_bytes(), filename="nc")
+    mid = r.get_json()["id"]
+
+    # 404 « thumbnail_unavailable » : no-store, pas d'ETag, pas de cache long.
+    resp = client.get(f"/api/media/{mid}/thumbnail", headers=headers)
+    assert resp.status_code == 404
+    cc = resp.headers.get("Cache-Control", "")
+    assert "no-store" in cc
+    assert "immutable" not in cc and "31536000" not in cc
+    assert resp.headers.get("ETag") is None
+
+    # 400 taille invalide : idem.
+    resp400 = client.get(f"/api/media/{mid}/thumbnail?size=abc", headers=headers)
+    assert resp400.status_code == 400
+    assert "no-store" in resp400.headers.get("Cache-Control", "")
+
+    # 404 id inconnu (garde d'accès de la route) : idem.
+    resp404 = client.get("/api/media/999999/thumbnail", headers=headers)
+    assert resp404.status_code == 404
+    assert "no-store" in resp404.headers.get("Cache-Control", "")
+
+
+def test_thumbnail_regenerated_after_tool_recovery(client, make_token, media_storage, monkeypatch):
+    """PREUVE « est-ce qu'elle va se recalculer ? » : OUI, aucune mémoire d'échec.
+
+    Échec (Pillow/ffmpeg masqués → 404 ``no_tools``, rien de persisté) PUIS
+    retour des outils → la vignette est GÉNÉRÉE et PERSISTÉE au prochain appel.
+    Contrôle négatif : juste après l'échec, le cache storage est vide (donc
+    aucun « pas de vignette » mémorisé).
+    """
+    headers = _headers(make_token, "thumb-regen")
+    r = _upload(client, headers, _png_bytes(400, 250), filename="rg")
+    mid = r.get_json()["id"]
+    thumb_path = media_module._thumbnail_cache_path(_row(mid), 256)
+
+    # 1) Outils masqués → 404 structuré, AUCUN cache négatif écrit.
+    monkeypatch.setattr(media_module, "_pillow_available", lambda: False)
+    monkeypatch.setattr(media_module, "_ffmpeg_path", lambda: None)
+    resp = client.get(f"/api/media/{mid}/thumbnail", headers=headers)
+    assert resp.status_code == 404
+    assert resp.get_json()["reason"] == "no_tools"
+    assert not media_storage.exists(thumb_path)
+
+    # 2) Outils « revenus » → régénération immédiate + persistance du cache.
+    def _pillow_real():
+        try:
+            import PIL.Image  # noqa: F401
+            return True
+        except Exception:
+            return False
+
+    monkeypatch.setattr(media_module, "_pillow_available", _pillow_real)
+    resp2 = client.get(f"/api/media/{mid}/thumbnail", headers=headers)
+    assert resp2.status_code == 200
+    assert resp2.mimetype == "image/jpeg"
+    assert resp2.data[:3] == b"\xff\xd8\xff"  # magic bytes JPEG (SOI)
+    assert media_storage.exists(thumb_path)
+
+
 def test_thumbnail_nominal_returns_real_jpeg(client, make_token, media_storage):
     """Cas NOMINAL : une vignette JPEG RÉELLE est renvoyée (Content-Type + bytes)."""
     headers = _headers(make_token, "thumb-nominal")

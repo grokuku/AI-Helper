@@ -583,6 +583,11 @@
     .gallery-action-btn--danger { color: #e11d48; }
     .gallery-action-btn--danger:hover:not(:disabled) { color: #be123c; }
     .gallery-action-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    /* Barre d'actions de SÉLECTION : elle vit en PIED de la colonne de droite
+       (#gallery-side) et ne décale plus la grille. En colonne étroite, les
+       libellés restent insécables et la rangée se replie proprement. */
+    #gallery-actions .gallery-action-btn { white-space: nowrap; }
+    #gallery-actions-label { line-height: 1.2; }
 
     /* Cellule : actions au survol + marqueur corbeille */
     .gallery-cell-actions {

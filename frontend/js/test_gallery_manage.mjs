@@ -46,18 +46,25 @@ const dom = new JSDOM(`<!doctype html><html><body>
       <option value="name_asc">Nom (A→Z)</option>
       <option value="size_desc">Taille (↓)</option>
     </select>
-    <div id="gallery-actions" class="hidden">
-      <span id="gallery-actions-label"></span>
-      <button id="gallery-action-download" data-gallery-action>⤓ Télécharger</button>
-      <button id="gallery-action-delete" data-gallery-action>🗑 Supprimer</button>
-      <button id="gallery-action-restore" data-gallery-action class="hidden">♻ Restaurer</button>
-      <button id="gallery-action-purge" data-gallery-action class="hidden">✖ Purger</button>
+    <div class="gallery-body">
+      <div id="gallery-main">
+        <div id="gallery-grid"></div>
+        <div id="gallery-loading"></div>
+        <div id="gallery-empty" class="hidden"></div>
+        <div id="gallery-error" class="hidden"></div>
+      </div>
+      <!-- Colonne de droite : infos + barre d'actions EN PIED (reflète index.html) -->
+      <div id="gallery-side">
+        <aside id="gallery-info"></aside>
+        <div id="gallery-actions" class="hidden">
+          <span id="gallery-actions-label"></span>
+          <button id="gallery-action-download" data-gallery-action>⤓ Télécharger</button>
+          <button id="gallery-action-delete" data-gallery-action>🗑 Supprimer</button>
+          <button id="gallery-action-restore" data-gallery-action class="hidden">♻ Restaurer</button>
+          <button id="gallery-action-purge" data-gallery-action class="hidden">✖ Purger</button>
+        </div>
+      </div>
     </div>
-    <div id="gallery-grid"></div>
-    <div id="gallery-loading"></div>
-    <div id="gallery-empty" class="hidden"></div>
-    <div id="gallery-error" class="hidden"></div>
-    <aside id="gallery-info"></aside>
   </div>
 </body></html>`, { pretendToBeVisual: true, url: "http://localhost/" });
 
@@ -342,6 +349,18 @@ ok(!actionsBar().classList.contains("hidden"), "barre d'actions visible");
 ok(!window.document.getElementById("gallery-action-delete").classList.contains("hidden"), "vue Médias : bouton Supprimer visible");
 ok(window.document.getElementById("gallery-action-restore").classList.contains("hidden"), "vue Médias : Restaurer masqué");
 ok(window.document.getElementById("gallery-action-purge").classList.contains("hidden"), "vue Médias : Purger masqué");
+// EMPLACEMENT : la barre est EN PIED DE LA COLONNE DE DROITE (#gallery-side),
+// pas un bandeau au-dessus de la grille → son apparition ne décale pas la grille.
+{
+  const sideEl = window.document.getElementById("gallery-side");
+  const mainEl = window.document.getElementById("gallery-main");
+  ok(!!sideEl, "colonne de droite (#gallery-side) présente dans le DOM");
+  eq(actionsBar().parentElement, sideEl, "barre d'actions enfant direct de #gallery-side (colonne droite)");
+  ok(sideEl.contains(window.document.getElementById("gallery-info")), "même colonne que #gallery-info");
+  ok(!mainEl.contains(actionsBar()), "[négatif] la barre n'est PAS dans la zone de la grille → aucun reflow");
+  ok(!mainEl.contains(sideEl), "[négatif] la colonne droite est hors de la zone de la grille");
+  ok(!actionsBar().classList.contains("hidden"), "barre visible avec 1 sélection");
+}
 
 // Contrôle négatif : un changement de filtre recharge ET vide la sélection.
 setSelect("gallery-filter-kind", "image");

@@ -191,6 +191,30 @@ ok(failPh.classList.contains("gallery-cell-ph--error"), "échec vignette → cla
 eq(failPh.textContent, "⚠", "échec vignette → glyphe ⚠");
 eq(failPh.title, "Vignette indisponible", "échec vignette → title explicite");
 
+// Reprise BORNÉE après échec : un <img> en erreur ne se recharge pas seul →
+// l'adaptateur retente UNE fois (cache-buster) puis renonce (pas de boucle).
+{
+  AppGallery.state.grid.render(true);
+  await settle();
+  const rc = cellEl(1);
+  const rim = rc.querySelector(".gallery-cell-img");
+  const rph = rc.querySelector(".gallery-cell-ph");
+  const base = rim.getAttribute("src");
+  ok(!!base && base.indexOf("_retry=") === -1, "URL de vignette initiale sans cache-buster");
+  eq(AppGallery.thumbRetryUrl(base, 1), base + "&_retry=1", "cache-buster calculé (URL avec query)");
+  eq(AppGallery.thumbRetryUrl("/x", 1), "/x?_retry=1", "cache-buster calculé (URL sans query)");
+  rim.dispatchEvent(new window.Event("error"));
+  ok(rph.classList.contains("gallery-cell-ph--error"), "échec → état d'erreur affiché");
+  await new Promise((r) => setTimeout(r, AppGallery.constants.THUMB_RETRY_MS + 200));
+  eq(rim.getAttribute("src"), base + "&_retry=1", "1re erreur → rechargement UNE fois (cache-buster)");
+  // 2e échec : borne atteinte, AUCUN nouveau retry.
+  rim.dispatchEvent(new window.Event("error"));
+  await new Promise((r) => setTimeout(r, AppGallery.constants.THUMB_RETRY_MS + 200));
+  eq(rim.getAttribute("src"), base + "&_retry=1", "[négatif] 2e échec → aucun nouveau retry (borné)");
+  AppGallery.state.grid.render(true);
+  await settle();
+}
+
 // Dégradation backend (ex. Pillow absent) : thumb_available=false sur une image
 // → état d'erreur distinct (jamais un placeholder neutre silencieux).
 mediaItems[0].thumb_available = false;
