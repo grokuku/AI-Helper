@@ -179,6 +179,28 @@ const audioCell = cellEl(2);
 ok(!!audioCell, "cellule audio (index 2) rendue");
 eq(audioCell.querySelector(".gallery-cell-ph").textContent, "🎵", "audio : icône (pas de vignette)");
 ok(audioCell.querySelector(".gallery-cell-img").classList.contains("gallery-cell-img--hidden"), "audio : <img> masquée");
+ok(!audioCell.querySelector(".gallery-cell-ph").classList.contains("gallery-cell-ph--error"),
+  "audio : icône de type, PAS un état d'erreur");
+
+// Échec de chargement d'une vignette → état d'erreur DISTINCT du placeholder.
+const failImg = cellEl(0).querySelector(".gallery-cell-img");
+const failPh = cellEl(0).querySelector(".gallery-cell-ph");
+ok(!failPh.classList.contains("gallery-cell-ph--error"), "placeholder d'attente : aucun marqueur d'erreur");
+failImg.dispatchEvent(new window.Event("error"));
+ok(failPh.classList.contains("gallery-cell-ph--error"), "échec vignette → classe d'erreur distincte");
+eq(failPh.textContent, "⚠", "échec vignette → glyphe ⚠");
+eq(failPh.title, "Vignette indisponible", "échec vignette → title explicite");
+
+// Dégradation backend (ex. Pillow absent) : thumb_available=false sur une image
+// → état d'erreur distinct (jamais un placeholder neutre silencieux).
+mediaItems[0].thumb_available = false;
+AppGallery.state.grid.render(true);
+await settle();
+ok(cellEl(0).querySelector(".gallery-cell-ph").classList.contains("gallery-cell-ph--error"),
+  "image sans vignette dispo → état d'erreur distinct");
+mediaItems[0].thumb_available = true;
+AppGallery.state.grid.render(true);
+await settle();
 
 /* ═══ 5. Slider : grille + taille serveur ═════════════════════════════════ */
 console.log("5. Slider de taille");

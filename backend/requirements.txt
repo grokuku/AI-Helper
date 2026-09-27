@@ -6,3 +6,6 @@ requests>=2.31.0
 cryptography>=41.0.0
 PyJWT>=2.8.0
 paramiko>=3.4.0
+# Pillow : génération des vignettes de la galerie média
+# (routes/media.py — sans lui, /thumbnail renvoie 404 « no_tools »).
+Pillow>=10.0.0

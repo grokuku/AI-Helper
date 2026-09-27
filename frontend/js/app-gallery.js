@@ -1,5 +1,13 @@
 /* ══════════════════════════════════════════════════════════════════════════
- * app-gallery.js — Onglet « Galerie » (version CONSULTATION) du front AI-Helper.
+ * app-gallery.js — Onglet « Galerie » du front AI-Helper.
+ *
+ * CONSULTATION (commit backend 0d5e8c6) : liste paginée + grille virtualisée +
+ * visionneuse + panneau d'informations.
+ * GESTION (cette étape) : FILTRES (type / sous-dossier / nom / dates / tri),
+ * vue CORBEILLE (status=trashed), SUPPRESSION (optimiste + rollback) et
+ * ACTIONS GROUPÉES (delete/restore/purge + téléchargement), restauration,
+ * purge (avec confirmation), téléchargement de l'original (grille, infopane,
+ * lightbox), toasts et verrouillage pendant les appels.
  *
  * ADAPTATEUR des briques holaf VENDUES (frontend/vendor/holaf/, jamais
  * modifiées — cf. holaf-manifest.json + `holaf check`) :
@@ -37,6 +45,12 @@ var GALLERY_DISPLAY_KEY = 'gallery-display-size';
 
 // Tailles de vignettes servies par le backend AI-Helper (THUMB_SIZES).
 var GALLERY_THUMB_SIZES = [128, 256, 512];
+
+// Debounce de la recherche par nom (ms) avant de relancer la liste.
+var GALLERY_SEARCH_DEBOUNCE = 350;
+
+// Valeurs de tri exposées par le backend (GET /api/media?sort=).
+var GALLERY_SORTS = ['created_at_desc', 'created_at_asc', 'name_asc', 'size_desc'];
 
 /* ── Helpers purs (testables sans DOM) ───────────────────────────────────── */
 
@@ -85,6 +99,35 @@ function galleryThumbUrl(item, size) {
 
 function galleryDownloadUrl(item) {
   return galleryApiBase() + '/media/' + encodeURIComponent(item.id) + '/download';
+}
+
+/**
+ * Construit l'URL de GET /api/media pour une page donnée et un état de filtres.
+ *
+ * PUR (testable hors DOM) : l'ordre des paramètres est STABLE (page, limit,
+ * sort d'abord — les tests de non-régression s'appuient sur ce préfixe), puis
+ * les filtres optionnels ne sont ajoutés QUE s'ils sont renseignés (un filtre
+ * vide n'apparaît donc jamais dans la requête).
+ *
+ * @param {number} page    page 1-indexée
+ * @param {number} limit   taille de page
+ * @param {object} filters { kind, subfolder, q, from, to, status }
+ * @param {string} sort    valeur de tri backend (déf. created_at_desc)
+ */
+function galleryMediaUrl(page, limit, filters, sort) {
+  filters = filters || {};
+  var parts = [
+    'page=' + page,
+    'limit=' + limit,
+    'sort=' + encodeURIComponent(sort || 'created_at_desc'),
+  ];
+  if (filters.kind) parts.push('kind=' + encodeURIComponent(filters.kind));
+  if (filters.subfolder) parts.push('subfolder=' + encodeURIComponent(filters.subfolder));
+  if (filters.q) parts.push('q=' + encodeURIComponent(filters.q));
+  if (filters.from) parts.push('from=' + encodeURIComponent(filters.from));
+  if (filters.to) parts.push('to=' + encodeURIComponent(filters.to));
+  if (filters.status) parts.push('status=' + encodeURIComponent(filters.status));
+  return galleryApiBase() + '/media?' + parts.join('&');
 }
 
 function galleryEsc(s) {
@@ -220,10 +263,22 @@ var galleryState = {
   infoPane: null,
   selectionIds: [],
   lightboxIndex: -1,
+  lightboxItem: null,
   loadedOnce: false,
+  // GESTION : vue courante + filtres + tri (relancent la liste).
+  view: 'normal',
+  filters: {},
+  sort: 'created_at_desc',
+  // Verrou d'actions pendant un appel réseau (désactive les boutons).
+  busy: false,
+  // Observables de test : dernier appel réseau et derniers téléchargements.
+  lastRequest: null,
+  lastDownload: null,
+  lastDownloadBatch: [],
 };
 
 var galleryKeyHandler = null;
+var gallerySearchTimer = null;
 
 /* ── Cycle de vie de l'onglet ────────────────────────────────────────────── */
 
@@ -246,13 +301,31 @@ function galleryStop() {
 /** Relance le chargement depuis la première page (bouton Rafraîchir). */
 function galleryRefresh() {
   if (!galleryState.started) { galleryStart(); return; }
+  galleryReload();
+}
+
+/**
+ * RELOAD COMPLET de la liste : lit les filtres de la barre d'outils, réinitialise
+ * la collection (annule les fetch en vol), vide la sélection, remonte en haut et
+ * recharge la première page.
+ *
+ * ⚠️ On n'utilise JAMAIS le chemin « delta » (insertTop/applyDelta) pour un
+ * changement de filtre : la sémantique d'un filtre est un NOUVEAU JEU de
+ * données, pas un patch — c'est la conception de la brique (reset + refetch).
+ * Utilisé aussi comme ROLLBACK après un échec d'action optimiste.
+ */
+function galleryReload() {
   var col = galleryState.collection;
-  if (!col) return;
-  col.reset();
+  if (!col) return Promise.resolve();
+  var filters = galleryReadFilterInputs();
+  col.setFilters(filters); // = reset() + remplace les filtres
   galleryState.loadedOnce = false;
+  galleryClearSelection();
+  var gridEl = galleryById('gallery-grid');
+  if (gridEl) gridEl.scrollTop = 0;
   galleryHideStates();
   galleryShowLoading();
-  col.ensureRange(0, GALLERY_PAGE_SIZE - 1);
+  return col.ensureRange(0, GALLERY_PAGE_SIZE - 1);
 }
 
 /* ── Initialisation : création des briques + branchements ────────────────── */
@@ -320,6 +393,7 @@ function galleryInit() {
     onVisibleRange: galleryOnVisibleRange,
     onSelectionChange: galleryOnSelectionChange,
     onActivate: galleryOnActivate,
+    onAction: galleryOnAction,
   });
   galleryState.grid.setSource(galleryState.collection);
 
@@ -350,6 +424,14 @@ function galleryInit() {
   galleryState.infoPane = window.HolafInfoPane.create(infoEl, {
     preview: galleryPreviewFields,
     resolve: galleryResolveMetadata,
+    actions: [
+      {
+        id: 'download',
+        label: 'Télécharger',
+        isEnabled: function (item) { return !!item; },
+        run: function (item) { galleryDownloadItem(item); },
+      },
+    ],
     labels: {
       copy: 'Copier',
       copied: 'Copié !',
@@ -365,6 +447,9 @@ function galleryInit() {
   galleryBindCollectionEvents();
   galleryBindKeyHandler();
   galleryBindLightboxEvents();
+  galleryBindFilterControls();
+  galleryUpdateViewToggle();
+  galleryUpdateActionBar();
 
   // 8) Premier chargement.
   galleryHideStates();
@@ -378,7 +463,7 @@ function galleryInit() {
 function galleryFetchPage(ctx) {
   var page = (ctx.page || 0) + 1; // l'API est 1-indexée
   var limit = ctx.limit || GALLERY_PAGE_SIZE;
-  var url = galleryApiBase() + '/media?page=' + page + '&limit=' + limit + '&sort=created_at_desc';
+  var url = galleryMediaUrl(page, limit, ctx.filters, galleryState.sort);
   return fetch(url, { signal: ctx.signal, credentials: 'same-origin' }).then(function (res) {
     return galleryJson(res).then(function (data) {
       if (!res.ok || !data || data.error) {
@@ -401,6 +486,7 @@ function galleryBindCollectionEvents() {
     // pool de cellules (efficace en scroll infini 'append').
     if (galleryState.grid) galleryState.grid.relayout();
     galleryUpdateCount();
+    galleryPopulateSubfolders();
   });
   col.on('total', galleryUpdateCount);
   col.on('error', function (p) {
@@ -419,7 +505,74 @@ function galleryErrorMessage(err) {
 
 /* ── Grille : renderer de cellule + callbacks ────────────────────────────── */
 
+/* Debug vignettes (OPT-IN) : trace l'URL + le statut HTTP réel d'un échec.
+   Activé par window.AIH_GALLERY_DEBUG === true, localStorage 'aihGalleryDebug'
+   = '1', ou l'URL ?galleryDebug=1. JAMAIS actif par défaut (aucun bruit). */
+function galleryThumbDebugEnabled() {
+  try {
+    if (window.AIH_GALLERY_DEBUG === true) return true;
+    if (window.localStorage && window.localStorage.getItem('aihGalleryDebug') === '1') return true;
+    return /(?:[?&])galleryDebug=1(?:&|$)/.test(window.location.search || '');
+  } catch (e) { return false; }
+}
+
+/* Sonde de diagnostic : rejoue un GET sur l'URL de vignette en échec pour
+   exposer le statut ET le corps JSON (code/reason renvoyés par le backend),
+   puis trace le tout. Uniquement appelé en debug. */
+function galleryThumbProbe(url) {
+  try {
+    fetch(url, { credentials: 'same-origin' }).then(function (res) {
+      if (!res) { console.warn('[gallery] vignette échec', url, 'réponse vide'); return null; }
+      if (res.status >= 400 && typeof res.json === 'function') {
+        return res.json().then(function (j) {
+          console.warn('[gallery] vignette échec', url, 'HTTP', res.status, j);
+        }).catch(function () {
+          console.warn('[gallery] vignette échec', url, 'HTTP', res.status);
+        });
+      }
+      console.warn('[gallery] vignette échec', url, 'HTTP', res.status);
+      return null;
+    }).catch(function (e) {
+      console.warn('[gallery] vignette échec', url, 'fetch_error', e && e.message);
+    });
+  } catch (e) { /* ignore */ }
+}
+
+/* État d'ERREUR d'une cellule : DISTINCT du placeholder d'attente (classe
+   `--error`, glyphe ⚠ + title), pour qu'un échec ne soit plus silencieux. */
+function galleryCellShowThumbError(el, url) {
+  if (el._gImg) el._gImg.classList.add('gallery-cell-img--hidden');
+  var ph = el._gPh;
+  if (ph) {
+    ph.textContent = '⚠';
+    ph.classList.remove('is-hidden');
+    ph.classList.add('gallery-cell-ph--error');
+    ph.title = 'Vignette indisponible';
+  }
+  if (url && galleryThumbDebugEnabled()) galleryThumbProbe(url);
+}
+
+function galleryCellResetPh(el) {
+  var ph = el._gPh;
+  if (!ph) return;
+  ph.classList.remove('gallery-cell-ph--error');
+  ph.removeAttribute('title');
+}
+
 function galleryCellRenderer() {
+  // Icône ⤓ / 🗑 / ♻ / ✖ : actions rapides au survol, marquées
+  // `data-holaf-action` → la brique émet onAction() SANS changer la sélection.
+  function makeAction(action, label, title) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'gallery-cell-action';
+    b.dataset.holafAction = action;
+    b.textContent = label;
+    b.title = title;
+    b.setAttribute('aria-label', title);
+    return b;
+  }
+
   return {
     create: function () {
       var el = document.createElement('div');
@@ -436,18 +589,29 @@ function galleryCellRenderer() {
       var badge = document.createElement('span');
       badge.className = 'gallery-cell-badge';
       el.appendChild(badge);
+      var trash = document.createElement('span');
+      trash.className = 'gallery-cell-trash is-hidden';
+      trash.textContent = '🗑';
+      el.appendChild(trash);
+      var actions = document.createElement('div');
+      actions.className = 'gallery-cell-actions';
+      actions.appendChild(makeAction('download', '⤓', "Télécharger l'original"));
+      actions.appendChild(makeAction('delete', '🗑', 'Mettre à la corbeille'));
+      actions.appendChild(makeAction('restore', '♻', 'Restaurer'));
+      actions.appendChild(makeAction('purge', '✖', 'Supprimer définitivement'));
+      el.appendChild(actions);
       el._gImg = img;
       el._gPh = ph;
       el._gBadge = badge;
+      el._gTrash = trash;
+      el._gActions = actions;
       el._gToken = 0;
       img.addEventListener('load', function () {
         el._gPh.classList.add('is-hidden');
         img.classList.remove('gallery-cell-img--hidden');
       });
       img.addEventListener('error', function () {
-        el._gPh.textContent = '⚠';
-        el._gPh.classList.remove('is-hidden');
-        img.classList.add('gallery-cell-img--hidden');
+        galleryCellShowThumbError(el, img.getAttribute('src'));
       });
       return el;
     },
@@ -458,20 +622,41 @@ function galleryCellRenderer() {
       el._gBadge.textContent = galleryKindIcon(item.kind);
       el._gBadge.dataset.kind = item.kind || '';
 
+      // UI distincte en corbeille : marqueur + opacité + actions Restaurer/Purger.
+      var trashed = galleryIsTrashed(item);
+      el.classList.toggle('gallery-cell--trashed', trashed);
+      el._gTrash.classList.toggle('is-hidden', !trashed);
+      gallerySetActionVisibility(el, 'delete', !trashed);
+      gallerySetActionVisibility(el, 'restore', trashed);
+      gallerySetActionVisibility(el, 'purge', trashed);
+
       var img = el._gImg;
       var ph = el._gPh;
 
-      // L'audio n'a pas de vignette produisible → icône seule.
+      // Pas de vignette produisible (décision backend) : l'audio affiche SON
+      // icône de type (état normal) ; pour image/vidéo c'est une DÉGRADATION
+      // (outil backend absent : Pillow/ffmpeg) → état d'erreur DISTINCT + trace
+      // en debug, pour qu'un placeholder ne masque plus un problème réel.
       if (!item.thumb_available) {
         img.classList.add('gallery-cell-img--hidden');
         img.removeAttribute('src');
         ph.textContent = galleryKindIcon(item.kind);
         ph.classList.remove('is-hidden');
+        if (item.kind === 'audio') {
+          galleryCellResetPh(el);
+        } else {
+          ph.classList.add('gallery-cell-ph--error');
+          ph.title = 'Vignette indisponible (outil backend absent ?)';
+          if (galleryThumbDebugEnabled()) {
+            console.warn('[gallery] thumb_available=false (média ' + item.kind + ', id=' + item.id + ')');
+          }
+        }
         return;
       }
 
       ph.textContent = '';
       ph.classList.remove('is-hidden');
+      galleryCellResetPh(el);
       img.classList.add('gallery-cell-img--hidden');
 
       // Le cache 'url' est synchrone en pratique (aucun fetch de la brique).
@@ -486,8 +671,7 @@ function galleryCellRenderer() {
         img.src = url;
       }).catch(function () {
         if (el._gToken !== token) return;
-        ph.textContent = '⚠';
-        ph.classList.remove('is-hidden');
+        galleryCellShowThumbError(el, galleryThumbUrl(item, galleryState.serverSize));
       });
     },
 
@@ -495,6 +679,7 @@ function galleryCellRenderer() {
       el._gToken++;
       if (el._gImg) { el._gImg.removeAttribute('src'); el._gImg.classList.add('gallery-cell-img--hidden'); }
       if (el._gPh) { el._gPh.textContent = ''; el._gPh.classList.add('is-hidden'); }
+      galleryCellResetPh(el);
     },
   };
 }
@@ -510,6 +695,7 @@ function galleryOnVisibleRange(start, end, ids) {
 function galleryOnSelectionChange(ids, items) {
   galleryState.selectionIds = ids.slice();
   galleryUpdateSelectionLabel(ids.length);
+  galleryUpdateActionBar();
   var pane = galleryState.infoPane;
   if (!pane) return;
   if (ids.length === 1 && items && items.length === 1) {
@@ -530,6 +716,15 @@ function galleryOnActivate(item, index, kind) {
     }
     if (galleryState.lightbox) galleryState.lightbox.openZoom(item);
   });
+}
+
+/** Clic sur une action rapide d'une cellule (`data-holaf-action`). */
+function galleryOnAction(actionId, item, index) {
+  if (!item) return;
+  if (actionId === 'download') galleryDownloadItem(item);
+  else if (actionId === 'delete') galleryDeleteItem(item);
+  else if (actionId === 'restore') galleryRestoreItem(item);
+  else if (actionId === 'purge') galleryPurgeItem(item);
 }
 
 /* ── Visionneuse : renderer média (img/vidéo/audio, PAS d'éditeur) ───────── */
@@ -605,8 +800,57 @@ function galleryRenderMedia(ctx) {
 function galleryBindLightboxEvents() {
   var lb = galleryState.lightbox;
   if (!lb) return;
-  lb.on('navigate', function (p) { if (p && typeof p.index === 'number') galleryState.lightboxIndex = p.index; });
-  lb.on('open', function (p) { if (p && p.item) galleryState.lightboxIndex = galleryState.lightboxIndex; });
+  lb.on('navigate', function (p) {
+    if (p && typeof p.index === 'number') galleryState.lightboxIndex = p.index;
+    if (p && p.item) galleryState.lightboxItem = p.item;
+  });
+  lb.on('open', function (p) {
+    // On mémorise l'item courant (le bouton ⤓ ne dépend PAS de lightbox.current()
+    // qui, chez nous, s'appuie sur getIndex() — l'hôte fait autorité sur l'index).
+    if (p && p.item) galleryState.lightboxItem = p.item;
+    // ⤓ Télécharger : injecté dans l'overlay créé par la brique (on NE modifie
+    // PAS la brique — on ajoute un bouton hôte dans son overlay).
+    galleryInjectLightboxDownload();
+  });
+}
+
+/**
+ * Ajoute un bouton « télécharger l'original » à l'overlay de la visionneuse.
+ *
+ * La brique HolafLightbox ne propose pas de slot de contrôles personnalisés :
+ * on se contente d'appendre un bouton hôte dans l'overlay (`.holaf-lightbox-
+ * overlay`) créé par la brique, en réutilisant sa classe `.holaf-lightbox-nav`
+ * pour l'apparence. Le bouton lit `galleryState.lightboxItem` (mémorisé sur les
+ * events open/navigate) plutôt que `lightbox.current()` — car notre option
+ * `getIndex()` fait autorité sur l'index et peut renvoyer null. Besoin futur de
+ * brique : un vrai slot `controls` dans le chrome de la lightbox.
+ */
+function galleryInjectLightboxDownload() {
+  var overlays;
+  try { overlays = document.querySelectorAll('.holaf-lightbox-overlay'); } catch (e) { overlays = null; }
+  if (!overlays) return;
+  for (var i = 0; i < overlays.length; i++) {
+    var ov = overlays[i];
+    if (!ov || ov.querySelector('.gallery-lightbox-download')) continue;
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'holaf-lightbox-nav gallery-lightbox-download';
+    btn.textContent = '⤓';
+    btn.title = "Télécharger l'original";
+    btn.setAttribute('aria-label', "Télécharger l'original");
+    btn.style.top = '20px';
+    btn.style.right = '70px';
+    btn.style.width = '40px';
+    btn.style.height = '40px';
+    btn.style.borderRadius = '50%';
+    btn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      var cur = galleryState.lightboxItem ||
+        ((galleryState.lightbox && galleryState.lightbox.current) ? galleryState.lightbox.current() : null);
+      if (cur) galleryDownloadItem(cur);
+    });
+    ov.appendChild(btn);
+  }
 }
 
 /* ── Infos : resolve via GET /api/media/<id>/metadata ────────────────────── */
@@ -624,6 +868,464 @@ function galleryResolveMetadata(item, ctx) {
       };
     });
   });
+}
+
+/* ── GESTION : filtres, vue (média/corbeille), actions, téléchargement ───── */
+
+/** Valeur texte d'un champ de filtre ('' si absent), rognée. */
+function galleryInputValue(id) {
+  var el = galleryById(id);
+  if (!el || el.value === undefined || el.value === null) return '';
+  return String(el.value).trim();
+}
+
+/** Un item est-il en corbeille ? (le backend expose status ET trashed). */
+function galleryIsTrashed(item) {
+  return !!(item && (item.status === 'trashed' || item.trashed === true));
+}
+
+/**
+ * Lit l'état des filtres depuis la barre d'outils et met à jour
+ * `galleryState.filters` + `galleryState.sort`. La vue corbeille force
+ * `status=trashed` (le backend exclut les corbeillés par défaut).
+ */
+function galleryReadFilterInputs() {
+  var kind = galleryInputValue('gallery-filter-kind');
+  var subfolder = galleryInputValue('gallery-filter-subfolder');
+  var q = galleryInputValue('gallery-search');
+  var from = galleryInputValue('gallery-filter-from');
+  var to = galleryInputValue('gallery-filter-to');
+  var sort = galleryInputValue('gallery-filter-sort');
+  galleryState.sort = sort || 'created_at_desc';
+
+  var filters = {};
+  if (kind) filters.kind = kind;
+  if (subfolder) filters.subfolder = subfolder;
+  if (q) filters.q = q;
+  if (from) filters.from = from;
+  if (to) filters.to = to;
+  if (galleryState.view === 'trash') filters.status = 'trashed';
+  galleryState.filters = filters;
+  return filters;
+}
+
+/** Un changement de filtre = RELOAD COMPLET de la liste (reset + page 1). */
+function galleryApplyFilterChange() {
+  galleryReload();
+}
+
+/** Branche les champs de filtre (selects/dates : 'change', nom : 'input') */
+function galleryBindFilterControls() {
+  var selectIds = [
+    'gallery-filter-kind', 'gallery-filter-sort',
+    'gallery-filter-subfolder', 'gallery-filter-from', 'gallery-filter-to',
+  ];
+  for (var i = 0; i < selectIds.length; i++) {
+    var el = galleryById(selectIds[i]);
+    if (el) el.addEventListener('change', galleryApplyFilterChange);
+  }
+  var search = galleryById('gallery-search');
+  if (search) {
+    search.addEventListener('input', function () {
+      if (gallerySearchTimer) clearTimeout(gallerySearchTimer);
+      gallerySearchTimer = setTimeout(galleryApplyFilterChange, GALLERY_SEARCH_DEBOUNCE);
+    });
+  }
+}
+
+/** Remplit le datalist des sous-dossiers depuis les items DÉJÀ chargés. */
+function galleryPopulateSubfolders() {
+  var list = galleryById('gallery-subfolders');
+  var col = galleryState.collection;
+  if (!list || !col || typeof col.forEachLoaded !== 'function') return;
+  var seen = {};
+  col.forEachLoaded(function (it) {
+    var sf = it && it.subfolder;
+    if (sf) seen[sf] = true;
+  });
+  var names = Object.keys(seen).sort();
+  while (list.firstChild) list.removeChild(list.firstChild);
+  for (var i = 0; i < names.length; i++) {
+    var opt = document.createElement('option');
+    opt.value = names[i];
+    list.appendChild(opt);
+  }
+}
+
+/** Réinitialise tous les filtres + tri et relance la liste. */
+function galleryResetFilters() {
+  var ids = ['gallery-filter-kind', 'gallery-filter-subfolder', 'gallery-search', 'gallery-filter-from', 'gallery-filter-to'];
+  for (var i = 0; i < ids.length; i++) {
+    var el = galleryById(ids[i]);
+    if (el) el.value = '';
+  }
+  var sort = galleryById('gallery-filter-sort');
+  if (sort) sort.value = 'created_at_desc';
+  galleryState.sort = 'created_at_desc';
+  galleryReload();
+}
+
+/** Bascule vue médias ⇄ corbeille (status=trashed) et relance la liste. */
+function gallerySetView(view) {
+  view = (view === 'trash') ? 'trash' : 'normal';
+  if (galleryState.view === view && galleryState.started) return;
+  galleryState.view = view;
+  galleryUpdateViewToggle();
+  galleryReload();
+}
+
+/** Synchronise l'apparence de la bascule de vue (aria-selected + classe). */
+function galleryUpdateViewToggle() {
+  var trash = galleryState.view === 'trash';
+  var normalBtn = galleryById('gallery-view-normal');
+  var trashBtn = galleryById('gallery-view-trash');
+  if (normalBtn) {
+    normalBtn.setAttribute('aria-selected', trash ? 'false' : 'true');
+    normalBtn.classList.toggle('is-active', !trash);
+  }
+  if (trashBtn) {
+    trashBtn.setAttribute('aria-selected', trash ? 'true' : 'false');
+    trashBtn.classList.toggle('is-active', trash);
+  }
+  galleryUpdateActionBar();
+}
+
+/** Vide la sélection de la grille (si la brique l'expose). */
+function galleryClearSelection() {
+  var g = galleryState.grid;
+  if (g && g.selection && typeof g.selection.clear === 'function') {
+    try { g.selection.clear(); } catch (e) { /* ignore */ }
+  }
+}
+
+function gallerySelectedIds() {
+  return galleryState.selectionIds.slice();
+}
+
+function gallerySelectedItems() {
+  var g = galleryState.grid;
+  if (g && g.selection && typeof g.selection.items === 'function') {
+    try { return g.selection.items() || []; } catch (e) { /* ignore */ }
+  }
+  return [];
+}
+
+/** Affiche/masque un bouton de la barre d'actions. */
+function galleryShowButton(id, show) {
+  var el = galleryById(id);
+  if (!el) return;
+  el.classList.toggle('hidden', !show);
+}
+
+/**
+ * Met à jour la barre d'actions contextuelle (visible dès 1 item sélectionné).
+ * En vue normale : Télécharger + Supprimer (corbeille). En vue corbeille :
+ * Télécharger + Restaurer + Purger.
+ */
+function galleryUpdateActionBar() {
+  var bar = galleryById('gallery-actions');
+  if (!bar) return;
+  var n = galleryState.selectionIds.length;
+  if (n === 0) { bar.classList.add('hidden'); return; }
+  bar.classList.remove('hidden');
+  var label = galleryById('gallery-actions-label');
+  if (label) label.textContent = n + ' média' + (n > 1 ? 's' : '') + ' sélectionné' + (n > 1 ? 's' : '');
+  var trash = galleryState.view === 'trash';
+  galleryShowButton('gallery-action-delete', !trash);
+  galleryShowButton('gallery-action-restore', trash);
+  galleryShowButton('gallery-action-purge', trash);
+}
+
+/** (Interne renderer) masque/affiche une action rapide selon le statut de l'item. */
+function gallerySetActionVisibility(el, action, visible) {
+  if (!el || !el._gActions) return;
+  var btn = el._gActions.querySelector('[data-holaf-action="' + action + '"]');
+  if (btn) btn.classList.toggle('is-hidden', !visible);
+}
+
+/** Désactive les boutons d'action pendant un appel réseau. */
+function gallerySetBusy(flag) {
+  galleryState.busy = !!flag;
+  var buttons = document.querySelectorAll('[data-gallery-action]');
+  for (var i = 0; i < buttons.length; i++) buttons[i].disabled = !!flag;
+  var gridEl = galleryById('gallery-grid');
+  if (gridEl) gridEl.setAttribute('aria-busy', flag ? 'true' : 'false');
+}
+
+/**
+ * Appel API générique (JSON), en mémorisant le dernier appel pour les tests.
+ * Rejette sur HTTP hors 2xx ou sur `{ error }`.
+ */
+function galleryApiRequest(method, path, body) {
+  var url = galleryApiBase() + path;
+  var opts = { method: method, credentials: 'same-origin' };
+  if (body !== undefined) {
+    opts.headers = { 'Content-Type': 'application/json' };
+    opts.body = JSON.stringify(body);
+  }
+  galleryState.lastRequest = { method: method, url: url, body: (body === undefined ? null : body) };
+  return fetch(url, opts).then(function (res) {
+    return galleryJson(res).then(function (data) {
+      if (!res.ok || (data && data.error)) {
+        throw new Error((data && data.error) || ('HTTP ' + res.status));
+      }
+      return data || {};
+    });
+  });
+}
+
+/** Thème des toasts aligné sur le mode clair/sombre de la page. */
+function galleryToastTheme() {
+  var dark = false;
+  try {
+    var root = document.documentElement;
+    dark = root.classList.contains('dark') || root.getAttribute('data-theme') === 'dark';
+  } catch (e) { /* ignore */ }
+  return dark ? 'indigo-dark' : 'indigo-light';
+}
+
+/** Toast (brique HolafToast vendue). Sans brique : no-op silencieux. */
+function galleryToast(message, type, opts) {
+  var t = window.HolafToast;
+  if (!t || typeof t.show !== 'function') return null;
+  var o = { message: message, type: type || 'info', theme: galleryToastTheme() };
+  if (opts) { for (var k in opts) { if (Object.prototype.hasOwnProperty.call(opts, k)) o[k] = opts[k]; } }
+  try { return t.show(o); } catch (e) { return null; }
+}
+
+/**
+ * Confirmation de destructif : réutilise `showConfirm` du front (app-admin.js)
+ * si présent, sinon `window.confirm` (surchargeable en test). Le callback
+ * reçoit `true` uniquement si l'utilisateur confirme.
+ */
+function galleryConfirm(title, message, cb) {
+  if (typeof showConfirm === 'function') {
+    showConfirm(title, message, function (ok) { cb(!!ok); });
+    return;
+  }
+  var res = true;
+  try { res = window.confirm(title + '\n\n' + message); } catch (e) { res = true; }
+  cb(!!res);
+}
+
+function gallerySkippedSuffix(skipped) {
+  if (!skipped) return '';
+  return ' • ' + skipped + ' ignoré' + (skipped > 1 ? 's' : '');
+}
+
+/** Après un retrait local optimiste : compteur + re-rendu de la grille. */
+function galleryAfterLocalRemoval() {
+  galleryUpdateCount();
+  if (galleryState.grid) galleryState.grid.render(true);
+  if (galleryState.collection && galleryState.collection.total === 0) galleryShowEmpty();
+}
+
+/* ── Suppression / restauration / purge d'un item ────────────────────────── */
+
+/**
+ * Envoie UN média à la corbeille (DELETE /api/media/<id>).
+ *
+ * OPTIMISTE : l'item est retiré de la collection AVANT la réponse (retrait
+ * local via la brique), puis ROLLBACK = reload complet si l'appel échoue.
+ * Pas de confirmation : l'action est RÉVERSIBLE (le média part en corbeille).
+ */
+function galleryDeleteItem(item) {
+  if (!item || galleryState.busy) return Promise.resolve(false);
+  var id = item.id;
+  var col = galleryState.collection;
+  var removed = col ? col.removeByIds([id]) : false;
+  var optimistic = (removed !== false);
+  if (optimistic) galleryAfterLocalRemoval();
+
+  gallerySetBusy(true);
+  return galleryApiRequest('DELETE', '/media/' + encodeURIComponent(id))
+    .then(function () {
+      galleryToast('Média envoyé à la corbeille.', 'success');
+      if (!optimistic) galleryReload(); // retrait local impossible → on resynchronise
+      else galleryClearSelection();
+      return true;
+    })
+    .catch(function (err) {
+      if (optimistic) galleryReload(); // ROLLBACK : on recharge la vérité serveur
+      galleryToast('Suppression impossible : ' + galleryErrorMessage(err), 'error');
+      return false;
+    })
+    .then(function (r) { gallerySetBusy(false); return r; });
+}
+
+/** Restaure UN média corbeillé (POST /api/media/<id>/restore). */
+function galleryRestoreItem(item) {
+  if (!item || galleryState.busy) return Promise.resolve(false);
+  var id = item.id;
+  gallerySetBusy(true);
+  return galleryApiRequest('POST', '/media/' + encodeURIComponent(id) + '/restore')
+    .then(function () {
+      galleryToast('Média restauré.', 'success');
+      galleryReload();
+      return true;
+    })
+    .catch(function (err) {
+      galleryToast('Restauration impossible : ' + galleryErrorMessage(err), 'error');
+      return false;
+    })
+    .then(function (r) { gallerySetBusy(false); return r; });
+}
+
+/** Purge DÉFINITIVEMENT UN média (DELETE /api/media/<id>/purge) — confirmation. */
+function galleryPurgeItem(item) {
+  if (!item || galleryState.busy) return Promise.resolve(false);
+  var id = item.id;
+  var name = item.filename || ('média #' + id);
+  return new Promise(function (resolve) {
+    galleryConfirm('Supprimer définitivement',
+      'Supprimer définitivement « ' + name + ' » ? Cette action est IRRÉVERSIBLE.',
+      function (ok) {
+        if (!ok) { resolve(false); return; }
+        gallerySetBusy(true);
+        galleryApiRequest('DELETE', '/media/' + encodeURIComponent(id) + '/purge')
+          .then(function () {
+            galleryToast('Média supprimé définitivement.', 'success');
+            galleryReload();
+            resolve(true);
+          })
+          .catch(function (err) {
+            galleryToast('Purge impossible : ' + galleryErrorMessage(err), 'error');
+            resolve(false);
+          })
+          .then(function () { gallerySetBusy(false); });
+      });
+  });
+}
+
+/* ── Actions groupées ────────────────────────────────────────────────────── */
+
+/**
+ * Action groupée : POST /api/media/<op> { ids } → récap { n, skipped }.
+ * `opts.message(n, skipped)` construit le libellé du toast ; `opts.after`
+ * rafraîchit la liste. Toute erreur réseau est toastée et la liste n'est PAS
+ * patchée (les actions groupées rechargent, elles ne sont pas optimistes).
+ */
+function galleryBulkRequest(method, path, ids, opts) {
+  opts = opts || {};
+  if (!ids || !ids.length || galleryState.busy) return Promise.resolve(false);
+  gallerySetBusy(true);
+  return galleryApiRequest(method, path, { ids: ids })
+    .then(function (data) {
+      var n = (data.trashed !== undefined) ? data.trashed
+        : (data.restored !== undefined) ? data.restored
+        : (data.purged !== undefined) ? data.purged : 0;
+      var skipped = Array.isArray(data.skipped) ? data.skipped.length : 0;
+      var msg = (typeof opts.message === 'function') ? opts.message(n, skipped)
+        : (n + ' média' + (n > 1 ? 's' : '') + ' traité' + (n > 1 ? 's' : ''));
+      galleryToast(msg, skipped ? 'warning' : 'success');
+      if (typeof opts.after === 'function') opts.after(n, skipped);
+      return true;
+    })
+    .catch(function (err) {
+      galleryToast((opts.errorLabel || 'Opération') + ' impossible : ' + galleryErrorMessage(err), 'error');
+      return false;
+    })
+    .then(function (r) { gallerySetBusy(false); return r; });
+}
+
+/** Suppression groupée (corbeille) : POST /api/media/delete { ids }. */
+function galleryBulkDelete() {
+  var ids = gallerySelectedIds();
+  if (!ids.length) return Promise.resolve(false);
+  var label = ids.length + ' média' + (ids.length > 1 ? 's' : '');
+  return new Promise(function (resolve) {
+    galleryConfirm('Mettre à la corbeille', 'Mettre ' + label + ' à la corbeille ?', function (ok) {
+      if (!ok) { resolve(false); return; }
+      resolve(galleryBulkRequest('POST', '/media/delete', ids, {
+        errorLabel: 'Suppression',
+        message: function (n, s) { return n + ' média' + (n > 1 ? 's' : '') + ' mis à la corbeille' + gallerySkippedSuffix(s); },
+        after: function () { galleryReload(); },
+      }));
+    });
+  });
+}
+
+/** Restauration groupée : POST /api/media/restore { ids } (pas de confirmation). */
+function galleryBulkRestore() {
+  var ids = gallerySelectedIds();
+  return galleryBulkRequest('POST', '/media/restore', ids, {
+    errorLabel: 'Restauration',
+    message: function (n, s) { return n + ' média' + (n > 1 ? 's' : '') + ' restauré' + (n > 1 ? 's' : '') + gallerySkippedSuffix(s); },
+    after: function () { galleryReload(); },
+  });
+}
+
+/** Purge groupée : POST /api/media/purge { ids } — confirmation explicite. */
+function galleryBulkPurge() {
+  var ids = gallerySelectedIds();
+  if (!ids.length) return Promise.resolve(false);
+  var label = ids.length + ' média' + (ids.length > 1 ? 's' : '');
+  return new Promise(function (resolve) {
+    galleryConfirm('Supprimer définitivement',
+      'Supprimer définitivement ' + label + ' ? Cette action est IRRÉVERSIBLE.',
+      function (ok) {
+        if (!ok) { resolve(false); return; }
+        resolve(galleryBulkRequest('POST', '/media/purge', ids, {
+          errorLabel: 'Purge',
+          message: function (n, s) { return n + ' média' + (n > 1 ? 's' : '') + ' supprimé' + (n > 1 ? 's' : '') + ' définitivement' + gallerySkippedSuffix(s); },
+          after: function () { galleryReload(); },
+        }));
+      });
+  });
+}
+
+/* ── Téléchargement de l'original ────────────────────────────────────────── */
+
+/**
+ * Télécharge l'original d'UN média via l'ancre `download` (même origine).
+ * Mémorise l'URL dans `state.lastDownload` (observable de test).
+ */
+function galleryDownloadItem(item) {
+  if (!item) return null;
+  var url = galleryDownloadUrl(item);
+  galleryState.lastDownload = url;
+  try {
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = item.filename || '';
+    a.rel = 'noopener';
+    a.style.display = 'none';
+    if (document.body) document.body.appendChild(a);
+    a.click();
+    if (a.parentNode) a.parentNode.removeChild(a);
+  } catch (e) { /* environnement sans DOM complet */ }
+  return url;
+}
+
+/**
+ * Téléchargement MULTI : le navigateur ne sait pas produire un zip sans
+ * backend. On enchaîne les téléchargements (1er immédiat — geste utilisateur,
+ * suivants décalés de 400 ms) pour ne pas se faire bloquer. Limite documentée :
+ * certains navigateurs exigent un geste par fichier / peuvent en bloquer.
+ * Mémorise la séquence dans `state.lastDownloadBatch` (observable de test).
+ */
+function galleryDownloadItems(items) {
+  items = (items || []).filter(Boolean);
+  var urls = [];
+  for (var i = 0; i < items.length; i++) urls.push(galleryDownloadUrl(items[i]));
+  galleryState.lastDownloadBatch = urls.slice();
+  if (!items.length) return urls;
+  galleryDownloadItem(items[0]);
+  for (var j = 1; j < items.length; j++) {
+    (function (it, delay) {
+      setTimeout(function () { galleryDownloadItem(it); }, delay);
+    })(items[j], j * 400);
+  }
+  return urls;
+}
+
+/** Bouton « Télécharger » de la barre d'actions (sélection courante). */
+function galleryBulkDownload() {
+  var items = gallerySelectedItems();
+  if (!items.length) return [];
+  var urls = galleryDownloadItems(items);
+  galleryToast(items.length + ' téléchargement' + (items.length > 1 ? 's' : '') + ' lancé' + (items.length > 1 ? 's' : ''), 'info');
+  return urls;
 }
 
 /* ── Taille d'affichage (slider) ─────────────────────────────────────────── */
@@ -765,10 +1467,12 @@ window.AppGallery = {
   start: galleryStart,
   stop: galleryStop,
   refresh: galleryRefresh,
+  reload: galleryReload,
   setDisplaySize: gallerySetDisplaySize,
   serverThumbSize: galleryServerThumbSize,
   thumbUrl: galleryThumbUrl,
   downloadUrl: galleryDownloadUrl,
+  mediaUrl: galleryMediaUrl,
   infoFields: galleryInfoFields,
   infoBlocks: galleryInfoBlocks,
   previewFields: galleryPreviewFields,
@@ -778,6 +1482,23 @@ window.AppGallery = {
   prettyJson: galleryPrettyJson,
   kindLabel: galleryKindLabel,
   kindIcon: galleryKindIcon,
+  // GESTION
+  setView: gallerySetView,
+  resetFilters: galleryResetFilters,
+  readFilters: galleryReadFilterInputs,
+  clearSelection: galleryClearSelection,
+  selectedIds: gallerySelectedIds,
+  selectedItems: gallerySelectedItems,
+  deleteItem: galleryDeleteItem,
+  restoreItem: galleryRestoreItem,
+  purgeItem: galleryPurgeItem,
+  bulkDelete: galleryBulkDelete,
+  bulkRestore: galleryBulkRestore,
+  bulkPurge: galleryBulkPurge,
+  bulkDownload: galleryBulkDownload,
+  downloadItem: galleryDownloadItem,
+  downloadItems: galleryDownloadItems,
+  toast: galleryToast,
   constants: {
     PAGE_SIZE: GALLERY_PAGE_SIZE,
     PREFETCH: GALLERY_PREFETCH,
@@ -786,6 +1507,8 @@ window.AppGallery = {
     DISPLAY_STEP: GALLERY_DISPLAY_STEP,
     DISPLAY_DEFAULT: GALLERY_DISPLAY_DEFAULT,
     THUMB_SIZES: GALLERY_THUMB_SIZES.slice(),
+    SEARCH_DEBOUNCE: GALLERY_SEARCH_DEBOUNCE,
+    SORTS: GALLERY_SORTS.slice(),
   },
   state: galleryState,
 };

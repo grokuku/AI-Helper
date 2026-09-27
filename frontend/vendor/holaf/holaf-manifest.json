@@ -4,5 +4,6 @@
   "virtualgrid": "0.1.0",
   "lightbox": "0.1.0",
   "infopane": "0.1.0",
-  "viewport": "0.1.3"
+  "viewport": "0.1.3",
+  "toast": "0.6.0"
 }

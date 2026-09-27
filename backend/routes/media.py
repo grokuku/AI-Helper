@@ -445,30 +445,55 @@ def _generate_thumbnail(kind, src_path, out_path, size):
 
 
 def _ensure_thumbnail_file(row, size, thumb_path):
-    """Retourne un fichier local de vignette (cache storage ou généré).
+    """Prépare un fichier local de vignette (cache storage ou généré).
 
     Ordre : cache storage → génération depuis le média source → persistance du
-    cache (best-effort). Retourne ``None`` si aucune vignette n'est possible
-    (outils absents, source illisible, audio…).
+    cache (best-effort).
+
+    Retourne ``(chemin_local, None)`` en cas de succès, sinon
+    ``(None, raison)``. La ``raison`` (chaîne courte, stable) rend l'échec
+    DIAGNOSTIQUABLE et est exposée par la route :
+
+      - ``no_tools``           : ni Pillow ni ffmpeg pour ce type de média
+                                 (type non couvert : audio, ou dépendance
+                                 manquante dans le déploiement) ;
+      - ``source_unavailable`` : le média source n'a pas pu être lu du storage ;
+      - ``generation_failed``  : l'outil a échoué (format/EXIF/taille illisible).
+
+    Aucune donnée sensible n'est journalisée (id + type + disponibilité des
+    outils uniquement).
     """
     storage = get_storage()
     local_out = os.path.join(TEMP_DIR, f"thumb_{row['id']}_{size}.jpg")
 
-    # 1) Servir depuis le cache storage si présent.
+    # 1) Servir depuis le cache storage si présent (aucun outil requis).
     if storage.exists(thumb_path) and storage.download(thumb_path, local_out):
-        return local_out
+        return local_out, None
 
     # 2) Aucune vignette pour l'audio, ou aucun outil disponible.
     if not _kind_can_have_thumbnail(row["kind"]):
-        return None
+        logging.warning(
+            "[media] vignette indisponible id=%s kind=%s : aucun outil "
+            "(Pillow=%s, ffmpeg=%s) — dépendance manquante ?",
+            row["id"], row["kind"], _pillow_available(), _ffmpeg_path() is not None,
+        )
+        return None, "no_tools"
 
     # 3) Générer depuis le média source.
     src_tmp = os.path.join(TEMP_DIR, f"tsrc_{row['id']}{row['ext'] or ''}")
     if not storage.download(row["final_path"], src_tmp):
-        return None
+        logging.warning(
+            "[media] vignette id=%s : média source illisible depuis le storage (%s)",
+            row["id"], row["final_path"],
+        )
+        return None, "source_unavailable"
     try:
         if not _generate_thumbnail(row["kind"], src_tmp, local_out, size):
-            return None
+            logging.warning(
+                "[media] vignette id=%s : génération échouée (kind=%s, Pillow=%s, ffmpeg=%s)",
+                row["id"], row["kind"], _pillow_available(), _ffmpeg_path() is not None,
+            )
+            return None, "generation_failed"
     finally:
         with contextlib.suppress(Exception):
             os.remove(src_tmp)
@@ -484,7 +509,7 @@ def _ensure_thumbnail_file(row, size, thumb_path):
     finally:
         with contextlib.suppress(Exception):
             os.remove(cache_tmp)
-    return local_out
+    return local_out, None
 
 
 def _persist_technical_metadata(media_id, tech):
@@ -1107,7 +1132,11 @@ def media_thumbnail(media_id):
 
     Dégradation : si aucun outil (Pillow/ffmpeg) n'est disponible, ou pour un
     média audio, la route renvoie 404 avec ``code: "thumbnail_unavailable"``
-    (l'UI affiche un placeholder) — jamais de crash.
+    (l'UI affiche un état d'erreur distinct du placeholder) — jamais de crash.
+    Le champ ``reason`` précise la cause (``no_tools`` / ``source_unavailable``
+    / ``generation_failed``) pour un diagnostic immédiat. Pillow est une
+    dépendance RUNTIME déclarée (``requirements.txt``) : son absence est la
+    cause n°1 d'un ``reason: no_tools`` en production.
 
     Corbeille : la vignette d'un média corbeillé reste servie au propriétaire
     (et à un admin), afin que la corbeille puisse afficher une miniature ; les
@@ -1138,11 +1167,18 @@ def media_thumbnail(media_id):
         return resp
 
     thumb_path = _thumbnail_cache_path(row, size)
-    local_thumb = _ensure_thumbnail_file(row, size, thumb_path)
+    local_thumb, reason = _ensure_thumbnail_file(row, size, thumb_path)
     if not local_thumb:
+        # Diagnostic explicite : l'UI/front peut distinguer « pas d'outil »
+        # (dépendance manquante au déploiement) d'une source illisible.
+        logging.warning(
+            "[media] thumbnail 404 id=%s kind=%s size=%s reason=%s",
+            media_id, row['kind'], size, reason,
+        )
         return jsonify({
             'error': 'Vignette indisponible pour ce média',
             'code': 'thumbnail_unavailable',
+            'reason': reason,
             'kind': row['kind'],
         }), 404
 

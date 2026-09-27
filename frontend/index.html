@@ -990,12 +990,65 @@
             <span id="gallery-thumb-resolution" class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-400"
                   title="Résolution demandée au serveur pour les vignettes">vignettes 256 px</span>
           </div>
+          <!-- Bascule Vue : médias actifs ⇄ corbeille (status=) -->
+          <div class="gallery-view-toggle" role="tablist" aria-label="Vue de la galerie">
+            <button type="button" id="gallery-view-normal" role="tab" aria-selected="true"
+                    onclick="gallerySetView('normal')" class="gallery-view-btn is-active">Médias</button>
+            <button type="button" id="gallery-view-trash" role="tab" aria-selected="false"
+                    onclick="gallerySetView('trash')" class="gallery-view-btn">Corbeille</button>
+          </div>
           <div class="flex-1"></div>
           <span id="gallery-selected" class="hidden text-xs font-medium text-indigo-500 dark:text-indigo-400"></span>
           <span id="gallery-count" class="text-xs text-slate-400"></span>
           <button onclick="galleryRefresh()" title="Rafraîchir" class="text-xs text-slate-400 hover:text-indigo-500 transition p-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-600">
             <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/></svg>
           </button>
+        </div>
+        <!-- Filtres : type / sous-dossier / nom (debounce) / dates / tri -->
+        <div class="px-4 py-2 shrink-0 flex flex-wrap items-center gap-2 border-b border-slate-200 dark:border-slate-700 text-xs">
+          <label for="gallery-filter-kind" class="text-slate-500 dark:text-slate-400">Type</label>
+          <select id="gallery-filter-kind" class="gallery-filter-select" aria-label="Filtrer par type">
+            <option value="">Tous</option>
+            <option value="image">Images</option>
+            <option value="video">Vidéos</option>
+            <option value="audio">Audio</option>
+          </select>
+          <input id="gallery-filter-subfolder" type="text" list="gallery-subfolders" placeholder="Sous-dossier"
+                 class="gallery-filter-input" aria-label="Filtrer par sous-dossier" style="width:11rem">
+          <datalist id="gallery-subfolders"></datalist>
+          <input id="gallery-search" type="search" placeholder="Rechercher un nom…"
+                 class="gallery-filter-input" aria-label="Rechercher par nom" style="width:13rem">
+          <label for="gallery-filter-from" class="text-slate-500 dark:text-slate-400 ml-1">Du</label>
+          <input id="gallery-filter-from" type="date" class="gallery-filter-input" aria-label="Date de début">
+          <label for="gallery-filter-to" class="text-slate-500 dark:text-slate-400">Au</label>
+          <input id="gallery-filter-to" type="date" class="gallery-filter-input" aria-label="Date de fin">
+          <label for="gallery-filter-sort" class="text-slate-500 dark:text-slate-400 ml-1">Tri</label>
+          <select id="gallery-filter-sort" class="gallery-filter-select" aria-label="Trier la galerie">
+            <option value="created_at_desc">Récents</option>
+            <option value="created_at_asc">Anciens</option>
+            <option value="name_asc">Nom (A→Z)</option>
+            <option value="size_desc">Taille (↓)</option>
+          </select>
+          <div class="flex-1"></div>
+          <button type="button" onclick="galleryResetFilters()" title="Réinitialiser les filtres"
+                  class="text-xs text-slate-500 hover:text-indigo-500 transition px-2 py-1 rounded-md hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-600">
+            Réinitialiser
+          </button>
+        </div>
+        <!-- Barre d'actions contextuelle (≥1 sélection) -->
+        <div id="gallery-actions" class="hidden px-4 py-2 shrink-0 flex flex-wrap items-center gap-2 bg-indigo-50 dark:bg-indigo-900/20 border-b border-indigo-100 dark:border-indigo-900/40">
+          <span id="gallery-actions-label" class="text-xs font-medium text-indigo-600 dark:text-indigo-300"></span>
+          <div class="flex-1"></div>
+          <button type="button" id="gallery-action-download" data-gallery-action onclick="galleryBulkDownload()"
+                  class="gallery-action-btn" title="Télécharger les originaux sélectionnés">⤓ Télécharger</button>
+          <button type="button" id="gallery-action-delete" data-gallery-action onclick="galleryBulkDelete()"
+                  class="gallery-action-btn gallery-action-btn--danger" title="Mettre à la corbeille">🗑 Supprimer</button>
+          <button type="button" id="gallery-action-restore" data-gallery-action onclick="galleryBulkRestore()"
+                  class="gallery-action-btn hidden" title="Restaurer les médias">♻ Restaurer</button>
+          <button type="button" id="gallery-action-purge" data-gallery-action onclick="galleryBulkPurge()"
+                  class="gallery-action-btn gallery-action-btn--danger hidden" title="Supprimer définitivement">✖ Supprimer définitivement</button>
+          <button type="button" onclick="galleryClearSelection()"
+                  class="text-xs text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 px-2 py-1">Désélectionner</button>
         </div>
         <!-- Corps : grille virtualisée (gauche) + panneau d'informations (droite) -->
         <div class="flex-1 flex overflow-hidden min-h-0">
@@ -1131,6 +1184,7 @@
   <script type="module" src="/vendor/holaf/holaf-viewport.js"></script>
   <script type="module" src="/vendor/holaf/holaf-lightbox.js"></script>
   <script type="module" src="/vendor/holaf/holaf-infopane.js"></script>
+  <script type="module" src="/vendor/holaf/holaf-toast.js"></script>
   <!-- Adaptateur galerie (script classique, comme les autres app-*.js) -->
   <script src="/js/app-gallery.js" id="script-gallery"></script>
 </body>

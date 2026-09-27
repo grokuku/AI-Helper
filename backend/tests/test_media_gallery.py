@@ -203,7 +203,11 @@ def test_thumbnail_size_snapped_and_cached_per_size(client, make_token, media_st
 # ── 3. Vignette : dégradation propre ──────────────────────────────────
 
 def test_thumbnail_degradation_without_tools(client, make_token, media_storage, monkeypatch):
-    """NEGATIVE : sans Pillow ni ffmpeg, 404 structuré (jamais de crash)."""
+    """NEGATIVE : sans Pillow ni ffmpeg, 404 structuré (jamais de crash).
+
+    Vérifie aussi le champ ``reason`` (diagnostic) et que la liste expose
+    ``thumb_available=False`` (le front affiche alors un état d'erreur).
+    """
     monkeypatch.setattr(media_module, "_pillow_available", lambda: False)
     monkeypatch.setattr(media_module, "_ffmpeg_path", lambda: None)
 
@@ -215,9 +219,68 @@ def test_thumbnail_degradation_without_tools(client, make_token, media_storage, 
     assert resp.status_code == 404
     body = resp.get_json()
     assert body["code"] == "thumbnail_unavailable"
+    assert body["reason"] == "no_tools"
     assert body["kind"] == "image"
+    # La liste annonce l'indisponibilité (le front n'invente pas d'URL).
+    item = client.get("/api/media", headers=headers).get_json()["items"][0]
+    assert item["thumb_available"] is False
     # Rien n'a été mis en cache.
     assert not media_storage.exists(media_module._thumbnail_cache_path(_row(mid), 256))
+
+
+def test_thumbnail_nominal_returns_real_jpeg(client, make_token, media_storage):
+    """Cas NOMINAL : une vignette JPEG RÉELLE est renvoyée (Content-Type + bytes)."""
+    headers = _headers(make_token, "thumb-nominal")
+    r = _upload(client, headers, _png_bytes(500, 320), filename="nom")
+    mid = r.get_json()["id"]
+
+    resp = client.get(f"/api/media/{mid}/thumbnail?size=256", headers=headers)
+    assert resp.status_code == 200
+    assert resp.mimetype == "image/jpeg"
+    assert resp.headers["Content-Type"].startswith("image/")
+    assert resp.data[:3] == b"\xff\xd8\xff"  # magic bytes JPEG (SOI)
+    assert len(resp.data) > 100
+
+
+def test_thumbnail_reason_source_unavailable(client, make_token, media_storage):
+    """reason=source_unavailable : le média source n'est pas lisible du storage."""
+    headers = _headers(make_token, "thumb-src")
+    r = _upload(client, headers, _png_bytes(), filename="src")
+    mid = r.get_json()["id"]
+    assert media_storage.delete(_row(mid)["final_path"])  # source retirée du storage
+
+    resp = client.get(f"/api/media/{mid}/thumbnail", headers=headers)
+    assert resp.status_code == 404
+    body = resp.get_json()
+    assert body["code"] == "thumbnail_unavailable"
+    assert body["reason"] == "source_unavailable"
+
+
+def test_thumbnail_reason_generation_failed(client, make_token, media_storage, monkeypatch):
+    """reason=generation_failed : outil présent mais génération en échec."""
+    headers = _headers(make_token, "thumb-genfail")
+    r = _upload(client, headers, _png_bytes(), filename="gf")
+    mid = r.get_json()["id"]
+    monkeypatch.setattr(media_module, "_generate_thumbnail", lambda *a, **k: False)
+
+    resp = client.get(f"/api/media/{mid}/thumbnail", headers=headers)
+    assert resp.status_code == 404
+    assert resp.get_json()["reason"] == "generation_failed"
+
+
+def test_requirements_declare_pillow():
+    """Régression : Pillow est une dépendance RUNTIME déclarée.
+
+    En production ``run.sh`` installe ``requirements.txt`` : sans Pillow, la
+    vignette renvoie 404 (``no_tools``) alors que ``/download`` fonctionne →
+    toutes les vignettes de la galerie restent des placeholders.
+    """
+    from pathlib import Path
+    backend = Path(__file__).resolve().parents[1]
+    req = (backend / "requirements.txt").read_text(encoding="utf-8").lower()
+    assert "pillow" in req
+    lock = (backend / "requirements.lock.txt").read_text(encoding="utf-8").lower()
+    assert "pillow" in lock
 
 
 def test_audio_thumbnail_unavailable(client, make_token, media_storage):
