@@ -215,6 +215,45 @@ eq(failPh.title, "Vignette indisponible", "échec vignette → title explicite")
   await settle();
 }
 
+// Chaque cellule image/vidéo pointe l'URL de SON item avec la taille courante
+// (id 3 = audio : pas de src ; id 6 = vidéo : vignette).
+for (const idx of [0, 1, 3, 4, 5]) {
+  eq(cellEl(idx).querySelector(".gallery-cell-img").getAttribute("src"),
+    "/api/media/" + (idx + 1) + "/thumbnail?size=256", "URL vignette de l'item id " + (idx + 1));
+}
+
+// Contrôle NÉGATIF du retry borné : un chargement RÉUSSI ne doit déclencher
+// AUCUNE reprise (pas de cache-buster parasite, pas d'état d'erreur affiché).
+{
+  const sc = cellEl(3);
+  const sim = sc.querySelector(".gallery-cell-img");
+  const sph = sc.querySelector(".gallery-cell-ph");
+  const sbase = sim.getAttribute("src");
+  eq(sbase, "/api/media/4/thumbnail?size=256", "URL par item avant succès (id 4)");
+  sim.dispatchEvent(new window.Event("load"));
+  ok(!sim.classList.contains("gallery-cell-img--hidden"), "succès → <img> visible");
+  ok(sph.classList.contains("is-hidden"), "succès → placeholder masqué");
+  ok(!sph.classList.contains("gallery-cell-ph--error"), "succès → aucun état d'erreur");
+  await new Promise((r) => setTimeout(r, AppGallery.constants.THUMB_RETRY_MS + 200));
+  eq(sim.getAttribute("src"), sbase, "[négatif] succès → aucun retry déclenché");
+  ok(!sph.classList.contains("gallery-cell-ph--error"), "[négatif] succès → toujours pas d'erreur après attente");
+}
+
+// Échec TRANSITOIRE puis succès au retry : l'état d'erreur se résorbe.
+{
+  const tc = cellEl(4);
+  const tim = tc.querySelector(".gallery-cell-img");
+  const tph = tc.querySelector(".gallery-cell-ph");
+  const tbase = tim.getAttribute("src");
+  tim.dispatchEvent(new window.Event("error"));
+  ok(tph.classList.contains("gallery-cell-ph--error"), "échec transitoire → état d'erreur affiché");
+  await new Promise((r) => setTimeout(r, AppGallery.constants.THUMB_RETRY_MS + 200));
+  eq(tim.getAttribute("src"), tbase + "&_retry=1", "retry déclenché une fois (cache-buster)");
+  tim.dispatchEvent(new window.Event("load"));
+  ok(!tim.classList.contains("gallery-cell-img--hidden"), "succès au retry → <img> visible");
+  ok(tph.classList.contains("is-hidden"), "succès au retry → placeholder masqué (erreur résorbée)");
+}
+
 // Dégradation backend (ex. Pillow absent) : thumb_available=false sur une image
 // → état d'erreur distinct (jamais un placeholder neutre silencieux).
 mediaItems[0].thumb_available = false;

@@ -446,6 +446,60 @@ def test_metadata_backfill_persists_once(client, make_token, media_storage, monk
     assert calls["n"] == 1  # 2e appel : aucun recalcul (backfill déjà fait)
 
 
+def test_metadata_backfill_repairs_legacy_row_after_tool_install(client, make_token, media_storage, monkeypatch):
+    """Média « ère Pillow absent » (meta_checked=1 + technique NULL) → réparé.
+
+    État RÉEL des uploads faits pendant l'incident : ``/complete`` marquait la
+    tentative (``meta_checked=1``) mais les colonnes techniques restaient NULL.
+    L'ancien déclencheur de backfill (``not meta_checked``) ne couvrait PAS ces
+    lignes → dimensions manquantes À VIE dans le panneau d'infos.
+
+    Contrôle NÉGATIF : sans outil adapté au type, on ne relit pas le fichier
+    pour rien (aucun coût par requête tant que l'outil manque).
+    """
+    headers = _headers(make_token, "meta-legacy")
+    r = _upload(client, headers, _png_bytes(320, 200), kind="image", ext=".png", filename="leg")
+    mid = r.get_json()["id"]
+
+    # Simule une ligne héritée de l'ère « Pillow absent ».
+    from routes.helpers import get_db
+    conn = get_db()
+    conn.execute(
+        "UPDATE media_files SET width = NULL, height = NULL, duration_ms = NULL, "
+        "codec = NULL, meta_checked = 1 WHERE id = ?", (mid,))
+    conn.commit()
+    conn.close()
+
+    calls = {"n": 0}
+    real = media_module._extract_technical_metadata
+
+    def counting(*a, **k):
+        calls["n"] += 1
+        return real(*a, **k)
+
+    monkeypatch.setattr(media_module, "_extract_technical_metadata", counting)
+
+    # NEGATIVE : outil toujours absent → aucune relecture, champs null inchangés.
+    monkeypatch.setattr(media_module, "_pillow_available", lambda: False)
+    monkeypatch.setattr(media_module, "_ffprobe_path", lambda: None)
+    body = client.get(f"/api/media/{mid}/metadata", headers=headers).get_json()
+    assert body["width"] is None and body["height"] is None
+    assert calls["n"] == 0
+    assert _row(mid)["meta_checked"] == 1
+
+    # Outil « installé » (Pillow) → réparation one-shot, persistée en base.
+    monkeypatch.setattr(media_module, "_pillow_available", lambda: True)
+    b1 = client.get(f"/api/media/{mid}/metadata", headers=headers).get_json()
+    assert b1["width"] == 320 and b1["height"] == 200
+    assert calls["n"] == 1
+    assert _row(mid)["width"] == 320 and _row(mid)["height"] == 200
+
+    # 2e appel : technique désormais renseignée → aucun recalcul.
+    b2 = client.get(f"/api/media/{mid}/metadata", headers=headers).get_json()
+    assert b2["width"] == 320
+    assert calls["n"] == 1
+
+
 # ── 5. Liste enrichie : filtres + tri ─────────────────────────────────
 
 def _seed_list(client, headers):

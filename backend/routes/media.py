@@ -542,6 +542,38 @@ def _persist_technical_metadata(media_id, tech):
         conn.close()
 
 
+def _needs_technical_backfill(row):
+    """Faut-il (re)tenter l'extraction technique pour cette ligne ?
+
+    Deux cas :
+
+      - ``meta_checked=0`` : colonnes jamais renseignées (lignes antérieures à
+        la migration, ou extraction précédemment impossible) → on tente ;
+      - ``meta_checked=1`` mais technique ENTIÈREMENT NULL : l'upload a eu
+        lieu alors que l'outil manquait dans le déploiement (Pillow absent côté
+        prod pendant l'incident, ffprobe absent pour vidéo/audio). La tentative
+        était vacuité → on retente MAINTENANT si un outil adapté au type est
+        disponible (réparation « one-shot » des médias anciens). Sans outil, on
+        ne relit PAS le fichier pour rien (pas de coût sur chaque requête).
+
+    Un échec persistant (fichier corrompu) peut relancer une tentative à
+    chaque appel de /metadata : route déclenchée à la demande (panneau d'infos),
+    jamais en boucle automatique — compromis assumé pour l'auto-réparation.
+    """
+    if not row["meta_checked"]:
+        return True
+    if (row["width"] is not None or row["height"] is not None
+            or row["duration_ms"] is not None or row["codec"] is not None):
+        return False
+    kind = row["kind"]
+    if kind == "image":
+        # Repli d'extraction d'image = ffprobe (comme _extract_technical_metadata).
+        return _pillow_available() or _ffprobe_path() is not None
+    if kind in ("video", "audio"):
+        return _ffprobe_path() is not None
+    return False
+
+
 def _backfill_technical_metadata(row):
     """Backfill paresseux : télécharge le média, extrait, persiste.
 
@@ -1246,10 +1278,14 @@ def media_metadata(media_id):
     ``duration/duration_ms/codec`` (+ width/height) de ffprobe (vidéo/audio) si
     présent, sinon ``null`` (dégradation propre).
 
-    Backfill paresseux : pour un média ancien (colonnes NULL,
-    ``meta_checked=0``), on relit le fichier UNE fois, on persiste le résultat,
-    puis on ne recalcule plus (compat arrière : l'image uploadée par
-    l'utilisateur avant cette migration est servie).
+    Backfill paresseux : pour un média ancien, on relit le fichier UNE fois, on
+    persiste le résultat, puis on ne recalcule plus (compat arrière : l'image
+    uploadée par l'utilisateur avant cette migration est servie). Sont couvertes
+    les lignes ``meta_checked=0`` (colonnes jamais renseignées) ET les lignes
+    « tentative faite sans outil » (``meta_checked=1`` + technique entièrement
+    NULL : médias uploadés pendant l'absence de Pillow en prod) — ces dernières
+    sont réparées dès qu'un outil adapté est disponible (cf.
+    ``_needs_technical_backfill``).
 
     Corbeille : les métadonnées d'un média corbeillé restent accessibles au
     propriétaire (et à un admin) — le fichier existe toujours (soft delete) ;
@@ -1265,8 +1301,10 @@ def media_metadata(media_id):
     if err:
         return err
 
-    # Backfill unique pour les lignes créées avant l'ajout des colonnes.
-    if not row['meta_checked'] and _backfill_technical_metadata(row):
+    # Backfill paresseux : lignes jamais renseignées (migration) OU lignes
+    # « tentative sans outil » des médias uploadés avant l'installation de
+    # Pillow/ffprobe (réparation dès que l'outil est disponible).
+    if _needs_technical_backfill(row) and _backfill_technical_metadata(row):
         conn = get_db()
         try:
             row = conn.execute(
