@@ -43,6 +43,17 @@ var GALLERY_DISPLAY_STEP = 10;
 var GALLERY_DISPLAY_DEFAULT = 150;
 var GALLERY_DISPLAY_KEY = 'gallery-display-size';
 
+// Mode d'affichage des vignettes — PRÉFÉRENCE LOCALE (aucune requête) :
+//   'cover'   = la vignette REMPLIT la cellule (recadrée) — DÉFAUT historique ;
+//   'contain' = image ENTIÈRE visible (lettrage sur le fond de la cellule).
+var GALLERY_VIEW_MODE_KEY = 'gallery-view-mode';
+var GALLERY_VIEW_MODES = ['cover', 'contain'];
+var GALLERY_VIEW_MODE_DEFAULT = 'cover';
+// Classe posée sur la grille quand « Entière » est actif : le CSS de l'hôte en
+// dérive `object-fit: contain` pour TOUTES les cellules — y compris celles
+// RECYCLÉES par la brique — donc aucun re-rendu ni requête n'est nécessaire.
+var GALLERY_VIEW_MODE_CLASS = 'gallery-grid--contain';
+
 // Tailles de vignettes servies par le backend AI-Helper (THUMB_SIZES).
 var GALLERY_THUMB_SIZES = [128, 256, 512];
 
@@ -359,6 +370,8 @@ var galleryState = {
   started: false,
   displaySize: GALLERY_DISPLAY_DEFAULT,
   serverSize: 0,
+  // Affichage des vignettes : 'cover' (remplir, défaut) | 'contain' (entière).
+  viewMode: GALLERY_VIEW_MODE_DEFAULT,
   collection: null,
   thumbCache: null,
   grid: null,
@@ -581,6 +594,12 @@ function galleryInit() {
     });
   }
   galleryRenderSizeLabels();
+
+  // 1bis) Affichage des vignettes : mode MÉMORISÉ (défaut « Remplir » =
+  // comportement historique `object-fit: cover`), reflété par une classe de la
+  // grille — purement local, aucun réseau.
+  galleryState.viewMode = galleryReadViewMode();
+  galleryRenderViewMode();
 
   // 2) Collection (données paginées) — mode 'append' = scroll infini.
   galleryState.collection = window.HolafCollection.create({
@@ -2675,6 +2694,56 @@ function galleryBulkDownload() {
   return urls;
 }
 
+/* ── Affichage des vignettes : Remplir (défaut) ⇄ Entière ────────────────── */
+
+/** Normalise un mode d'affichage ('cover' par défaut). PUR (testable sans DOM). */
+function galleryNormalizeViewMode(mode) {
+  return (GALLERY_VIEW_MODES.indexOf(mode) === -1) ? GALLERY_VIEW_MODE_DEFAULT : mode;
+}
+
+/** Mode mémorisé (localStorage), replié sur le DÉFAUT si absent ou invalide. */
+function galleryReadViewMode() {
+  var saved = '';
+  try { saved = localStorage.getItem(GALLERY_VIEW_MODE_KEY) || ''; } catch (e) { saved = ''; }
+  return galleryNormalizeViewMode(saved);
+}
+
+/**
+ * Reflète l'état courant sur le DOM : classe de grille + boutons de bascule.
+ * Aucun réseau, aucun re-rendu de cellules (le CSS de la grille s'applique aux
+ * cellules existantes ET recyclées).
+ */
+function galleryRenderViewMode() {
+  var contain = galleryState.viewMode === 'contain';
+  var gridEl = galleryById('gallery-grid');
+  if (gridEl) gridEl.classList.toggle(GALLERY_VIEW_MODE_CLASS, contain);
+  var coverBtn = galleryById('gallery-fit-cover');
+  var containBtn = galleryById('gallery-fit-contain');
+  if (coverBtn) {
+    coverBtn.classList.toggle('is-active', !contain);
+    coverBtn.setAttribute('aria-pressed', contain ? 'false' : 'true');
+  }
+  if (containBtn) {
+    containBtn.classList.toggle('is-active', contain);
+    containBtn.setAttribute('aria-pressed', contain ? 'true' : 'false');
+  }
+}
+
+/**
+ * Bascule « Remplir / Entière » (appelée par la barre d'outils) — PRÉFÉRENCE
+ * D'AFFICHAGE pure : le CSS de la grille applique `object-fit` à toutes les
+ * cellules (même recyclées) → AUCUN rechargement de liste, AUCUNE requête.
+ * Le choix est persisté (localStorage) pour survivre au rechargement de page.
+ * @param {string} mode 'cover' (rempli/recadré, défaut) | 'contain' (entière).
+ * @returns {string} le mode effectivement appliqué.
+ */
+function gallerySetViewMode(mode) {
+  galleryState.viewMode = galleryNormalizeViewMode(mode);
+  try { localStorage.setItem(GALLERY_VIEW_MODE_KEY, galleryState.viewMode); } catch (e) { /* ignore */ }
+  galleryRenderViewMode();
+  return galleryState.viewMode;
+}
+
 /* ── Taille d'affichage (slider) ─────────────────────────────────────────── */
 
 function gallerySetDisplaySize(px) {
@@ -2830,6 +2899,9 @@ window.AppGallery = {
   pollNow: galleryPollNow,
   pollStop: galleryStopPolling,
   setDisplaySize: gallerySetDisplaySize,
+  setViewMode: gallerySetViewMode,
+  readViewMode: galleryReadViewMode,
+  normalizeViewMode: galleryNormalizeViewMode,
   serverThumbSize: galleryServerThumbSize,
   thumbUrl: galleryThumbUrl,
   thumbRetryUrl: galleryThumbRetryUrl,
@@ -2901,6 +2973,10 @@ window.AppGallery = {
     DISPLAY_MAX: GALLERY_DISPLAY_MAX,
     DISPLAY_STEP: GALLERY_DISPLAY_STEP,
     DISPLAY_DEFAULT: GALLERY_DISPLAY_DEFAULT,
+    VIEW_MODES: GALLERY_VIEW_MODES.slice(),
+    VIEW_MODE_DEFAULT: GALLERY_VIEW_MODE_DEFAULT,
+    VIEW_MODE_KEY: GALLERY_VIEW_MODE_KEY,
+    VIEW_MODE_CLASS: GALLERY_VIEW_MODE_CLASS,
     THUMB_SIZES: GALLERY_THUMB_SIZES.slice(),
     SEARCH_DEBOUNCE: GALLERY_SEARCH_DEBOUNCE,
     THUMB_RETRY_MS: GALLERY_THUMB_RETRY_MS,

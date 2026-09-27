@@ -493,6 +493,13 @@
       --hl-gap: 12px;
       user-select: none;
       -webkit-user-select: none;
+      /* Gouttière du scrollbar vertical RÉSERVÉE en permanence : l'apparition
+         d'un scrollbar change `clientWidth` SANS notifier le ResizeObserver de
+         la brique HolafGrid (il observe la border-box) → colonnes calculées une
+         fois pour toutes sur une largeur périmée, dernière colonne sous le
+         panneau. NB : jamais de padding ici — la brique compte le padding de
+         son conteneur dans le calcul des colonnes (cf. enveloppe .p-3). */
+      scrollbar-gutter: stable;
     }
     .gallery-cell {
       position: relative;
@@ -513,6 +520,15 @@
       display: block;
       background-color: var(--bg-body);
       -webkit-user-drag: none; /* pas de « ghost image » au glisser */
+    }
+    /* Mode « Entière » (bascule Remplir ⇄ Entière de la barre d'outils) :
+       l'image est montrée EN ENTIER (lettrage) au lieu d'être recadrée. Le fond
+       de la cellule reste --bg-body → letterbox thématisé, jamais de blanc. La
+       classe est posée/retirée par gallerySetViewMode() sur la grille : aucune
+       requête, aucune reconstruction de cellule. Défaut (aucune classe) =
+       « Remplir » (object-fit: cover), comportement historique. */
+    #gallery-grid.gallery-grid--contain .gallery-cell-img {
+      object-fit: contain;
     }
     .gallery-cell-img--hidden { display: none; }
     .gallery-cell-ph {

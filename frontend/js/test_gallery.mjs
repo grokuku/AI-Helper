@@ -27,9 +27,17 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 /* ── DOM de l'onglet Galerie (structure minimale attendue par l'adaptateur) ── */
 const dom = new JSDOM(`<!doctype html><html><body>
   <div id="tab-gallery">
-    <input type="range" id="gallery-thumb-size" min="80" max="300" step="10" value="150">
-    <span id="gallery-thumb-size-value"></span>
-    <span id="gallery-thumb-resolution"></span>
+    <div class="flex items-center gap-2 ml-1">
+      <input type="range" id="gallery-thumb-size" min="80" max="300" step="10" value="150">
+      <span id="gallery-thumb-size-value"></span>
+      <span id="gallery-thumb-resolution"></span>
+      <div id="gallery-fit-toggle" class="gallery-view-toggle" role="group" aria-label="Affichage des vignettes">
+        <button type="button" id="gallery-fit-cover" class="gallery-view-btn is-active" aria-pressed="true"
+                onclick="gallerySetViewMode('cover')">⛶ Remplir</button>
+        <button type="button" id="gallery-fit-contain" class="gallery-view-btn" aria-pressed="false"
+                onclick="gallerySetViewMode('contain')">▣ Entière</button>
+      </div>
+    </div>
     <span id="gallery-selected" class="hidden"></span>
     <span id="gallery-count"></span>
     <div id="gallery-grid"></div>
@@ -324,6 +332,136 @@ AppGallery.setDisplaySize(0);
 eq(AppGallery.state.displaySize, 80, "clamp bas à 80");
 AppGallery.setDisplaySize(150);
 await settle();
+
+/* ═══ 5bis. Affichage des vignettes : Remplir ⇄ Entière ══════════════════ */
+console.log("5bis. Bascule d'affichage Remplir/Entière");
+{
+  const coverBtn = window.document.getElementById("gallery-fit-cover");
+  const containBtn = window.document.getElementById("gallery-fit-contain");
+  const toggle = window.document.getElementById("gallery-fit-toggle");
+  const sliderEl = window.document.getElementById("gallery-thumb-size");
+  const gridEl0 = window.document.getElementById("gallery-grid");
+  const MODE_KEY = AppGallery.constants.VIEW_MODE_KEY;
+  const MODE_CLASS = AppGallery.constants.VIEW_MODE_CLASS;
+
+  // Présence + voisinage immédiat du slider de taille (rangée de la toolbar).
+  ok(!!toggle && !!coverBtn && !!containBtn, "bascule à deux états présente (Remplir / Entière)");
+  eq(toggle.parentElement, sliderEl.parentElement, "bascule DANS la rangée du slider de taille");
+  eq(AppGallery.constants.VIEW_MODES.join(","), "cover,contain", "modes exposés = cover,contain");
+
+  // DÉFAUT = comportement HISTORIQUE (rempli/recadré, object-fit:cover).
+  eq(AppGallery.state.viewMode, "cover", "défaut = 'cover' (rempli/recadré)");
+  eq(AppGallery.constants.VIEW_MODE_DEFAULT, "cover", "défaut documenté = cover");
+  ok(!gridEl0.classList.contains(MODE_CLASS), "défaut : aucune classe « Entière » sur la grille");
+  ok(coverBtn.classList.contains("is-active"), "défaut : bouton Remplir actif");
+  eq(coverBtn.getAttribute("aria-pressed"), "true", "défaut : aria-pressed Remplir = true");
+  eq(containBtn.getAttribute("aria-pressed"), "false", "défaut : aria-pressed Entière = false");
+  eq(window.localStorage.getItem(MODE_KEY), null, "défaut : aucun choix utilisateur mémorisé");
+
+  // Bascule « Entière » : classe de grille + état des boutons, SANS réseau.
+  const fetchesBeforeMode = fetchCalls.length;
+  const srcBefore = cellEl(0).querySelector(".gallery-cell-img").getAttribute("src");
+  AppGallery.setViewMode("contain");
+  await settle();
+  ok(gridEl0.classList.contains(MODE_CLASS), "Entière : classe posée sur la grille (pilote object-fit)");
+  eq(AppGallery.state.viewMode, "contain", "état viewMode = contain");
+  ok(containBtn.classList.contains("is-active") && !coverBtn.classList.contains("is-active"),
+    "Entière : bouton actif basculé (état VISIBLE)");
+  eq(containBtn.getAttribute("aria-pressed"), "true", "Entière : aria-pressed = true");
+  eq(coverBtn.getAttribute("aria-pressed"), "false", "Entière : aria-pressed Remplir = false");
+  eq(window.localStorage.getItem(MODE_KEY), "contain", "choix persisté (localStorage)");
+  eq(fetchCalls.length, fetchesBeforeMode, "[réseau] bascule SANS le moindre fetch");
+  eq(cellEl(0).querySelector(".gallery-cell-img").getAttribute("src"), srcBefore,
+    "[réseau] aucune vignette rechargée (même URL, aucun re-rendu imposé)");
+
+  // Retour « Remplir » : tout revient à l'état par défaut.
+  const fetchesBeforeBack = fetchCalls.length;
+  AppGallery.setViewMode("cover");
+  await settle();
+  ok(!gridEl0.classList.contains(MODE_CLASS), "Remplir : classe retirée de la grille");
+  eq(window.localStorage.getItem(MODE_KEY), "cover", "retour persisté (localStorage)");
+  ok(coverBtn.classList.contains("is-active") && !containBtn.classList.contains("is-active"),
+    "Remplir : bouton actif rétabli");
+  eq(fetchCalls.length, fetchesBeforeBack, "[réseau] retour SANS fetch");
+
+  // Valeurs inconnues / absentes → repli sur le DÉFAUT (contrôle négatif).
+  eq(AppGallery.normalizeViewMode("zzz"), "cover", "[négatif] mode inconnu → défaut cover");
+  eq(AppGallery.normalizeViewMode(undefined), "cover", "[négatif] mode absent → défaut cover");
+  window.localStorage.setItem(MODE_KEY, "zzz");
+  eq(AppGallery.readViewMode(), "cover", "[négatif] valeur stockée invalide → défaut cover");
+  window.localStorage.setItem(MODE_KEY, "contain");
+  eq(AppGallery.readViewMode(), "contain", "valeur stockée valide → relue telle quelle (persistance)");
+  window.localStorage.removeItem(MODE_KEY);
+
+  // Non-régression : le slider et la sélection restent opérationnels.
+  AppGallery.setViewMode("contain");
+  AppGallery.setDisplaySize(200);
+  eq(AppGallery.state.displaySize, 200, "[non-régression] slider de taille toujours fonctionnel");
+  eq(AppGallery.state.viewMode, "contain", "[non-régression] le slider ne touche pas au mode d'affichage");
+  AppGallery.setDisplaySize(150);
+  await settle();
+  click(cellEl(0));
+  await settle();
+  ok(AppGallery.state.selectionIds.length >= 1, "[non-régression] sélection toujours fonctionnelle en mode Entière");
+  AppGallery.clearSelection();
+  AppGallery.setViewMode("cover");
+  window.localStorage.removeItem(MODE_KEY);
+}
+
+/* ═══ 5ter. Anti-débordement de la grille (structure + CSS) ═══════════════ */
+console.log("5ter. Anti-débordement (structure index.html + CSS)");
+{
+  const html = readFileSync(resolve(HERE, "..", "index.html"), "utf8");
+  // Cause mesurée au navigateur : la brique HolafGrid calcule ses colonnes sur
+  // `container.clientWidth` (PADDING INCLUS) alors que sa surface vit dans la
+  // boîte de CONTENU → le padding doit vivre sur une ENVELOPPE, jamais sur
+  // #gallery-grid (sinon 2×padding de débordement + scrollbar horizontale).
+  ok(/<div class="absolute inset-0 p-3">\s*<div id="gallery-grid" class="w-full h-full overflow-y-auto"><\/div>/.test(html),
+    "le padding de la galerie est porté par l'ENVELOPPE, pas par le conteneur de la brique");
+  const gridTag = (html.match(/<div[^>]*id="gallery-grid"[^>]*>/) || [""])[0];
+  ok(gridTag.length > 0, "#gallery-grid présent dans index.html");
+  ok(!/\bp-3\b/.test(gridTag), "[négatif] AUCUN padding sur #gallery-grid (conteneur de la brique)");
+  ok(/<div class="flex-1 relative min-w-0">/.test(html),
+    "zone galerie rétrécissable sous sa taille de contenu (min-w-0)");
+  ok(/id="gallery-side"[^>]*class="shrink-0[^"]*"/.test(html),
+    "colonne droite à largeur garantie (shrink-0) — jamais recouverte par la grille");
+
+  // CSS : gouttière réservée (le scrollbar ne peut plus invalider le layout
+  // sans notifier la brique — son ResizeObserver observe la border-box) + la
+  // règle qui pilote object-fit pour le mode « Entière ».
+  const css = readFileSync(resolve(HERE, "..", "css", "app.css"), "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, "");
+  const decls = (needle) => {
+    let out = "";
+    const re = /([^{}]+)\{([^{}]*)\}/g;
+    let m;
+    while ((m = re.exec(css))) {
+      const hit = m[1].split(",").map((s) => s.trim()).some((s) =>
+        s === needle || s.indexOf(needle + " ") === 0 || s.indexOf(needle + ":") === 0);
+      if (hit) out += m[2] + ";";
+    }
+    return out;
+  };
+  ok(/scrollbar-gutter\s*:\s*stable/.test(decls("#gallery-grid")),
+    "gouttière de scrollbar RÉSERVÉE sur la grille (layout stable)");
+  ok(/object-fit\s*:\s*contain/.test(decls("#gallery-grid.gallery-grid--contain .gallery-cell-img")),
+    "mode Entière : object-fit contain ciblé (classe de grille)");
+  ok(/object-fit\s*:\s*cover/.test(decls(".gallery-cell-img")),
+    "[non-régression] défaut object-fit:cover conservé");
+  ok(!/object-fit\s*:\s*contain/.test(decls(".gallery-cell-img")),
+    "[négatif] contain n'est PAS le défaut (mode opt-in)");
+
+  // La bascule est bien câblée dans la rangée du slider (index.html).
+  const row = (html.match(/<div class="flex items-center gap-2 ml-1">[\s\S]*?<\/div>\s*<\/div>/) || [""])[0];
+  ok(/id="gallery-fit-cover"/.test(row) && /id="gallery-fit-contain"/.test(row),
+    "bascule présente dans la rangée du slider (index.html)");
+  ok(/onclick="gallerySetViewMode\('cover'\)"/.test(html)
+    && /onclick="gallerySetViewMode\('contain'\)"/.test(html),
+    "boutons câblés au global du front (onclick : gallerySetViewMode)");
+  const js = readFileSync(resolve(HERE, "app-gallery.js"), "utf8");
+  ok(/^function gallerySetViewMode\(/m.test(js),
+    "gallerySetViewMode déclaré au niveau du fichier (global des scripts classiques)");
+}
 
 /* ═══ 6. Sélection → panneau d'informations ══════════════════════════════ */
 console.log("6. Sélection & panneau d'informations");
