@@ -353,6 +353,56 @@ def test_requirements_declare_pillow():
     assert "pillow" in lock
 
 
+# ── Détection des outils : DYNAMIQUE (aucun cache/constante de module) ───────
+
+def test_pillow_availability_is_recomputed_each_call(monkeypatch):
+    """Réfute l'hypothèse « détection figée au chargement du module ».
+
+    ``_pillow_available`` ré-importe ``PIL.Image`` à CHAQUE appel : installer
+    Pillow APRÈS le démarrage du process Flask prend donc effet SANS redémarrage.
+    Ce test simule l'apparition de Pillow SANS recharger ``routes.media``.
+    """
+    import builtins
+
+    real_import = builtins.__import__
+    state = {"pillow": False}
+
+    def fake_import(name, *args, **kwargs):
+        if name in ("PIL", "PIL.Image") and not state["pillow"]:
+            raise ImportError("simulé : Pillow absent")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    # 1) Pillow « absent » → détecté absent, de façon STABLE (contrôle négatif).
+    assert media_module._pillow_available() is False
+    assert media_module._pillow_available() is False
+
+    # 2) Pillow « installé » (même process Flask, AUCUN rechargement de module).
+    state["pillow"] = True
+    assert media_module._pillow_available() is True
+
+
+def test_ffmpeg_path_recomputed_from_env(monkeypatch):
+    """``_ffmpeg_path``/``_ffprobe_path`` relisent l'environnement à chaque appel.
+
+    Ajouter/retirer ``AIH_FFMPEG`` dans un process déjà démarré doit être pris en
+    compte immédiatement (aucune valeur mémorisée au chargement du module).
+    """
+    monkeypatch.setenv("AIH_FFMPEG", "/opt/x/ffmpeg")
+    monkeypatch.setenv("AIH_FFPROBE", "/opt/x/ffprobe")
+    assert media_module._ffmpeg_path() == "/opt/x/ffmpeg"
+    assert media_module._ffprobe_path() == "/opt/x/ffprobe"
+
+    monkeypatch.setenv("AIH_FFMPEG", "/opt/y/ffmpeg")  # même process
+    assert media_module._ffmpeg_path() == "/opt/y/ffmpeg"
+
+    # Contrôle NÉGATIF : variable retirée → aucune valeur périmée mémorisée.
+    monkeypatch.delenv("AIH_FFMPEG", raising=False)
+    monkeypatch.setattr(media_module.shutil, "which", lambda _name: None)
+    assert media_module._ffmpeg_path() is None
+
+
 def test_audio_thumbnail_unavailable(client, make_token, media_storage):
     """Audio : pas de vignette (choix documenté) → 404 structuré."""
     headers = _headers(make_token, "thumb-audio")

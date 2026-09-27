@@ -181,15 +181,21 @@ eq(audioCell.querySelector(".gallery-cell-ph").textContent, "🎵", "audio : ic�
 ok(audioCell.querySelector(".gallery-cell-img").classList.contains("gallery-cell-img--hidden"), "audio : <img> masquée");
 ok(!audioCell.querySelector(".gallery-cell-ph").classList.contains("gallery-cell-ph--error"),
   "audio : icône de type, PAS un état d'erreur");
+ok(!audioCell.querySelector(".gallery-cell-ph").classList.contains("gallery-cell-ph--pending")
+  && !audioCell.querySelector(".gallery-cell-ph").classList.contains("gallery-cell-ph--unavailable"),
+  "audio : aucun marqueur d'état (icône de type normale)");
 
-// Échec de chargement d'une vignette → état d'erreur DISTINCT du placeholder.
+// État d'attente ACTIF et DISTINCT (⏳) : une cellule ne reste jamais vide.
 const failImg = cellEl(0).querySelector(".gallery-cell-img");
 const failPh = cellEl(0).querySelector(".gallery-cell-ph");
+ok(failPh.classList.contains("gallery-cell-ph--pending"), "attente → placeholder --pending actif");
+eq(failPh.textContent, "⏳", "attente → glyphe ⏳");
 ok(!failPh.classList.contains("gallery-cell-ph--error"), "placeholder d'attente : aucun marqueur d'erreur");
 failImg.dispatchEvent(new window.Event("error"));
 ok(failPh.classList.contains("gallery-cell-ph--error"), "échec vignette → classe d'erreur distincte");
+ok(!failPh.classList.contains("gallery-cell-ph--pending"), "échec → placeholder d'attente retiré");
 eq(failPh.textContent, "⚠", "échec vignette → glyphe ⚠");
-eq(failPh.title, "Vignette indisponible", "échec vignette → title explicite");
+eq(failPh.title, "Échec du chargement de la vignette", "échec vignette → title explicite");
 
 // Reprise BORNÉE après échec : un <img> en erreur ne se recharge pas seul →
 // l'adaptateur retente UNE fois (cache-buster) puis renonce (pas de boucle).
@@ -255,15 +261,44 @@ for (const idx of [0, 1, 3, 4, 5]) {
 }
 
 // Dégradation backend (ex. Pillow absent) : thumb_available=false sur une image
-// → état d'erreur distinct (jamais un placeholder neutre silencieux).
+// → état « INDISPONIBLE » distinct de l'échec de chargement (jamais muet).
 mediaItems[0].thumb_available = false;
 AppGallery.state.grid.render(true);
 await settle();
-ok(cellEl(0).querySelector(".gallery-cell-ph").classList.contains("gallery-cell-ph--error"),
-  "image sans vignette dispo → état d'erreur distinct");
+const unavailPh = cellEl(0).querySelector(".gallery-cell-ph");
+ok(unavailPh.classList.contains("gallery-cell-ph--unavailable"),
+  "thumb_available=false → état « indisponible » distinct");
+ok(!unavailPh.classList.contains("gallery-cell-ph--error"),
+  "indisponible ≠ échec de chargement (états distincts)");
+eq(unavailPh.textContent, "🚫", "indisponible → glyphe explicite 🚫");
+ok(/Aucune vignette/.test(unavailPh.title), "indisponible → title explicite");
+eq(cellEl(0).querySelector(".gallery-cell-img").getAttribute("src"), null,
+  "indisponible → aucune requête de vignette lancée");
 mediaItems[0].thumb_available = true;
 AppGallery.state.grid.render(true);
 await settle();
+
+// Borne d'attente : un chargement qui ne se conclut JAMAIS (ni load ni error,
+// ex. requête réseau figée / stockage bloqué) bascule en état d'ERREUR
+// explicite — plus de cellule vide indéfiniment.
+{
+  const prevMs = AppGallery.state.thumbPendingMs;
+  AppGallery.state.thumbPendingMs = 50;
+  AppGallery.state.grid.render(true);
+  const hc = cellEl(1);
+  const hph = hc.querySelector(".gallery-cell-ph");
+  ok(hph.classList.contains("gallery-cell-ph--pending"), "attente → placeholder ⏳ avant la borne");
+  await new Promise((r) => setTimeout(r, 250));
+  ok(hph.classList.contains("gallery-cell-ph--error"), "délai dépassé → état d'ERREUR explicite");
+  ok(!hph.classList.contains("is-hidden"), "délai dépassé → indicateur d'erreur VISIBLE");
+  eq(hph.textContent, "⚠", "délai dépassé → glyphe ⚠");
+  AppGallery.state.thumbPendingMs = prevMs;
+  AppGallery.state.grid.render(true);
+  await settle();
+  // Contrôle NÉGATIF : une fois la borne rétablie (20 s), pas d'erreur parasite.
+  ok(!cellEl(1).querySelector(".gallery-cell-ph").classList.contains("gallery-cell-ph--error"),
+    "[négatif] borne rétablie → pas de faux échec immédiat");
+}
 
 /* ═══ 5. Slider : grille + taille serveur ═════════════════════════════════ */
 console.log("5. Slider de taille");

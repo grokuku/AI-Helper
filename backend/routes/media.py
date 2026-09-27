@@ -258,7 +258,12 @@ def _media_json(row):
 # ── Outils d'extraction technique (Pillow / ffmpeg / ffprobe) ─────────
 
 def _pillow_available():
-    """Pillow est-il importable ? (dégradation propre si absent)."""
+    """Pillow est-il importable ? (dégradation propre si absent).
+
+    Détection DYNAMIQUE : ``import PIL.Image`` est retenté à CHAQUE appel
+    (volontairement AUCUN cache/constante de module) — installer Pillow après
+    le démarrage du process prend donc effet sans redémarrage Flask.
+    """
     try:
         import PIL.Image  # noqa: F401
         return True
@@ -267,12 +272,19 @@ def _pillow_available():
 
 
 def _ffmpeg_path():
-    """Chemin de l'exécutable ffmpeg (env ``AIH_FFMPEG`` ou PATH), ou None."""
+    """Chemin de l'exécutable ffmpeg (env ``AIH_FFMPEG`` ou PATH), ou None.
+
+    Résolu à CHAQUE appel (aucun cache) : un ``apt install``/changement d'env
+    prend effet sans redémarrage.
+    """
     return os.environ.get("AIH_FFMPEG") or shutil.which("ffmpeg")
 
 
 def _ffprobe_path():
-    """Chemin de l'exécutable ffprobe (env ``AIH_FFPROBE`` ou PATH), ou None."""
+    """Chemin de l'exécutable ffprobe (env ``AIH_FFPROBE`` ou PATH), ou None.
+
+    Résolu à CHAQUE appel (aucun cache), comme ``_ffmpeg_path``.
+    """
     return os.environ.get("AIH_FFPROBE") or shutil.which("ffprobe")
 
 

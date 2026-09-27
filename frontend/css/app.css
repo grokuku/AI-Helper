@@ -510,8 +510,11 @@
       pointer-events: none;
     }
     .gallery-cell-ph.is-hidden { display: none; }
-    /* Échec de vignette : état DISTINCT du placeholder d'attente (⚠ rouge). */
+    /* États VISIBLES et DISTINCTS d'une vignette (jamais une cellule vide) :
+       chargement (⏳ neutre), échec (⚠ rouge), indisponible (🚫 ambre). */
+    .gallery-cell-ph--pending { color: var(--text-secondary); opacity: 0.75; }
     .gallery-cell-ph--error { color: #e11d48; }
+    .gallery-cell-ph--unavailable { color: #d97706; }
     .gallery-cell-badge {
       position: absolute;
       top: 6px;

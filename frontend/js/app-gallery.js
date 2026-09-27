@@ -62,6 +62,22 @@ var GALLERY_POLL_MS = 15000;
 // réseau transitoire, puis on renonce et on affiche l'état d'erreur.
 var GALLERY_THUMB_RETRY_MS = 1500;
 
+// Délai MAXIMAL d'attente d'une vignette avant de basculer sur un état
+// d'erreur EXPLICITE. Un <img> dont la requête reste bloquée (réseau figé,
+// serveur/proxy bloqué, stockage qui ne répond pas) ne déclenche NI `load`
+// NI `error` : sans cette borne, la cellule resterait sur un placeholder
+// neutre — visuellement « vide » et impossible à diagnostiquer.
+// Surchargeable via `AppGallery.state.thumbPendingMs` (tests headless).
+var GALLERY_THUMB_PENDING_MS = 20000;
+
+// Glyphes des états de vignette : VISIBLES et DISTINCTS les uns des autres.
+//   ⏳ = en attente de chargement ; ⚠ = échec de chargement ;
+//   🚫 = aucune vignette produisible (décision backend).
+// Le glyphe de TYPE (🖼️/▶/🎵) reste réservé au badge et à l'audio.
+var GALLERY_PH_PENDING = '⏳';
+var GALLERY_PH_ERROR = '⚠';
+var GALLERY_PH_UNAVAILABLE = '🚫';
+
 // Valeurs de tri exposées par le backend (GET /api/media?sort=).
 var GALLERY_SORTS = ['created_at_desc', 'created_at_asc', 'name_asc', 'size_desc'];
 
@@ -305,6 +321,8 @@ var galleryState = {
   lastRequest: null,
   lastDownload: null,
   lastDownloadBatch: [],
+  // Borne d'attente d'une vignette (surchargeable en test).
+  thumbPendingMs: GALLERY_THUMB_PENDING_MS,
 };
 
 var galleryKeyHandler = null;
@@ -665,25 +683,79 @@ function galleryThumbProbe(url) {
   } catch (e) { /* ignore */ }
 }
 
-/* État d'ERREUR d'une cellule : DISTINCT du placeholder d'attente (classe
-   `--error`, glyphe ⚠ + title), pour qu'un échec ne soit plus silencieux. */
-function galleryCellShowThumbError(el, url) {
-  if (el._gImg) el._gImg.classList.add('gallery-cell-img--hidden');
+/* États VISIBLES et DISTINCTS d'une vignette de cellule :
+     - ⏳ `--pending`     : chargement en attente (placeholder ACTIF, non vide) ;
+     - ⚠ `--error`       : échec de chargement (HTTP non-2xx, onerror, délai) ;
+     - 🚫 `--unavailable` : aucune vignette produisible (`thumb_available=false`).
+   Objectif : ne JAMAIS laisser une cellule muette/vide — un échec doit être
+   lisible au premier coup d'œil, sans ouvrir la console. */
+function galleryCellSetPh(el, glyph, stateClass, title) {
   var ph = el._gPh;
-  if (ph) {
-    ph.textContent = '⚠';
-    ph.classList.remove('is-hidden');
-    ph.classList.add('gallery-cell-ph--error');
-    ph.title = 'Vignette indisponible';
-  }
+  if (!ph) return;
+  ph.textContent = glyph;
+  ph.classList.remove('is-hidden');
+  ph.classList.remove('gallery-cell-ph--error', 'gallery-cell-ph--pending', 'gallery-cell-ph--unavailable');
+  if (stateClass) ph.classList.add(stateClass);
+  if (title) ph.title = title; else ph.removeAttribute('title');
+}
+
+function galleryCellShowThumbPending(el) {
+  galleryCellSetPh(el, GALLERY_PH_PENDING, 'gallery-cell-ph--pending',
+    'Chargement de la vignette…');
+}
+
+/* État d'ERREUR : distinct de l'attente et de l'indisponibilité. */
+function galleryCellShowThumbError(el, url) {
+  galleryCellClearThumbTimer(el);
+  if (el._gImg) el._gImg.classList.add('gallery-cell-img--hidden');
+  galleryCellSetPh(el, GALLERY_PH_ERROR, 'gallery-cell-ph--error',
+    'Échec du chargement de la vignette');
   if (url && galleryThumbDebugEnabled()) galleryThumbProbe(url);
 }
 
+/* État d'INDISPONIBILITÉ : aucune vignette produisible dans cet environnement
+   (décision backend `thumb_available=false`), distinct d'un échec réseau. */
+function galleryCellShowThumbUnavailable(el, kind) {
+  galleryCellClearThumbTimer(el);
+  if (el._gImg) el._gImg.classList.add('gallery-cell-img--hidden');
+  var title = 'Aucune vignette disponible pour ce média';
+  if (kind && kind !== 'audio') title += ' (outil backend absent : Pillow/ffmpeg ?)';
+  galleryCellSetPh(el, GALLERY_PH_UNAVAILABLE, 'gallery-cell-ph--unavailable', title);
+}
+
+/* Retire tout marqueur d'état du placeholder (icône de type normale, release). */
 function galleryCellResetPh(el) {
   var ph = el._gPh;
   if (!ph) return;
-  ph.classList.remove('gallery-cell-ph--error');
+  ph.classList.remove('gallery-cell-ph--error', 'gallery-cell-ph--pending', 'gallery-cell-ph--unavailable');
   ph.removeAttribute('title');
+}
+
+/* Borne d'attente par cellule (nettoyée au load/error/release). */
+function galleryCellClearThumbTimer(el) {
+  if (el._gPendingTimer) {
+    clearTimeout(el._gPendingTimer);
+    el._gPendingTimer = null;
+  }
+}
+
+function galleryCellStartThumbTimer(el, item) {
+  galleryCellClearThumbTimer(el);
+  var ms = Number(galleryState.thumbPendingMs);
+  if (!isFinite(ms) || ms <= 0) return; // borne désactivée (0 = pas de timeout)
+  el._gPendingTimer = setTimeout(function () {
+    el._gPendingTimer = null;
+    // Ne bascule que si la cellule attend encore (sinon load/error a déjà statué).
+    var ph = el._gPh;
+    if (!ph || !ph.classList.contains('gallery-cell-ph--pending')) return;
+    galleryCellShowThumbError(el,
+      el._gExpectedUrl || galleryThumbUrl(item, galleryState.serverSize));
+  }, ms);
+  // En Node (tests headless), le timer est un objet Timeout : unref() évite de
+  // maintenir la boucle d'événements vivante. En navigateur : un nombre.
+  if (el._gPendingTimer && typeof el._gPendingTimer.unref === 'function') {
+    el._gPendingTimer.unref();
+  }
 }
 
 function galleryCellRenderer() {
@@ -707,7 +779,11 @@ function galleryCellRenderer() {
       var img = document.createElement('img');
       img.className = 'gallery-cell-img gallery-cell-img--hidden';
       img.alt = '';
-      img.loading = 'lazy';
+      // `eager` : la grille est VIRTUALISÉE (seules les cellules proches de la
+      // vue existent dans le DOM) → le lazy n'apporte aucun gain et, combiné au
+      // masquage `display:none` jusqu'au load, risque de ne jamais déclencher le
+      // chargement sur certains moteurs (cellule vide, sans load ni error).
+      img.loading = 'eager';
       img.draggable = false;
       el.appendChild(img);
       var ph = document.createElement('div');
@@ -736,7 +812,9 @@ function galleryCellRenderer() {
       // Reprise de vignette : URL attendue + drapeau « déjà retenté » (borné).
       el._gExpectedUrl = '';
       el._gThumbRetried = false;
+      el._gPendingTimer = null;
       img.addEventListener('load', function () {
+        galleryCellClearThumbTimer(el);
         el._gPh.classList.add('is-hidden');
         img.classList.remove('gallery-cell-img--hidden');
       });
@@ -779,24 +857,21 @@ function galleryCellRenderer() {
       gallerySetActionVisibility(el, 'purge', trashed);
 
       var img = el._gImg;
-      var ph = el._gPh;
 
       // Pas de vignette produisible (décision backend) : l'audio affiche SON
       // icône de type (état normal) ; pour image/vidéo c'est une DÉGRADATION
-      // (outil backend absent : Pillow/ffmpeg) → état d'erreur DISTINCT + trace
-      // en debug, pour qu'un placeholder ne masque plus un problème réel.
+      // (outil backend absent : Pillow/ffmpeg) → indicateur EXPLICITE distinct
+      // de l'échec de chargement, pour qu'une cellule ne reste jamais muette.
       if (!item.thumb_available) {
         el._gExpectedUrl = '';
         el._gThumbRetried = false;
+        galleryCellClearThumbTimer(el);
         img.classList.add('gallery-cell-img--hidden');
         img.removeAttribute('src');
-        ph.textContent = galleryKindIcon(item.kind);
-        ph.classList.remove('is-hidden');
         if (item.kind === 'audio') {
-          galleryCellResetPh(el);
+          galleryCellSetPh(el, galleryKindIcon(item.kind), null, null);
         } else {
-          ph.classList.add('gallery-cell-ph--error');
-          ph.title = 'Vignette indisponible (outil backend absent ?)';
+          galleryCellShowThumbUnavailable(el, item.kind);
           if (galleryThumbDebugEnabled()) {
             console.warn('[gallery] thumb_available=false (média ' + item.kind + ', id=' + item.id + ')');
           }
@@ -804,10 +879,12 @@ function galleryCellRenderer() {
         return;
       }
 
-      ph.textContent = '';
-      ph.classList.remove('is-hidden');
-      galleryCellResetPh(el);
+      galleryCellShowThumbPending(el);
       img.classList.add('gallery-cell-img--hidden');
+
+      // Borne d'attente : un chargement qui ne se conclut jamais (ni load ni
+      // error) devient un ÉTAT D'ERREUR visible au lieu d'une cellule vide.
+      galleryCellStartThumbTimer(el, item);
 
       // Le cache 'url' est synchrone en pratique (aucun fetch de la brique).
       var cache = galleryState.thumbCache;
@@ -833,6 +910,7 @@ function galleryCellRenderer() {
       el._gToken++;
       el._gExpectedUrl = '';
       el._gThumbRetried = false;
+      galleryCellClearThumbTimer(el);
       if (el._gImg) { el._gImg.removeAttribute('src'); el._gImg.classList.add('gallery-cell-img--hidden'); }
       if (el._gPh) { el._gPh.textContent = ''; el._gPh.classList.add('is-hidden'); }
       galleryCellResetPh(el);
@@ -1668,6 +1746,7 @@ window.AppGallery = {
     THUMB_SIZES: GALLERY_THUMB_SIZES.slice(),
     SEARCH_DEBOUNCE: GALLERY_SEARCH_DEBOUNCE,
     THUMB_RETRY_MS: GALLERY_THUMB_RETRY_MS,
+    THUMB_PENDING_MS: GALLERY_THUMB_PENDING_MS,
     POLL_MS: GALLERY_POLL_MS,
     SORTS: GALLERY_SORTS.slice(),
   },
