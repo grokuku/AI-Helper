@@ -1541,6 +1541,19 @@ def media_complete():
         conn.close()
 
 
+# ── Liste paginée : bornes du paramètre ``?limit=`` ───────────────────
+# Le client (galerie) choisit la taille de page, mais une valeur hors bornes
+# est CLAMPÉE silencieusement dans [MIN, MAX] (pas de 400 : la demande n'est
+# pas fautive, elle est bornée). Seule une valeur PRÉSENTE mais non entière
+# est refusée (400) — voir ``_parse_page_limit``.
+# PAGE_LIMIT_MAX est le plafond contractuel de pagination : le client distant
+# du pack ComfyUI (image_viewer_source_remote.js) aligne sa taille de page
+# dessus (REMOTE_PAGE_SIZE) — toute hausse ici doit y être répercutée.
+PAGE_LIMIT_DEFAULT = 50
+PAGE_LIMIT_MIN = 1
+PAGE_LIMIT_MAX = 200
+
+
 # Tri autorisé → clause ORDER BY (whitelist : jamais de SQL client).
 _SORT_SQL = {
     "created_at_desc": "id DESC",
@@ -1702,6 +1715,21 @@ def _parse_tags_filter(args):
     return out
 
 
+def _parse_page_limit(args):
+    """Borne le paramètre ``limit`` de la liste paginée (clamp SILENCIEUX).
+
+    Absent → ``PAGE_LIMIT_DEFAULT``. Toute valeur entière est ramenée dans
+    ``[PAGE_LIMIT_MIN, PAGE_LIMIT_MAX]`` sans erreur (un client qui demande
+    trop ou trop peu est borné, pas rejeté). Valeur PRÉSENTE mais non entière
+    (``abc``, chaîne vide, ``1.5``) → ``None`` : l'appelant répond 400.
+    """
+    raw = args.get("limit", PAGE_LIMIT_DEFAULT)
+    try:
+        return min(max(int(raw), PAGE_LIMIT_MIN), PAGE_LIMIT_MAX)
+    except (TypeError, ValueError):
+        return None
+
+
 def _build_list_filters(user_id, args):
     """Construit (where_sql, params) pour la liste, d'après les filtres optionnels.
 
@@ -1798,7 +1826,9 @@ def media_list():
     """Liste paginée des médias complets de l'utilisateur courant (galerie).
 
     Paramètres optionnels (galerie) — tous rétro-compatibles :
-      - ``page`` (déf. 1), ``limit`` (déf. 50, max 200) ;
+      - ``page`` (déf. 1), ``limit`` (déf. ``PAGE_LIMIT_DEFAULT``, borné
+        silencieusement à ``[PAGE_LIMIT_MIN, PAGE_LIMIT_MAX]`` ; valeur
+        présente mais non entière → 400) ;
       - ``kind`` ∈ image|video|audio ;
       - ``subfolder`` : dossier exact OU préfixe de segment (``a/b``) ;
       - ``subfolders`` : filtre MULTI-dossiers (OU, correspondance exacte).
@@ -1841,9 +1871,8 @@ def media_list():
         page = max(int(request.args.get('page', 1)), 1)
     except (TypeError, ValueError):
         return jsonify({'error': 'page invalide'}), 400
-    try:
-        limit = min(max(int(request.args.get('limit', 50)), 1), 200)
-    except (TypeError, ValueError):
+    limit = _parse_page_limit(request.args)
+    if limit is None:
         return jsonify({'error': 'limit invalide'}), 400
 
     sort = (request.args.get('sort') or 'created_at_desc').strip()

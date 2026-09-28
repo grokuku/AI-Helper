@@ -6,6 +6,8 @@
   - GET /api/media/<id>/metadata  : valeurs images (Pillow), prompt/workflow,
     backfill paresseux persistant ;
   - GET /api/media (enrichie)     : filtres kind/subfolder/q/from-to + tri,
+    pagination (``limit`` : défaut/plancher/plafond NOMMÉS, clamp SILENCIEUX,
+    bornes inclusives, non entier → 400, OFFSET de ``page``),
     ET non-régression en l'absence de paramètres.
 
 Contrôles NÉGATIFS : les tests d'auth (401), de propriété (403 croisé) et de
@@ -903,3 +905,171 @@ def test_list_subfolders_invalid_400_and_backward_compatible(client, make_token,
     assert sorted(i["filename"] for i in client.get("/api/media?subfolder=a", headers=headers).get_json()["items"]) == ["alpha.png", "beta.png"]
     # Un unique élément vide = racine (aucun média racine ici) → total 0.
     assert client.get("/api/media?subfolders=", headers=headers).get_json()["total"] == 0
+
+
+# ── 5quater. Pagination : bornes de ``limit`` (durcissement) ──────────
+#
+# Le clamp de ``?limit=`` est un CLAMP SILENCIEUX : une valeur hors bornes est
+# bornée sans 400 (seule une valeur présente mais NON entière est refusée).
+# Les bornes sont des constantes nommées du module (PAGE_LIMIT_*) : ces tests
+# échouent si le clamp est retiré ou si les littéraux divergent.
+
+def _seed_n(user_id, n, prefix="p"):
+    """Insère ``n`` lignes ``media_files`` complètes directement en base.
+
+    Plus rapide qu'un upload chunké quand seul le NOMBRE d'items compte
+    (pagination/limites) : toutes les colonnes lues par ``_media_json`` sont
+    renseignées. Les ``filename`` sont ordonnables (``p000`` …).
+    """
+    from routes.helpers import get_db
+
+    conn = get_db()
+    try:
+        conn.executemany(
+            "INSERT INTO media_files (user_id, subfolder, filename, ext, kind, "
+            "size, status, final_path) "
+            "VALUES (?, '', ?, '.png', 'image', 1, 'complete', ?)",
+            [(user_id, f"{prefix}{i:03d}", f"media/{user_id}/{prefix}{i:03d}.png")
+             for i in range(n)],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _list(client, headers, query=""):
+    url = f"/api/media?{query}" if query else "/api/media"
+    return client.get(url, headers=headers)
+
+
+def test_page_limit_constants_named_and_locked():
+    """Le contrat de pagination est figé par des constantes NOMMÉES.
+
+    Les valeurs restent 50 / 1 / 200 (le pack ComfyUI aligne son
+    REMOTE_PAGE_SIZE sur le plafond).
+    """
+    assert media_module.PAGE_LIMIT_DEFAULT == 50
+    assert media_module.PAGE_LIMIT_MIN == 1
+    assert media_module.PAGE_LIMIT_MAX == 200
+    assert (media_module.PAGE_LIMIT_MIN <= media_module.PAGE_LIMIT_DEFAULT
+            <= media_module.PAGE_LIMIT_MAX)
+
+
+def test_page_limit_default_absent_is_50(client, make_token, media_storage):
+    """Absent → défaut effectif (50) exposé tel quel dans la réponse."""
+    headers = _headers(make_token, "limit-def")
+    _seed_n("limit-def", 3)
+
+    body = _list(client, headers).get_json()
+    assert body["limit"] == media_module.PAGE_LIMIT_DEFAULT == 50
+    assert body["page"] == 1 and body["total"] == 3
+    assert len(body["items"]) == 3  # moins d'items que le défaut → tous servis
+
+    # `?limit=50` explicite ≡ absent (rétro-compatibilité).
+    assert _list(client, headers, "limit=50").get_json()["limit"] == 50
+
+
+def test_page_limit_over_max_clamped_silently(client, make_token, media_storage):
+    """CONTRÔLE NÉGATIF : au-dessus du plafond → clampé SANS 400.
+
+    Sans le clamp (``limit = int(raw)``), la réponse renverrait 500/100000 et
+    ce test serait ROUGE.
+    """
+    headers = _headers(make_token, "limit-high")
+    _seed_n("limit-high", 3)
+
+    for raw in ("201", "500", "100000"):
+        r = _list(client, headers, f"limit={raw}")
+        assert r.status_code == 200, f"limit={raw} doit être clampé, pas rejeté"
+        body = r.get_json()
+        assert body["limit"] == media_module.PAGE_LIMIT_MAX == 200
+        assert len(body["items"]) == 3  # la tranche SQL suit la limite EFFECTIVE
+
+
+def test_page_limit_under_min_clamped_silently(client, make_token, media_storage):
+    """CONTRÔLE NÉGATIF : sous le plancher → 1, jamais 0/négatif (pas de 400).
+
+    Sans le clamp, ``limit=0`` renverrait 0 item et ``limit=-5`` basculerait
+    SQLite en « pas de limite » (négatif) → items et ``limit`` faux.
+    """
+    headers = _headers(make_token, "limit-low")
+    _seed_n("limit-low", 3)
+
+    for raw in ("0", "-1", "-5"):
+        r = _list(client, headers, f"limit={raw}")
+        assert r.status_code == 200
+        body = r.get_json()
+        assert body["limit"] == media_module.PAGE_LIMIT_MIN == 1
+        assert len(body["items"]) == 1
+
+
+def test_page_limit_inclusive_bounds_preserved(client, make_token, media_storage):
+    """Bornes INCLUSIVES : 1 et 200 sont conservés tels quels."""
+    headers = _headers(make_token, "limit-bounds")
+    _seed_n("limit-bounds", 3)
+
+    body = _list(client, headers, "limit=1").get_json()
+    assert body["limit"] == 1 and len(body["items"]) == 1
+
+    body = _list(client, headers, f"limit={media_module.PAGE_LIMIT_MAX}").get_json()
+    assert body["limit"] == 200 and len(body["items"]) == 3
+
+
+@pytest.mark.parametrize("raw", ["abc", "", " ", "1.5", "2e2", "50%", "null", "true"])
+def test_page_limit_present_but_not_integer_400(client, make_token, media_storage, raw):
+    """CONTRÔLE NÉGATIF : valeur PRÉSENTE mais non entière → 400 (pas de
+    fallback silencieux au défaut). ``?limit=`` vide est présent → 400.
+    """
+    headers = _headers(make_token, "limit-bad")
+    _seed_n("limit-bad", 1)
+
+    r = _list(client, headers, f"limit={raw}")
+    assert r.status_code == 400
+    assert r.get_json()["error"] == "limit invalide"
+    # Absence (≠ valeur vide) : OK et défaut effectif.
+    assert _list(client, headers).status_code == 200
+
+
+def test_page_limit_route_uses_named_constants(client, make_token, media_storage, monkeypatch):
+    """Preuve d'USAGE : la route lit bien les constantes du module.
+
+    Si la route conservait des littéraux inline, ce test serait ROUGE malgré
+    des valeurs par défaut identiques.
+    """
+    headers = _headers(make_token, "limit-consts")
+    _seed_n("limit-consts", 5)
+
+    with monkeypatch.context() as mp:
+        mp.setattr(media_module, "PAGE_LIMIT_MAX", 2)
+        assert _list(client, headers, "limit=500").get_json()["limit"] == 2
+    with monkeypatch.context() as mp:
+        mp.setattr(media_module, "PAGE_LIMIT_MIN", 3)
+        assert _list(client, headers, "limit=1").get_json()["limit"] == 3
+    with monkeypatch.context() as mp:
+        mp.setattr(media_module, "PAGE_LIMIT_DEFAULT", 7)
+        assert _list(client, headers).get_json()["limit"] == 7
+
+
+def test_page_two_with_max_limit_returns_next_items(client, make_token, media_storage):
+    """``page=2&limit=PAGE_LIMIT_MAX`` : OFFSET exact, total inchangé.
+
+    CONTRÔLE NÉGATIF : un OFFSET calculé sur une limite NON clampée ferait
+    chevaucher ou disparaître des items entre les deux pages.
+    """
+    headers = _headers(make_token, "page2")
+    n = 205
+    _seed_n("page2", n)
+    q = f"sort=name_asc&limit={media_module.PAGE_LIMIT_MAX}"
+
+    p1 = _list(client, headers, f"page=1&{q}").get_json()
+    p2 = _list(client, headers, f"page=2&{q}").get_json()
+
+    assert p1["limit"] == p2["limit"] == 200
+    assert p1["total"] == p2["total"] == n  # total indépendant de la page
+    assert p1["page"] == 1 and p2["page"] == 2
+    assert len(p1["items"]) == 200
+    assert [i["filename"] for i in p2["items"]] == [f"p{i:03d}.png" for i in range(200, 205)]
+    ids1 = {i["id"] for i in p1["items"]}
+    ids2 = {i["id"] for i in p2["items"]}
+    assert not (ids1 & ids2)
+    assert len(ids1 | ids2) == n  # les 2 pages couvrent exactement tout
