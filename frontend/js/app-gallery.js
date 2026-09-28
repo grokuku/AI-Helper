@@ -61,11 +61,18 @@ var GALLERY_THUMB_SIZES = [128, 256, 512];
 var GALLERY_SEARCH_DEBOUNCE = 350;
 
 // Rafraîchissement AUTOMATIQUE de la galerie (ms). Poll léger : on interroge
-// seulement la tête de liste (page 1, limit 1) et on relance la liste
-// uniquement si le média le plus récent ou le total a changé. Détecte les
-// médias poussés par l'extérieur (node ComfyUI, autre onglet) sans action
-// manuelle. Assez long pour ne pas matraquer le serveur.
-var GALLERY_POLL_MS = 15000;
+// seulement la TÊTE de liste (page 1, limit GALLERY_POLL_LIMIT, MÊMES filtres
+// et tri que la vue courante) et on réconcilie. Détecte les médias poussés par
+// l'extérieur (node ComfyUI, autre onglet) sans action manuelle.
+//   10 s : compromis réactivité / charge. La requête de tête est minuscule et
+//   bornée (GALLERY_POLL_LIMIT items), soit ~6 req/min — négligeable devant les
+//   vignettes, et assez court pour que l'utilisateur voie arriver un média
+//   poussé par ComfyUI presque en direct. (Avant : 15 s, mais le tick était
+//   suspendu dès que la liste était scrollée — cf. galleryPollCheck.)
+var GALLERY_POLL_MS = 10000;
+// Items lus à chaque tick de tête. Assez pour couvrir plusieurs ajouts d'un
+// coup ET pour retrouver la tête courante ; au-delà, on resynchronise.
+var GALLERY_POLL_LIMIT = 30;
 
 // Reprise UNIQUE et bornée d'une vignette après un échec de chargement <img>
 // (un <img> en erreur ne se recharge pas tout seul, la cellule resterait
@@ -80,6 +87,77 @@ var GALLERY_THUMB_RETRY_MS = 1500;
 // neutre — visuellement « vide » et impossible à diagnostiquer.
 // Surchargeable via `AppGallery.state.thumbPendingMs` (tests headless).
 var GALLERY_THUMB_PENDING_MS = 20000;
+
+/* ── Pré-chargement des vignettes autour de la zone visible ──────────────── */
+
+// Facteur de buffer de RENDU de la grille (multiple de la hauteur de vue).
+// La brique HolafGrid rend les cellules dans [scrollTop − vh×k, scrollTop +
+// vh + vh×k] et CHAQUE cellule rendue pose son `<img src>` : c'est le
+// pré-chargement réseau principal (le navigateur télécharge en avance).
+//   1,5 (défaut de la brique, ancien réglage) → ~5 rangées d'avance ;
+//   2,5 (ici)                                → ~8 rangées d'avance.
+// Justification : à la vitesse de scroll mesurée (~1 rangée / 87 ms au
+// harnais), l'avance utile passe de ~0,4 s à ~0,7 s, sans faire exploser le
+// DOM (~+1/3 de cellules en pool au repos : 54→72 en haut, 84→120 au milieu,
+// recyclées par la brique).
+var GALLERY_GRID_BUFFER_FACTOR = 2.5;
+// Gouttière de grille — passée à la brique ET utilisée par le calcul des
+// rangées de pré-charge ci-dessous (mêmes entrées que la brique).
+var GALLERY_GRID_GAP = 12;
+
+// Pré-chargement EXPLICITE de pixels AU-DELÀ de la fenêtre rendue : en
+// stratégie 'url', `thumbCache.prefetch()` ne mémorise que l'URL (AUCUNE
+// requête réseau) ; le téléchargement réel est fait par l'hôte avec des
+// `<img>` invisibles, à concurrence bornée pour ne pas saturer la file de
+// connexions du navigateur. Les rangées les plus proches du visible partent
+// en premier.
+var GALLERY_PRELOAD_EXTRA_ROWS = 4;   // rangées au-delà du rendu, par côté
+var GALLERY_PRELOAD_CONCURRENCY = 3;  // téléchargements simultanés max
+var GALLERY_PRELOAD_MAX_ITEMS = 48;   // budget par mise à jour de plage
+// Borne d'attente d'une pré-charge : un <img> qui ne déclenche NI load NI
+// error (requête morte) ne doit pas immobiliser un créneau pour toujours.
+var GALLERY_PRELOAD_TIMEOUT_MS = 30000;
+
+/* Ordre + purge de la file de pré-charge (inspiré du pack ComfyUI).
+ *
+ * La galerie du pack (js/image_viewer/image_viewer_gallery.js :
+ * prefetchAhead(), l.499-528) ne pré-charge QUE dans le sens de lecture et
+ * borne chaque passe par les créneaux LIBRES de la file (« slots =
+ * concurrency − active »). Adapté ici à la fenêtre SYMÉTRIQUE du web :
+ *   1. les rangées du côté VERS lequel on défile entrent EN PREMIER dans la
+ *      file — le sens est déduit du déplacement de la plage visible émise par
+ *      la grille (start qui augmente = vers le bas) ;
+ *   2. une entrée ENCORE EN FILE qui sort de la bande de pré-charge courante
+ *      (rangées rendues ± GALLERY_PRELOAD_EXTRA_ROWS) est ABANDONNÉE : un
+ *      scroll très rapide ne charge plus les rangées intermédiaires sautées
+ *      (harnais Chromium, 960 médias / 120 ms : file 203 → 33 après un saut,
+ *      requêtes « laissées derrière » 108 → 0, requêtes serveur −28 %).
+ * GALLERY_PRELOAD_STALE_GRACE_ROWS : marge (en rangées) avant d'abandonner —
+ * évite un va-et-vient purge/remise en file sur un scroll régulier ; le coût
+ * d'un retour est nul (dédup LRU + in-flight à la ré-entrée dans la bande).
+ */
+var GALLERY_PRELOAD_STALE_GRACE_ROWS = 1;
+// Annulation des pré-charges EN VOL devenues périmées (rangée hors bande de
+// plus de N rangées) : libère un créneau de connexion au profit des rangées
+// qui arrivent, au prix d'un éventuel re-téléchargement au retour (le LRU ne
+// garde que l'URL, pas les pixels en stratégie 'url'). 0 = désactivé.
+// Mesuré au harnais Chromium : AUCUNE différence sur requêtes, placeholders
+// ni temps de stabilisation → désactivé par défaut.
+var GALLERY_PRELOAD_CANCEL_STALE_ROWS = 0;
+
+// Cache LRU d'URL de vignettes (brique holaf-thumbcache). Une URL ≈ 70 octets:
+// 3000 entrées ≈ 200 Ko — couvre plusieurs écrans de remontée pour qu'un
+// retour sur une zone déjà vue soit un « hit » (aucune re-demande).
+var GALLERY_THUMB_CACHE_CAPACITY = 3000;
+// Chargements simultanés de la brique. En stratégie 'url', `load` ne fait
+// qu'un aller-retour mémoire : ce n'est PAS le régulateur réseau ici (cf.
+// GALLERY_PRELOAD_CONCURRENCY + file du navigateur). Défaut conservé.
+var GALLERY_THUMB_CONCURRENCY = 6;
+// Piste UI — NON implémentée : un réglage « Pré-charge : normale / élevée »
+// pourrait multiplier GALLERY_PRELOAD_EXTRA_ROWS et
+// GALLERY_PRELOAD_CONCURRENCY (×1 / ×2, plafonné à GALLERY_PRELOAD_MAX_ITEMS)
+// et persister dans localStorage comme GALLERY_DISPLAY_KEY. Non retenu pour
+// l'instant : les valeurs actuelles mesurent 0 placeholder en scroll rapide.
 
 // Glyphes des états de vignette : VISIBLES et DISTINCTS les uns des autres.
 //   ⏳ = en attente de chargement ; ⚠ = échec de chargement ;
@@ -398,6 +476,12 @@ var galleryState = {
   // Rafraîchissement automatique : timer du poll + listener de visibilité.
   pollTimer: null,
   visibilityHandler: null,
+  pollInFlight: false,
+  // Resynchronisation complète demandée par le poll mais pas encore sûre à
+  // exécuter (sélection/visionneuse/scroll actifs) : rejouée au tick suivant.
+  pollPendingReload: false,
+  // Observable de test : nb d'items insérés en tête par le dernier tick utile.
+  lastPollInserted: 0,
   // Observables de test : dernier appel réseau et derniers téléchargements.
   lastRequest: null,
   lastDownload: null,
@@ -412,6 +496,17 @@ var galleryState = {
   lastAutoTagRequest: null,
   // Borne d'attente d'une vignette (surchargeable en test).
   thumbPendingMs: GALLERY_THUMB_PENDING_MS,
+  // Pré-chargement des vignettes : dernière plage visible émise par la
+  // grille (reprise au retour d'onglet) + file bornée de pré-charge pixels.
+  //   dir       : sens du défilement déduit des plages successives
+  //               (+1 vers le bas, -1 vers le haut, 0 inconnu) — il ordonne
+  //               la file (cf. galleryPreloadRows).
+  //   lastStart : index du début de la dernière plage visible (calcul du sens).
+  //   queue     : entrées { item, row } en attente de créneau.
+  //   inflight  : { [id]: { img, timer, row, done } } — chargements en vol
+  //               (sert à l'annulation optionnelle des entrées périmées).
+  lastVisibleRange: null,
+  preload: { queue: [], pending: {}, active: 0, dir: 0, lastStart: null, inflight: {} },
 };
 
 var galleryKeyHandler = null;
@@ -434,6 +529,7 @@ function galleryStop() {
   if (galleryState.lightbox && galleryState.lightbox.isOpen()) {
     try { galleryState.lightbox.close(); } catch (e) { /* ignore */ }
   }
+  galleryPreloadPause(); // quitter l'onglet ne laisse pas de pré-charge en file
   galleryStopPolling();
 }
 
@@ -448,7 +544,15 @@ function galleryStartPolling() {
   galleryStopPolling();
   if (typeof document !== 'undefined' && !galleryState.visibilityHandler) {
     galleryState.visibilityHandler = function () {
-      if (!document.hidden) galleryPollNow();
+      if (document.hidden) {
+        // Onglet masqué : plus AUCUNE pré-charge supplémentaire (les
+        // chargements déjà en vol se terminent, le navigateur les ralentit
+        // déjà) — le prochain rendu/reprise repartira de lastVisibleRange.
+        galleryPreloadPause();
+        return;
+      }
+      galleryPollNow();
+      galleryPrefetchResume();
     };
     document.addEventListener('visibilitychange', galleryState.visibilityHandler);
   }
@@ -492,44 +596,187 @@ function galleryPollNow() {
 }
 
 /**
- * Vérifie si la liste doit être rechargée, SANS perturber l'utilisateur :
- * on ne touche à rien pendant une action réseau, une sélection multiple, la
- * visionneuse ouverte, ou un scroll profond (on ne « saute » pas en tête).
+ * Vérifie s'il y a du nouveau, SANS jamais perturber l'utilisateur.
+ *
+ * AVANT, ce contrôle s'arrêtait (retour silencieux) dès que la liste était
+ * scrollée, qu'une sélection existait, que la visionneuse était ouverte ou
+ * qu'un appel était en cours. Comme on ne savait alors rafraîchir qu'en
+ * RELANÇANT toute la liste (scroll remonté + sélection vidée), il fallait
+ * suspendre pour ne pas casser la vue… résultat : en usage réel (liste
+ * scrollée), la galerie ne se rafraîchissait JAMAIS toute seule.
+ *
+ * Désormais le rafraîchissement est INCRÉMENTAL (cf. galleryPollInsert) : on
+ * peut donc TOUJOURS interroger la tête. Seuls deux garde-fous subsistent :
+ *   - `busy`   : une action réseau est en cours, on ne la double pas ;
+ *   - `pollInFlight` : un tick est déjà en vol.
+ * La visionneuse/sélection/scroll ne suspendent plus, ils sont PRÉSERVÉS par
+ * l'insertion. Une resynchronisation complète éventuelle est différée
+ * (galleryPollTryPendingReload).
  */
 function galleryPollCheck() {
   if (!galleryState.started) return;
   if (galleryState.busy) return;
-  if (galleryState.lightbox && galleryState.lightbox.isOpen()) return;
-  if (gallerySelectedIds().length) return;
+  if (galleryState.pollInFlight) return;
+  // Une resynchronisation complète était demandée : on la rejoue si elle ne
+  // perturbe plus rien. Si elle vient d'être faite, la liste est à jour.
+  if (galleryPollTryPendingReload()) return;
   var col = galleryState.collection;
   if (!col) return;
-  var gridEl = galleryById('gallery-grid');
-  if (gridEl && gridEl.scrollTop > 0) return; // l'utilisateur lit la suite
-  galleryPollFetchTop(col);
+  // Chargement initial / rechargement de filtre en cours : rien à comparer.
+  if (!galleryState.loadedOnce) return;
+  galleryPollHead(col);
 }
 
 /**
- * Interroge la tête de liste (page 1, limit 1) et relance la liste seulement
- * si le média le plus récent ou le total a changé. Silencieux en cas d'erreur
- * réseau (le prochain tick réessaiera).
+ * Interroge la TÊTE de liste (page 1, limit GALLERY_POLL_LIMIT) avec les MÊMES
+ * filtres et le MÊME tri que la vue courante, puis réconcilie la collection.
+ * Silencieux en cas d'erreur réseau : le prochain tick réessaiera (le poll ne
+ * meurt jamais sur une erreur).
  */
-function galleryPollFetchTop(col) {
-  var url = galleryMediaUrl(1, 1, galleryReadFilterInputs(), galleryState.sort);
+function galleryPollHead(col) {
+  galleryState.pollInFlight = true;
+  var url = galleryMediaUrl(1, GALLERY_POLL_LIMIT, galleryReadFilterInputs(), galleryState.sort);
   return fetch(url, { credentials: 'same-origin' }).then(function (res) {
     if (!res.ok) return null;
-    return galleryJson(res).then(function (data) {
-      var items = (data && Array.isArray(data.items)) ? data.items : [];
-      var topId = items.length ? items[0].id : null;
-      var total = (data && typeof data.total === 'number') ? data.total : null;
-      var first = (col.length > 0) ? col.at(0) : null;
-      var curTop = (first && first.id != null) ? first.id : null;
-      var changed = false;
-      if (total !== null && col.total !== total) changed = true;
-      if (topId !== null && curTop !== null && topId !== curTop) changed = true;
-      if (changed) galleryReload();
-      return data;
-    });
-  }).catch(function () { return null; });
+    return galleryJson(res);
+  }).then(function (data) {
+    galleryApplyPollHead(col, data);
+    return data;
+  }).catch(function () {
+    return null; // erreur réseau : avalée, on retente au tick suivant
+  }).then(function (r) {
+    galleryState.pollInFlight = false;
+    return r;
+  });
+}
+
+/**
+ * Réconcilie la tête de liste reçue par le poll.
+ *
+ * Cas nominal (NOUVELLES IMAGES) : si le total AUGMENTE, que la vue est triée
+ * par date décroissante (le tri par défaut) et que la tête courante est
+ * retrouvée dans la page reçue à la position k>0, alors les k premiers items
+ * sont NOUVEAUX → insertion incrémentale (galleryPollInsert).
+ *
+ * Tout le reste (suppression, tri non-descendant, plus de nouveaux items que
+ * la limite lue, tête courante absente, liste vide) → resynchronisation
+ * COMPLÈTE, mais différée si elle remonterait le scroll / viderait une
+ * sélection / fermerait la visionneuse.
+ *
+ * @returns {{action:string, count?:number}}
+ */
+function galleryApplyPollHead(col, data) {
+  if (!data || typeof data.total !== 'number') return { action: 'none' };
+  var total = data.total;
+  var curTotal = col.total || 0;
+  if (total === curTotal) return { action: 'none' };
+
+  var curTop = (col.length > 0) ? col.at(0) : null;
+  var curTopId = (curTop && curTop.id != null) ? curTop.id : null;
+
+  if (total > curTotal && curTopId !== null && galleryState.sort === 'created_at_desc') {
+    var items = Array.isArray(data.items) ? data.items : [];
+    var delta = total - curTotal;
+    var k = -1;
+    for (var i = 0; i < items.length; i++) {
+      if (items[i] && items[i].id === curTopId) { k = i; break; }
+    }
+    // k > 0 : k items inédits précèdent la tête connue. On exige que leur
+    // nombre colle EXACTEMENT à la hausse du total (sinon des suppressions se
+    // sont glissées dans le lot → resynchronisation).
+    if (k > 0 && k === delta) {
+      return galleryPollInsert(col, items.slice(0, k));
+    }
+  }
+
+  galleryPollRequestReload();
+  return { action: 'reload-deferred' };
+}
+
+/**
+ * Intègre de NOUVEAUX items en tête SANS recharger la liste ni rien remettre à
+ * zéro : `insertTop` ré-ancre les fenêtres déjà chargées (objets conservés).
+ *
+ * Ce qui est PRÉSERVÉ / compensé :
+ *   - sélection : la grille sélectionne par ID → les items cochés le restent ;
+ *   - visionneuse : l'index courant glisse de +n, on le réaligne sur le MÊME
+ *     média (sinon le prochain ‹/› pointerait un autre item) ; elle n'est
+ *     JAMAIS fermée ;
+ *   - scroll : à contenu constant, les items déjà affichés glissent de n
+ *     positions ; on compense de `rangées × hauteur de rangée` pour que
+ *     l'utilisateur continue de lire EXACTEMENT ce qu'il lisait. En haut de
+ *     liste (scrollTop=0) on ne compense pas : il voit directement arriver les
+ *     nouveautés.
+ *
+ * Signal discret : un toast « n nouveaux médias » UNIQUEMENT si la liste est
+ * scrollée (sinon les nouveaux items sont déjà sous les yeux).
+ *
+ * @returns {{action:string, count:number}}
+ */
+function galleryPollInsert(col, newItems) {
+  var n = 0;
+  try { n = col.insertTop(newItems) || 0; } catch (e) { n = 0; }
+  galleryState.lastPollInserted = n;
+  if (n <= 0) return { action: 'none', count: 0 };
+
+  var grid = galleryState.grid;
+  var gridEl = galleryById('gallery-grid');
+  var atTop = !gridEl || !gridEl.scrollTop;
+
+  // Visionneuse ouverte : réaligne son index sur le même média (jamais fermée).
+  // (On ne décale que si elle est réellement ouverte : un index mémorisé d'une
+  // visionneuse déjà fermée ne doit pas dériver.)
+  if (galleryState.lightbox && galleryState.lightbox.isOpen() && galleryState.lightboxIndex >= 0) {
+    galleryState.lightboxIndex += n;
+  }
+
+  if (!atTop && gridEl) {
+    var cols = (grid && typeof grid.getColumnCount === 'function')
+      ? Math.max(1, grid.getColumnCount()) : 1;
+    var rows = Math.ceil(n / cols);
+    var m = (grid && typeof grid.getMetrics === 'function') ? grid.getMetrics() : null;
+    var rowH = ((m && m.itemHeight) || galleryState.displaySize)
+      + ((m && m.gap != null) ? m.gap : GALLERY_GRID_GAP);
+    gridEl.scrollTop = gridEl.scrollTop + rows * rowH;
+  }
+
+  // `relayout()` recalcule le sizer (nouveau total) et re-rend la fenêtre.
+  if (grid && typeof grid.relayout === 'function') grid.relayout();
+
+  if (!atTop) {
+    galleryToast(n + ' nouveau' + (n > 1 ? 'x' : '') + ' média' + (n > 1 ? 's' : '') + ' ajouté' + (n > 1 ? 's' : '')
+      + ' — remontez la liste', 'info');
+  }
+  // Un nouveau dossier a pu apparaître : si la modale est ouverte, on rafraîchit
+  // sa liste et ses comptes sans fermer ni décocher.
+  galleryRefreshFoldersModalIfOpen();
+  return { action: 'inserted', count: n };
+}
+
+/** Enregistre une resynchronisation complète à exécuter dès que possible. */
+function galleryPollRequestReload() {
+  galleryState.pollPendingReload = true;
+}
+
+/**
+ * Exécute la resynchronisation en attente SI elle ne perturbe pas l'utilisateur
+ * (aucune sélection, pas de visionneuse ouverte, pas d'action en cours, liste
+ * en haut). Sinon elle reste en attente et sera rejouée au tick suivant.
+ * @returns {boolean} true si un reload vient d'être lancé.
+ */
+function galleryPollTryPendingReload() {
+  if (!galleryState.pollPendingReload) return false;
+  if (galleryState.busy) return false;
+  if (gallerySelectedIds().length) return false;
+  if (galleryState.lightbox && galleryState.lightbox.isOpen()) return false;
+  var gridEl = galleryById('gallery-grid');
+  if (gridEl && gridEl.scrollTop > 0) return false; // ne pas remonter la vue
+  galleryState.pollPendingReload = false;
+  galleryReload();
+  // Un changement structurel a pu modifier la liste des dossiers : si la modale
+  // est ouverte, on remet ses comptes à jour.
+  galleryRefreshFoldersModalIfOpen();
+  return true;
 }
 
 /** Relance le chargement depuis la première page (bouton Rafraîchir). */
@@ -553,6 +800,14 @@ function galleryReload() {
   if (!col) return Promise.resolve();
   var filters = galleryReadFilterInputs();
   col.setFilters(filters); // = reset() + remplace les filtres
+  // Nouveau jeu de données : la file de pré-charge porte des items de l'ANCIEN
+  // jeu (rangées/indexs sans rapport) → on la vide, et le sens mémorisé du
+  // défilement ne veut plus rien dire.
+  galleryPreloadPause();
+  if (galleryState.preload) {
+    galleryState.preload.dir = 0;
+    galleryState.preload.lastStart = null;
+  }
   galleryState.loadedOnce = false;
   galleryClearSelection();
   var gridEl = galleryById('gallery-grid');
@@ -612,8 +867,8 @@ function galleryInit() {
 
   // 3) Cache de vignettes — stratégie 'url' (le navigateur cache via ETag).
   galleryState.thumbCache = window.HolafThumbCache.create({
-    capacity: 1200,
-    concurrency: 6,
+    capacity: GALLERY_THUMB_CACHE_CAPACITY,
+    concurrency: GALLERY_THUMB_CONCURRENCY,
     strategy: 'url',
     getId: function (m) { return m.id; },
     load: function (m) { return galleryThumbUrl(m, galleryState.serverSize); },
@@ -622,9 +877,9 @@ function galleryInit() {
   // 4) Grille virtualisée DOM.
   galleryState.grid = window.HolafGrid.create(gridEl, {
     itemSize: function () { return galleryState.displaySize; },
-    gap: 12,
+    gap: GALLERY_GRID_GAP,
     aspect: 1,
-    bufferFactor: 1.5,
+    bufferFactor: GALLERY_GRID_BUFFER_FACTOR,
     getId: function (m) { return m.id; },
     keyboard: false, // clavier piloté globalement via galleryOnKeyDown
     activateOnClick: false,
@@ -1086,8 +1341,292 @@ function galleryOnVisibleRange(start, end, ids) {
   if (!galleryState.started && !galleryState.grid) return;
   var col = galleryState.collection;
   var cache = galleryState.thumbCache;
+  var pre = galleryState.preload;
   if (cache && ids && ids.length) cache.onVisible(ids);
   if (col && end >= start) col.ensureRange(start, end);
+  // Sens du défilement : la plage visible se DÉPLACE (start qui avance ou
+  // recule). Un start identique (même rangée) conserve le sens mémorisé.
+  if (pre && end >= start) {
+    if (pre.lastStart !== null && start !== pre.lastStart) {
+      pre.dir = (start > pre.lastStart) ? 1 : -1;
+    }
+    pre.lastStart = start;
+  }
+  galleryPrefetchAround(start, end);
+}
+
+/* ── Pré-chargement autour de la zone visible ────────────────────────────── */
+
+/**
+ * Pré-charge les vignettes AUTOUR de la plage visible émise par la grille.
+ *
+ * Deux étages, dédupliqués par le cache (id déjà en LRU ou en vol) et bornés
+ * par les données réellement disponibles (`collection.total`) :
+ *   1. `thumbCache.prefetch(item)` — PRIORITÉ BASSE, mémorise l'URL dans le
+ *      LRU au démarrage de chaque téléchargement. NB : en stratégie 'url' la
+ *      brique ne fait AUCUNE requête réseau ici (elle stocke une chaîne
+ *      d'URL) ;
+ *   2. `<img>` hors DOM — téléchargement RÉEL des pixels des rangées situées
+ *      AU-DELÀ de la fenêtre rendue, à concurrence bornée
+ *      (GALLERY_PRELOAD_CONCURRENCY) pour ne pas saturer la file de
+ *      connexions du navigateur ni retarder les vignettes visibles.
+ *
+ * Appelé à chaque rendu (le dédup rend les rappels répétés gratuits) ; ne fait
+ * rien quand l'onglet est masqué (visibilitychange) — `galleryPrefetchResume`
+ * reprend au retour.
+ */
+function galleryPrefetchAround(start, end) {
+  var grid = galleryState.grid;
+  var col = galleryState.collection;
+  var cache = galleryState.thumbCache;
+  var pre = galleryState.preload;
+  if (!grid || !col || !cache || !(end >= start) || !pre) return;
+  galleryState.lastVisibleRange = { start: start, end: end };
+  if (typeof document !== 'undefined' && document.hidden) return; // onglet masqué
+  var total = col.total;
+  if (!(total > 0)) return;
+  var cols = Math.max(1, grid.getColumnCount());
+  // Bande de pré-charge COURANTE (rangées rendues ± EXTRA) : elle sert à la
+  // fois à ordonner la file selon le sens du défilement et à ABANDONNER les
+  // entrées devenues périmées (rangées sautées lors d'un scroll très rapide).
+  var band = galleryPreloadBand(cols, total);
+  galleryPreloadPrune(band.first, band.last);
+  var rows = galleryPreloadRows(cols, total);
+  // Les pixels ne peuvent être pré-chargés que pour des items DÉJÀ chargés :
+  // on avance donc le chargement de pages du scroll infini jusqu'au bas de la
+  // zone de pré-charge, BORNÉ par `total`. Sans cela la grille n'affiche que
+  // des squelettes et les vignettes arrivent à l'instant même où elles
+  // entrent dans la vue — rafale de placeholders au scroll rapide. Quand la
+  // page arrive, son événement 'load' relance un rendu → nouvelle passe ici,
+  // qui pré-charge alors ses pixels.
+  if (rows.length) {
+    var tail = Math.min(total - 1, (Math.max.apply(null, rows) + 1) * cols - 1);
+    if (tail > end && typeof col.ensureRange === 'function') col.ensureRange(start, tail);
+  }
+  var scheduled = 0;
+  for (var r = 0; r < rows.length && scheduled < GALLERY_PRELOAD_MAX_ITEMS; r++) {
+    var row = rows[r];
+    for (var i = row * cols; i < (row + 1) * cols && i < total; i++) {
+      if (scheduled >= GALLERY_PRELOAD_MAX_ITEMS) break;
+      var item = col.at(i);
+      if (!item || item.thumb_available === false) continue; // pas de vignette
+      var id = item.id;
+      // Dédup : déjà en LRU (peek), déjà en vol (cellule rendue ou pré-charge
+      // en cours) → ne JAMAIS re-demander une vignette déjà connue.
+      if (cache.peek(id) || cache.isLoading(id) || pre.pending[id]) continue;
+      pre.pending[id] = true;
+      pre.queue.push({ item: item, row: row });
+      scheduled++;
+    }
+  }
+  galleryPreloadPump();
+}
+
+/**
+ * Fenêtre RENDUE par la brique (rangées), recalculée avec EXACTEMENT les
+ * mêmes entrées que HolafGrid (itemSize de l'hôte, GALLERY_GRID_GAP,
+ * bufferFactor) : zone rendue = [scrollTop − vh×k, scrollTop + vh + vh×k].
+ * Hauteur de rangée RÉELLE lue via getMetrics() : avec `aspect: 1`, elle
+ * découle de la LARGEUR de colonne (pas de `itemSize`).
+ * @returns {{firstRendered:number,lastRendered:number,lastRow:number}}
+ */
+function galleryPreloadWindow(cols, total) {
+  var el = galleryById('gallery-grid');
+  var vh = el ? (el.clientHeight || 0) : 0;
+  var st = el ? (el.scrollTop || 0) : 0;
+  var m = galleryState.grid ? galleryState.grid.getMetrics() : null;
+  var itemH = (m && m.itemHeight) || galleryState.displaySize;
+  var gap = (m && m.gap != null) ? m.gap : GALLERY_GRID_GAP;
+  var rowH = Math.max(1, itemH + gap);
+  var buffer = vh * GALLERY_GRID_BUFFER_FACTOR;
+  var lastRow = Math.max(0, Math.ceil(total / cols) - 1);
+  var firstRendered = Math.max(0, Math.floor(Math.max(0, st - buffer) / rowH));
+  var lastRendered = Math.min(lastRow, Math.ceil((st + vh + buffer) / rowH));
+  return { firstRendered: firstRendered, lastRendered: lastRendered, lastRow: lastRow };
+}
+
+/**
+ * Rangées à pré-charger EXPLICITEMENT en pixels : juste AU-DELÀ de la zone
+ * rendue par la grille, des DEUX côtés, les plus proches d'abord — mais
+ * ORDONNÉES PAR LE SENS DU DÉFILEMENT : le côté vers lequel l'utilisateur se
+ * dirige part EN PREMIER (adaptation du prefetchAhead() du pack, qui ne
+ * pré-charge que vers l'avant). Sens inconnu (ouverture, saut) : alternance
+ * historique haut/bas par profondeur.
+ *
+ * Les cellules rendues ont DÉJÀ leur `<img src>` : le dédup de l'appelant
+ * évite tout doublon avec elles.
+ */
+function galleryPreloadRows(cols, total) {
+  var w = galleryPreloadWindow(cols, total);
+  var above = [];
+  var below = [];
+  for (var d = 1; d <= GALLERY_PRELOAD_EXTRA_ROWS; d++) {
+    if (w.firstRendered - d >= 0) above.push(w.firstRendered - d);   // au-dessus
+    if (w.lastRendered + d <= w.lastRow) below.push(w.lastRendered + d); // en dessous
+  }
+  var dir = galleryState.preload ? galleryState.preload.dir : 0;
+  if (dir > 0) return below.concat(above); // défile vers le bas → le bas d'abord
+  if (dir < 0) return above.concat(below); // défile vers le haut → le haut d'abord
+  var rows = [];
+  for (var i = 0; i < Math.max(above.length, below.length); i++) {
+    if (i < above.length) rows.push(above[i]);
+    if (i < below.length) rows.push(below[i]);
+  }
+  return rows;
+}
+
+/**
+ * Bande de pré-charge courante : rangées rendues ± GALLERY_PRELOAD_EXTRA_ROWS,
+ * bornées par la dernière rangée du total. Toute entrée en file HORS de cette
+ * bande (avec la marge GALLERY_PRELOAD_STALE_GRACE_ROWS) est périmée.
+ * @returns {{first:number,last:number}}
+ */
+function galleryPreloadBand(cols, total) {
+  var w = galleryPreloadWindow(cols, total);
+  return {
+    first: Math.max(0, w.firstRendered - GALLERY_PRELOAD_EXTRA_ROWS),
+    last: Math.min(w.lastRow, w.lastRendered + GALLERY_PRELOAD_EXTRA_ROWS),
+  };
+}
+
+/**
+ * Abandonne les entrées ENCORE EN FILE devenues périmées (rangées sorties de
+ * la bande courante de plus de GALLERY_PRELOAD_STALE_GRACE_ROWS) : un scroll
+ * très rapide ne fait plus télécharger les rangées intermédiaires sautées.
+ * Les marqueurs de dédup sont oubliés pour qu'une ré-entrée dans la bande
+ * (retour en arrière) soit re-proposée normalement.
+ *
+ * Si GALLERY_PRELOAD_CANCEL_STALE_ROWS > 0, les chargements EN VOL sortis de
+ * la bande de plus de cette marge sont annulés (libère un créneau).
+ * @returns {number} nombre d'entrées abandonnées
+ */
+function galleryPreloadPrune(bandFirst, bandLast) {
+  var pre = galleryState.preload;
+  if (!pre) return 0;
+  var lo = bandFirst - GALLERY_PRELOAD_STALE_GRACE_ROWS;
+  var hi = bandLast + GALLERY_PRELOAD_STALE_GRACE_ROWS;
+  var dropped = 0;
+  if (pre.queue.length) {
+    var kept = [];
+    for (var i = 0; i < pre.queue.length; i++) {
+      var entry = pre.queue[i];
+      if (!entry || entry.row < lo || entry.row > hi) {
+        dropped++;
+        if (entry && entry.item && pre.pending[entry.item.id]) delete pre.pending[entry.item.id];
+      } else {
+        kept.push(entry);
+      }
+    }
+    if (dropped) pre.queue = kept;
+  }
+  if (GALLERY_PRELOAD_CANCEL_STALE_ROWS > 0 && pre.inflight) {
+    var nlo = bandFirst - GALLERY_PRELOAD_CANCEL_STALE_ROWS;
+    var nhi = bandLast + GALLERY_PRELOAD_CANCEL_STALE_ROWS;
+    for (var id in pre.inflight) {
+      var act = pre.inflight[id];
+      if (act && act.row != null && (act.row < nlo || act.row > nhi)) galleryPreloadAbort(id);
+    }
+  }
+  return dropped;
+}
+
+/**
+ * Démarre des pré-chargements tant qu'il reste de la place sous la borne de
+ * concurrence. Ne fait rien onglet masqué (les entrées restent en file).
+ */
+function galleryPreloadPump() {
+  var pre = galleryState.preload;
+  if (!pre) return;
+  if (typeof document !== 'undefined' && document.hidden) return;
+  while (pre.active < GALLERY_PRELOAD_CONCURRENCY && pre.queue.length) {
+    galleryPreloadStart(pre.queue.shift());
+  }
+}
+
+/**
+ * Télécharge les pixels d'UNE entrée { item, row } en priorité basse, hors
+ * DOM : `prefetch()` (LRU, priorité basse de la brique) puis un `<img>`
+ * invisible dont les `load` / `error` libèrent le créneau — un échec ne
+ * bloque jamais la file. L'entrée est tracée dans `pre.inflight` pour
+ * permettre l'annulation optionnelle des pré-charges périmées.
+ */
+function galleryPreloadStart(entry) {
+  var pre = galleryState.preload;
+  if (!pre || !entry || !entry.item) return;
+  var item = entry.item;
+  var id = item.id;
+  pre.active++;
+  try { galleryState.thumbCache.prefetch(item); } catch (e) { /* jamais bloquant */ }
+  var rec = { img: null, timer: null, row: entry.row, done: false };
+  pre.inflight[id] = rec;
+  var finish = function () {
+    if (rec.done) return;
+    rec.done = true;
+    if (pre.inflight && pre.inflight[id] === rec) delete pre.inflight[id];
+    if (pre.pending[id]) delete pre.pending[id];
+    pre.active = Math.max(0, pre.active - 1);
+    galleryPreloadPump();
+  };
+  var img = document.createElement('img');
+  rec.img = img;
+  var timer = setTimeout(function () {
+    img.onload = null;
+    img.onerror = null;
+    finish(); // requête morte : libère le créneau au lieu de le figer
+  }, GALLERY_PRELOAD_TIMEOUT_MS);
+  // En Node (tests headless) le timer est un objet Timeout : unref() évite de
+  // maintenir la boucle d'événements vivante (comme les autres timers du front).
+  if (timer && typeof timer.unref === 'function') timer.unref();
+  rec.timer = timer;
+  img.decoding = 'async';
+  img.onload = function () { clearTimeout(timer); finish(); };
+  img.onerror = function () { clearTimeout(timer); finish(); }; // échec réseau : pas de retry ici
+  img.src = galleryThumbUrl(item, galleryState.serverSize);
+}
+
+/**
+ * Annule une pré-charge EN VOL (rangée périmée) : détache les handlers, vide
+ * `src` (le navigateur abandonne la requête), libère le créneau et oublie le
+ * marqueur de dédup — l'item pourra être re-proposé s'il revient dans la bande.
+ * Utilisé UNIQUEMENT quand GALLERY_PRELOAD_CANCEL_STALE_ROWS > 0.
+ */
+function galleryPreloadAbort(id) {
+  var pre = galleryState.preload;
+  var rec = (pre && pre.inflight) ? pre.inflight[id] : null;
+  if (!rec || rec.done) return;
+  rec.done = true;
+  delete pre.inflight[id];
+  if (pre.pending[id]) delete pre.pending[id];
+  if (rec.timer) clearTimeout(rec.timer);
+  if (rec.img) {
+    rec.img.onload = null;
+    rec.img.onerror = null;
+    try { rec.img.src = ''; } catch (e) { /* ignore */ }
+  }
+  pre.active = Math.max(0, pre.active - 1);
+  galleryPreloadPump();
+}
+
+/**
+ * Vide la file de pré-charge (les chargements en vol se terminent seuls).
+ * Les items ENCORE EN FILE ne sont pas « actifs » : on oublie aussi leur
+ * marqueur de dédup, sinon ils ne seraient JAMAIS reproposés au retour.
+ */
+function galleryPreloadPause() {
+  var pre = galleryState.preload;
+  if (!pre) return;
+  for (var i = 0; i < pre.queue.length; i++) {
+    var entry = pre.queue[i];
+    var id = entry && entry.item && entry.item.id;
+    if (id !== undefined && id !== null && pre.pending[id]) delete pre.pending[id];
+  }
+  pre.queue.length = 0;
+}
+
+/** Reprend la pré-charge de la dernière plage visible (retour d'onglet). */
+function galleryPrefetchResume() {
+  var r = galleryState.lastVisibleRange;
+  if (r) galleryPrefetchAround(r.start, r.end);
 }
 
 /**
@@ -1478,6 +2017,21 @@ function galleryFetchFolders() {
   });
 }
 
+/**
+ * Rafraîchit la liste des dossiers SI la modale est ouverte (le poll appelle
+ * ceci quand un changement est détecté). Silencieux et non bloquant : ne pose
+ * pas de `busy`, donc l'utilisateur peut continuer à cocher/décocher pendant
+ * l'aller-retour. Ne fait rien si aucune modale n'est ouverte.
+ */
+function galleryRefreshFoldersModalIfOpen() {
+  var ctrl = galleryState.foldersModal;
+  if (!ctrl || typeof ctrl.__galleryRefreshFolders !== 'function') return;
+  galleryFetchFolders().then(function (rows) {
+    if (galleryState.foldersModal !== ctrl) return; // modale fermée entre-temps
+    ctrl.__galleryRefreshFolders(rows);
+  }).catch(function () { /* silencieux : on retentera au prochain changement */ });
+}
+
 /** Met à jour le libellé du bouton selon la sélection courante. */
 function galleryUpdateFoldersButton() {
   var btn = galleryById('gallery-filter-folders');
@@ -1663,6 +2217,16 @@ function galleryOpenFoldersModal() {
     onClose: function () { galleryState.foldersModal = null; },
   });
   galleryState.foldersModal = ctrl;
+
+  // Rafraîchissement LÉGER tant que la modale est ouverte : le poll pousse la
+  // liste et les comptes à jour SANS fermer la modale ni réinitialiser les
+  // cases déjà cochées (`render()` relit `selected`). Choix documenté : la
+  // liste est aussi rechargée à CHAQUE ouverture (galleryFetchFolders ci-dessous),
+  // donc un rafraîchissement pendant l'ouverture est un « plus » de confort.
+  ctrl.__galleryRefreshFolders = function (rows) {
+    folders = Array.isArray(rows) ? rows : [];
+    render();
+  };
 
   ctrl.setBusy(true, 'Chargement des dossiers…');
   galleryFetchFolders().then(function (rows) {
@@ -2898,6 +3462,7 @@ window.AppGallery = {
   reload: galleryReload,
   pollNow: galleryPollNow,
   pollStop: galleryStopPolling,
+  pollCheck: galleryPollCheck,
   setDisplaySize: gallerySetDisplaySize,
   setViewMode: gallerySetViewMode,
   readViewMode: galleryReadViewMode,
@@ -2926,7 +3491,10 @@ window.AppGallery = {
   fetchFolders: galleryFetchFolders,
   foldersUrl: galleryFoldersUrl,
   updateFoldersButton: galleryUpdateFoldersButton,
+  refreshFoldersModalIfOpen: galleryRefreshFoldersModalIfOpen,
   folderLabel: galleryFolderLabel,
+  // PRÉ-CHARGEMENT des vignettes autour de la zone visible (testable).
+  prefetchAround: galleryPrefetchAround,
   // FILTRE TAGS (bouton + modale multi-tags)
   openTagsModal: galleryOpenTagsModal,
   applyTags: galleryApplyTags,
@@ -2982,8 +3550,19 @@ window.AppGallery = {
     THUMB_RETRY_MS: GALLERY_THUMB_RETRY_MS,
     THUMB_PENDING_MS: GALLERY_THUMB_PENDING_MS,
     POLL_MS: GALLERY_POLL_MS,
+    POLL_LIMIT: GALLERY_POLL_LIMIT,
     SORTS: GALLERY_SORTS.slice(),
     TAG_MAX_LEN: GALLERY_TAG_MAX_LEN,
+    GRID_BUFFER_FACTOR: GALLERY_GRID_BUFFER_FACTOR,
+    GRID_GAP: GALLERY_GRID_GAP,
+    PRELOAD_EXTRA_ROWS: GALLERY_PRELOAD_EXTRA_ROWS,
+    PRELOAD_CONCURRENCY: GALLERY_PRELOAD_CONCURRENCY,
+    PRELOAD_MAX_ITEMS: GALLERY_PRELOAD_MAX_ITEMS,
+    PRELOAD_TIMEOUT_MS: GALLERY_PRELOAD_TIMEOUT_MS,
+    PRELOAD_STALE_GRACE_ROWS: GALLERY_PRELOAD_STALE_GRACE_ROWS,
+    PRELOAD_CANCEL_STALE_ROWS: GALLERY_PRELOAD_CANCEL_STALE_ROWS,
+    THUMB_CACHE_CAPACITY: GALLERY_THUMB_CACHE_CAPACITY,
+    THUMB_CONCURRENCY: GALLERY_THUMB_CONCURRENCY,
   },
   state: galleryState,
 };

@@ -606,7 +606,8 @@ ok(window.document.getElementById("gallery-error").textContent.indexOf("Erreur")
 /* ═══ 8bis. Auto-rafraîchissement (poll léger) ════════════════════════════ */
 console.log("8bis. Auto-rafraîchissement (poll)");
 ok(typeof AppGallery.pollNow === "function", "AppGallery.pollNow exposé");
-eq(AppGallery.constants.POLL_MS, 15000, "intervalle de poll = 15 s");
+eq(AppGallery.constants.POLL_MS, 10000, "intervalle de poll = 10 s");
+eq(AppGallery.constants.POLL_LIMIT, 30, "limite de la requête de tête = 30");
 // Retour à un état sain (la section 8 a laissé la liste vide/erreur).
 mediaItems = [];
 for (let i = 1; i <= 120; i++) mediaItems.push(makeItem(i));
