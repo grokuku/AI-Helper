@@ -480,6 +480,11 @@ var galleryState = {
   // Resynchronisation complète demandée par le poll mais pas encore sûre à
   // exécuter (sélection/visionneuse/scroll actifs) : rejouée au tick suivant.
   pollPendingReload: false,
+  // Compteur de MUTATIONS LOCALES de la collection (retrait optimiste, insert,
+  // reload). Un tick de poll démarré AVANT une mutation locale est PÉRIMÉ : sa
+  // réponse décrit un état antérieur (ex. total d'avant notre suppression) et
+  // ne doit pas être interprétée comme un changement hors-bande.
+  mutationSeq: 0,
   // Observable de test : nb d'items insérés en tête par le dernier tick utile.
   lastPollInserted: 0,
   // Observables de test : dernier appel réseau et derniers téléchargements.
@@ -596,6 +601,15 @@ function galleryPollNow() {
 }
 
 /**
+ * Signale une MUTATION LOCALE de la collection (retrait optimiste, insertion
+ * en tête, reload). Les ticks de poll démarrés avant sont marqués PÉRIMÉS :
+ * leurs réponses seront ignorées (cf. galleryPollHead).
+ */
+function galleryMarkLocalMutation() {
+  galleryState.mutationSeq++;
+}
+
+/**
  * Vérifie s'il y a du nouveau, SANS jamais perturber l'utilisateur.
  *
  * AVANT, ce contrôle s'arrêtait (retour silencieux) dès que la liste était
@@ -635,11 +649,21 @@ function galleryPollCheck() {
  */
 function galleryPollHead(col) {
   galleryState.pollInFlight = true;
+  // État des mutations locales AU DÉPART de la requête (cf. mutationSeq).
+  var seq = galleryState.mutationSeq;
   var url = galleryMediaUrl(1, GALLERY_POLL_LIMIT, galleryReadFilterInputs(), galleryState.sort);
   return fetch(url, { credentials: 'same-origin' }).then(function (res) {
     if (!res.ok) return null;
     return galleryJson(res);
   }).then(function (data) {
+    // Une mutation LOCALE est survenue pendant que la requête était en vol :
+    // la réponse décrit l'état d'AVANT (son total ne reflète pas notre propre
+    // suppression/insertion) → on la jette. Sans ce garde-fou, notre propre
+    // suppression — total local déjà décrémenté — ferait passer la réponse
+    // périmée pour une suppression hors-bande et déclencherait un reload
+    // complet injustifié (toutes les vignettes rechargées). Le prochain tick
+    // repart de l'état courant.
+    if (seq !== galleryState.mutationSeq) return { action: 'stale' };
     galleryApplyPollHead(col, data);
     return data;
   }).catch(function () {
@@ -662,6 +686,14 @@ function galleryPollHead(col) {
  * la limite lue, tête courante absente, liste vide) → resynchronisation
  * COMPLÈTE, mais différée si elle remonterait le scroll / viderait une
  * sélection / fermerait la visionneuse.
+ *
+ * RÈGLE « notre suppression » vs « suppression hors-bande » : à chaque
+ * mutation LOCALE (retrait optimiste, insertion en tête, reload), le total de
+ * `col` est mis à jour EN MÊME TEMPS que l'item — donc au tick suivant,
+ * `data.total === col.total` et il ne se passe rien. Une BAISSE de total vue
+ * ici (hors réponse périmée, cf. galleryPollHead/mutationSeq) est donc, par
+ * construction, un changement venu d'AILLEURS (ComfyUI, autre onglet) : seule
+ * cette baisse-là déclenche une resynchronisation complète (différée).
  *
  * @returns {{action:string, count?:number}}
  */
@@ -718,6 +750,7 @@ function galleryPollInsert(col, newItems) {
   try { n = col.insertTop(newItems) || 0; } catch (e) { n = 0; }
   galleryState.lastPollInserted = n;
   if (n <= 0) return { action: 'none', count: 0 };
+  galleryMarkLocalMutation();
 
   var grid = galleryState.grid;
   var gridEl = galleryById('gallery-grid');
@@ -800,6 +833,8 @@ function galleryReload() {
   if (!col) return Promise.resolve();
   var filters = galleryReadFilterInputs();
   col.setFilters(filters); // = reset() + remplace les filtres
+  // Nouveau jeu de données : les réponses de poll en vol sont périmées.
+  galleryMarkLocalMutation();
   // Nouveau jeu de données : la file de pré-charge porte des items de l'ANCIEN
   // jeu (rangées/indexs sans rapport) → on la vide, et le sens mémorisé du
   // défilement ne veut plus rien dire.
@@ -1766,54 +1801,127 @@ function galleryBindLightboxEvents() {
   lb.on('navigate', function (p) {
     if (p && typeof p.index === 'number') galleryState.lightboxIndex = p.index;
     if (p && p.item) galleryState.lightboxItem = p.item;
+    // L'étoile ★/☆ suit l'image AFFICHÉE (précédente / suivante).
+    galleryUpdateLightboxFavorite();
   });
   lb.on('open', function (p) {
-    // On mémorise l'item courant (le bouton ⤓ ne dépend PAS de lightbox.current()
-    // qui, chez nous, s'appuie sur getIndex() — l'hôte fait autorité sur l'index).
+    // On mémorise l'item courant (les contrôles hôte ne dépendent PAS de
+    // lightbox.current() qui, chez nous, s'appuie sur getIndex() — l'hôte fait
+    // autorité sur l'index).
     if (p && p.item) galleryState.lightboxItem = p.item;
-    // ⤓ Télécharger : injecté dans l'overlay créé par la brique (on NE modifie
-    // PAS la brique — on ajoute un bouton hôte dans son overlay).
-    galleryInjectLightboxDownload();
+    // ⤓ + ★ : injectés dans l'overlay créé par la brique (on NE modifie PAS la
+    // brique — on ajoute des boutons hôte dans son overlay).
+    galleryInjectLightboxControls();
   });
 }
 
 /**
- * Ajoute un bouton « télécharger l'original » à l'overlay de la visionneuse.
+ * Crée un bouton de CONTRÔLE HÔTE dans l'overlay de la visionneuse : on
+ * réutilise la classe `.holaf-lightbox-nav` de la brique pour l'apparence,
+ * sans jamais la modifier.
+ */
+function galleryLightboxControlButton(cls, glyph, title, rightPx, onClick) {
+  var btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'holaf-lightbox-nav ' + cls;
+  btn.textContent = glyph;
+  btn.title = title;
+  btn.setAttribute('aria-label', title);
+  btn.style.top = '20px';
+  btn.style.right = rightPx + 'px';
+  btn.style.width = '40px';
+  btn.style.height = '40px';
+  btn.style.borderRadius = '50%';
+  btn.addEventListener('click', function (e) {
+    e.stopPropagation();
+    onClick();
+  });
+  return btn;
+}
+
+/**
+ * Ajoute les contrôles HÔTE à l'overlay de la visionneuse : ⤓ (télécharger
+ * l'original) et ★/☆ (favori de l'image affichée). Idempotent (marqueurs par
+ * classe) ; appelé à chaque `open`.
  *
  * La brique HolafLightbox ne propose pas de slot de contrôles personnalisés :
- * on se contente d'appendre un bouton hôte dans l'overlay (`.holaf-lightbox-
- * overlay`) créé par la brique, en réutilisant sa classe `.holaf-lightbox-nav`
- * pour l'apparence. Le bouton lit `galleryState.lightboxItem` (mémorisé sur les
- * events open/navigate) plutôt que `lightbox.current()` — car notre option
- * `getIndex()` fait autorité sur l'index et peut renvoyer null. Besoin futur de
- * brique : un vrai slot `controls` dans le chrome de la lightbox.
+ * on se contente d'appender dans `.holaf-lightbox-overlay`. Les boutons lisent
+ * `galleryState.lightboxItem` (mémorisé sur les events open/navigate) plutôt
+ * que `lightbox.current()` — car notre option `getIndex()` fait autorité sur
+ * l'index et peut renvoyer null. Besoin futur de brique : un vrai slot
+ * `controls` dans le chrome de la lightbox.
  */
-function galleryInjectLightboxDownload() {
+function galleryInjectLightboxControls() {
   var overlays;
   try { overlays = document.querySelectorAll('.holaf-lightbox-overlay'); } catch (e) { overlays = null; }
   if (!overlays) return;
   for (var i = 0; i < overlays.length; i++) {
     var ov = overlays[i];
-    if (!ov || ov.querySelector('.gallery-lightbox-download')) continue;
-    var btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'holaf-lightbox-nav gallery-lightbox-download';
-    btn.textContent = '⤓';
-    btn.title = "Télécharger l'original";
-    btn.setAttribute('aria-label', "Télécharger l'original");
-    btn.style.top = '20px';
-    btn.style.right = '70px';
-    btn.style.width = '40px';
-    btn.style.height = '40px';
-    btn.style.borderRadius = '50%';
-    btn.addEventListener('click', function (e) {
-      e.stopPropagation();
-      var cur = galleryState.lightboxItem ||
-        ((galleryState.lightbox && galleryState.lightbox.current) ? galleryState.lightbox.current() : null);
-      if (cur) galleryDownloadItem(cur);
-    });
-    ov.appendChild(btn);
+    if (!ov) continue;
+    if (!ov.querySelector('.gallery-lightbox-download')) {
+      ov.appendChild(galleryLightboxControlButton(
+        'gallery-lightbox-download', '⤓', "Télécharger l'original", 70,
+        function () {
+          var cur = galleryState.lightboxItem ||
+            ((galleryState.lightbox && galleryState.lightbox.current) ? galleryState.lightbox.current() : null);
+          if (cur) galleryDownloadItem(cur);
+        }));
+    }
+    if (!ov.querySelector('.gallery-lightbox-favorite')) {
+      ov.appendChild(galleryLightboxControlButton(
+        'gallery-lightbox-favorite', '☆', 'Marquer comme favori', 120,
+        function () { galleryLightboxToggleFavorite(); }));
+    }
   }
+  galleryUpdateLightboxFavorite();
+}
+
+/**
+ * Reflète l'état FAVORI de l'item AFFICHÉ sur le bouton ★/☆ de la visionneuse
+ * (ouverture, navigation ‹/›, bascule optimiste, rollback). Sûr sans bouton
+ * (visionneuse fermée / overlay absent).
+ */
+function galleryUpdateLightboxFavorite() {
+  var btns;
+  try { btns = document.querySelectorAll('.gallery-lightbox-favorite'); } catch (e) { return; }
+  if (!btns || !btns.length) return;
+  var lb = galleryState.lightbox;
+  var item = galleryState.lightboxItem ||
+    ((lb && typeof lb.current === 'function') ? lb.current() : null);
+  var isFav = !!(item && item.favorite);
+  var title = isFav ? 'Retirer des favoris' : 'Marquer comme favori';
+  for (var i = 0; i < btns.length; i++) {
+    var b = btns[i];
+    b.textContent = isFav ? '★' : '☆'; // U+2605 / U+2606 (rendu fiable)
+    b.title = title;
+    b.setAttribute('aria-label', title);
+    b.setAttribute('aria-pressed', isFav ? 'true' : 'false');
+    b.classList.toggle('is-fav', isFav);
+  }
+}
+
+/**
+ * Bascule le FAVORI de l'item AFFICHÉ en plein écran : MÊME endpoint que la
+ * grille (POST /api/media/<id>/favorite {favorite}).
+ *
+ * La mise à jour est OPTIMISTE (l'étoile ET la cellule de la grille — si elle
+ * est chargée — basculent immédiatement), avec ROLLBACK + toast d'erreur si
+ * l'appel échoue (géré par galleryToggleFavorite). La visionneuse n'est JAMAIS
+ * fermée et la navigation n'est pas interrompue : l'icône suit l'image
+ * AFFICHÉE (events open/navigate).
+ */
+function galleryLightboxToggleFavorite() {
+  var lb = galleryState.lightbox;
+  if (!lb || !lb.isOpen()) return Promise.resolve(false);
+  var item = galleryState.lightboxItem ||
+    ((typeof lb.current === 'function') ? lb.current() : null);
+  if (!item || galleryState.busy) return Promise.resolve(false);
+  var p = galleryToggleFavorite(item);
+  galleryUpdateLightboxFavorite(); // optimiste : l'étoile bascule tout de suite
+  return p.then(function (ok) {
+    galleryUpdateLightboxFavorite(); // état final (rollback éventuel)
+    return ok;
+  });
 }
 
 /**
@@ -2633,10 +2741,102 @@ function gallerySkippedSuffix(skipped) {
   return ' • ' + skipped + ' ignoré' + (skipped > 1 ? 's' : '');
 }
 
-/** Après un retrait local optimiste : compteur + re-rendu de la grille. */
+/**
+ * Fenêtres CHARGÉES de la collection (offsets alignés), via l'API PUBLIQUE de
+ * la brique (`isWindowLoaded`, `pageSize`). Capturé AVANT un retrait local pour
+ * pouvoir réparer le bord après (cf. galleryRemoveIdsLocally).
+ *
+ * @returns {number[]} offsets des fenêtres complètes chargées.
+ */
+function galleryLoadedWindowStarts(col) {
+  var out = [];
+  if (!col || typeof col.isWindowLoaded !== 'function') return out;
+  var ps = col.pageSize || GALLERY_PAGE_SIZE;
+  var total = col.total || 0;
+  for (var w = 0; w < total; w += ps) {
+    if (col.isWindowLoaded(w)) out.push(w);
+  }
+  return out;
+}
+
+/**
+ * Retire des ids de la collection LOCALE sans recharger la galerie :
+ * `HolafCollection.removeByIds` (ré-ancrage des fenêtres, items conservés).
+ * Retourne les fenêtres chargées AVANT le retrait : la réparation du bord
+ * (galleryRepairLoadedWindows) doit être faite APRÈS la confirmation serveur,
+ * sinon un refetch parti avant le DELETE renverrait encore le média supprimé
+ * et le ré-insérerait localement.
+ *
+ * @returns {number[]|null} fenêtres chargées avant le retrait, ou null si le
+ *          retrait local a échoué (id hors mémoire → l'appelant resynchronise).
+ */
+function galleryRemoveIdsLocally(ids) {
+  var col = galleryState.collection;
+  if (!col || !ids || !ids.length) return null;
+  var starts = galleryLoadedWindowStarts(col);
+  var removed = col.removeByIds(ids);
+  if (removed === false) return null; // un id hors mémoire → ré-ancrage ambigu
+  galleryMarkLocalMutation();
+  return starts;
+}
+
+/**
+ * RÉPARE le bord après un retrait local (cf. galleryRemoveIdsLocally).
+ *
+ * POURQUOI : la brique (mode 'append', scroll infini) ne redemande une fenêtre
+ * que si son offset atteint la frontière `images.length`. Or un retrait décale
+ * tout vers la gauche et laisse un TROU au bout de la zone chargée (le dernier
+ * créneau de la dernière fenêtre n'est plus rempli) : `_rebuildLoadedRanges`
+ * oublie alors cette fenêtre ET la frontière (déjà étendue au nouveau total)
+ * empêche de la redemander → un média resterait en squelette.
+ *
+ * On redemande donc explicitement les fenêtres chargées devenues incomplètes.
+ * C'est une requête de PAGE (JSON), PAS de vignettes : les items refetchés
+ * portent les MÊMES ids, la grille réutilise ses cellules et les `<img>` des
+ * médias restants ne sont jamais réassignés.
+ */
+function galleryRepairLoadedWindows(starts) {
+  var col = galleryState.collection;
+  if (!col || !col.total || !starts || !starts.length) return;
+  for (var i = 0; i < starts.length; i++) {
+    if (!col.isWindowLoaded(starts[i])) {
+      try { col.ensureIndex(starts[i]); } catch (e) { /* réparation best-effort */ }
+    }
+  }
+}
+
+/**
+ * Retire des ids de la SÉLECTION sans toucher au reste (sélection restante
+ * conservée : seule la sélection des médias partis disparaît).
+ */
+function galleryPruneSelection(ids) {
+  var remove = Array.isArray(ids) ? ids : [ids];
+  var current = gallerySelectedIds();
+  if (!current.length) return;
+  var next = current.filter(function (id) { return remove.indexOf(id) === -1; });
+  if (next.length === current.length) return;
+  var g = galleryState.grid;
+  if (g && g.selection && typeof g.selection.set === 'function') {
+    try { g.selection.set(next); return; } catch (e) { /* ignore */ }
+  }
+  galleryOnSelectionChange(next, []);
+}
+
+/**
+ * Après un retrait local optimiste : compteur + mise à jour de la grille SANS
+ * vider les fenêtres ni recharger les vignettes.
+ *
+ * `relayout()` recalcule le sizer (nouveau total) et re-rend la fenêtre en
+ * RÉUTILISANT les cellules existantes (identité par id) : les `<img>` des
+ * médias restants ne sont ni détruits ni rechargés — seul l'éventuel nouveau
+ * créneau de bord (item suivant à l'écran) apparaît. L'ancien appel
+ * `render(true)` vidait TOUT le pool de cellules : chaque vignette visible
+ * repassait en attente puis était rechargée (bug « la suppression décharge
+ * toutes les miniatures »).
+ */
 function galleryAfterLocalRemoval() {
   galleryUpdateCount();
-  if (galleryState.grid) galleryState.grid.render(true);
+  if (galleryState.grid) galleryState.grid.relayout();
   if (galleryState.collection && galleryState.collection.total === 0) galleryShowEmpty();
 }
 
@@ -2800,15 +3000,16 @@ function galleryAddTag(item, raw) {
  * Envoie UN média à la corbeille (DELETE /api/media/<id>).
  *
  * OPTIMISTE : l'item est retiré de la collection AVANT la réponse (retrait
- * local via la brique), puis ROLLBACK = reload complet si l'appel échoue.
- * Pas de confirmation : l'action est RÉVERSIBLE (le média part en corbeille).
+ * local via la brique, fenêtres ré-ancrées et réparées, AUCUN rechargement des
+ * vignettes des autres médias), puis ROLLBACK = reload complet si l'appel
+ * échoue. La sélection des AUTRES médias est conservée (seul l'id supprimé en
+ * sort). Pas de confirmation : l'action est RÉVERSIBLE (corbeille).
  */
 function galleryDeleteItem(item) {
   if (!item || galleryState.busy) return Promise.resolve(false);
   var id = item.id;
-  var col = galleryState.collection;
-  var removed = col ? col.removeByIds([id]) : false;
-  var optimistic = (removed !== false);
+  var starts = galleryRemoveIdsLocally([id]);
+  var optimistic = (starts !== null);
   if (optimistic) galleryAfterLocalRemoval();
 
   gallerySetBusy(true);
@@ -2816,7 +3017,12 @@ function galleryDeleteItem(item) {
     .then(function () {
       galleryToast('Média envoyé à la corbeille.', 'success');
       if (!optimistic) galleryReload(); // retrait local impossible → on resynchronise
-      else galleryClearSelection();
+      else {
+        galleryPruneSelection([id]);
+        // Réparation du bord UNIQUEMENT après confirmation serveur (un
+        // refetch parti avant le DELETE renverrait encore le média).
+        galleryRepairLoadedWindows(starts);
+      }
       return true;
     })
     .catch(function (err) {
@@ -2875,9 +3081,11 @@ function galleryPurgeItem(item) {
 
 /**
  * Action groupée : POST /api/media/<op> { ids } → récap { n, skipped }.
- * `opts.message(n, skipped)` construit le libellé du toast ; `opts.after`
- * rafraîchit la liste. Toute erreur réseau est toastée et la liste n'est PAS
- * patchée (les actions groupées rechargent, elles ne sont pas optimistes).
+ * `opts.message(n, skipped)` construit le libellé du toast ; `opts.after(n,
+ * skipped, data)` rafraîchit la liste (data = récap BRUT, ex. `skipped` en
+ * ids pour un retrait local incrémental). Toute erreur réseau est toastée et
+ * la liste n'est PAS patchée (les actions groupées rechargent, elles ne sont
+ * pas optimistes — sauf la corbeille groupée, qui retire localement).
  */
 function galleryBulkRequest(method, path, ids, opts) {
   opts = opts || {};
@@ -2899,7 +3107,7 @@ function galleryBulkRequest(method, path, ids, opts) {
       var msg = (typeof opts.message === 'function') ? opts.message(n, skipped)
         : (n + ' média' + (n > 1 ? 's' : '') + ' traité' + (n > 1 ? 's' : ''));
       galleryToast(msg, skipped ? 'warning' : 'success');
-      if (typeof opts.after === 'function') opts.after(n, skipped);
+      if (typeof opts.after === 'function') opts.after(n, skipped, data);
       return true;
     })
     .catch(function (err) {
@@ -3158,6 +3366,27 @@ function galleryBulkAutoTag() {
   });
 }
 
+/**
+ * Après une suppression GROUPÉE réussie : retrait INCRÉMENTAL des ids
+ * réellement traités (le récap backend liste les `skipped`), sans recharger la
+ * liste ni les vignettes. Les médias IGNORÉS restent en place et gardent leur
+ * sélection. Fallback : reload complet si la brique ne peut pas ré-ancrer
+ * (retrait local refusé → on resynchronise la vérité serveur).
+ */
+function galleryBulkAfterDelete(ids, data) {
+  var skipped = (data && Array.isArray(data.skipped)) ? data.skipped : [];
+  var done = [];
+  for (var i = 0; i < ids.length; i++) {
+    if (skipped.indexOf(ids[i]) === -1) done.push(ids[i]);
+  }
+  if (!done.length) return; // tout a été ignoré : rien à retirer localement
+  var starts = galleryRemoveIdsLocally(done);
+  if (starts === null) { galleryReload(); return; }
+  galleryPruneSelection(done);
+  galleryAfterLocalRemoval();
+  galleryRepairLoadedWindows(starts); // confirmation serveur déjà acquise ici
+}
+
 /** Suppression groupée (corbeille) : POST /api/media/delete { ids }. */
 function galleryBulkDelete() {
   var ids = gallerySelectedIds();
@@ -3169,7 +3398,7 @@ function galleryBulkDelete() {
       resolve(galleryBulkRequest('POST', '/media/delete', ids, {
         errorLabel: 'Suppression',
         message: function (n, s) { return n + ' média' + (n > 1 ? 's' : '') + ' mis à la corbeille' + gallerySkippedSuffix(s); },
-        after: function () { galleryReload(); },
+        after: function (n, s, data) { galleryBulkAfterDelete(ids, data); },
       }));
     });
   });

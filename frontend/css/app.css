@@ -897,3 +897,7 @@
     }
     .gallery-tags-action-input:focus { outline: none; border-color: var(--hm-accent); }
     .gallery-lightbox-download { font-size: 18px; }
+    /* Étoile de FAVORI en plein écran : même classe de nav que la brique,
+       ambre quand le média affiché est favori (★), blanche sinon (☆). */
+    .gallery-lightbox-favorite { font-size: 18px; }
+    .gallery-lightbox-favorite.is-fav { color: #fbbf24; }
