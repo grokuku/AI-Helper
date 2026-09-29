@@ -1017,6 +1017,9 @@
           <div class="flex-1"></div>
           <span id="gallery-selected" class="hidden text-xs font-medium text-indigo-500 dark:text-indigo-400"></span>
           <span id="gallery-count" class="text-xs text-slate-400"></span>
+          <!-- Albums publics (phase 3) : gestion des albums (créer/charger/renommer/…) -->
+          <button type="button" id="gallery-open-albums" onclick="galleryAlbumsOpenManage()" title="Gérer les albums publics"
+                  class="text-xs text-slate-400 hover:text-indigo-500 transition p-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-600">🖼 Albums</button>
           <button onclick="galleryRefresh()" title="Rafraîchir" class="text-xs text-slate-400 hover:text-indigo-500 transition p-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-600">
             <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/></svg>
           </button>
@@ -1094,6 +1097,8 @@
               <div class="flex flex-wrap items-center gap-2">
                 <button type="button" id="gallery-action-download" data-gallery-action onclick="galleryBulkDownload()"
                         class="gallery-action-btn" title="Télécharger les originaux sélectionnés">⤓ Télécharger</button>
+                <button type="button" id="gallery-action-create-album" data-gallery-action onclick="galleryAlbumsOpenCreate()"
+                        class="gallery-action-btn hidden" title="Créer un album public à partir de la sélection">🖼 Créer un album</button>
                 <button type="button" id="gallery-action-favorite" data-gallery-action onclick="galleryBulkFavorite()"
                         class="gallery-action-btn" title="Marquer comme favori">★ Favori</button>
                 <button type="button" id="gallery-action-tags" data-gallery-action onclick="galleryBulkTags()"
@@ -1102,7 +1107,7 @@
                         class="gallery-action-btn gallery-action-btn--danger" title="Mettre à la corbeille">🗑 Supprimer</button>
                 <button type="button" id="gallery-action-restore" data-gallery-action onclick="galleryBulkRestore()"
                         class="gallery-action-btn hidden" title="Restaurer les médias">♻ Restaurer</button>
-                <button type="button" id="gallery-action-purge" data-gallery-action onclick="galleryBulkPurge()"
+                <button type="button" id="gallery-action-purge" data-gallery-action onclick="galleryBulkPurgeWarned()"
                         class="gallery-action-btn gallery-action-btn--danger hidden" title="Supprimer définitivement">✖ Supprimer définitivement</button>
                 <select id="gallery-auto-tag-preset" class="gallery-action-btn"
                         title="Preset compatible vision à utiliser pour l'auto-tag"
@@ -1236,7 +1241,11 @@
   <script type="module" src="/vendor/holaf/holaf-infopane.js"></script>
   <script type="module" src="/vendor/holaf/holaf-toast.js"></script>
   <script type="module" src="/vendor/holaf/holaf-modal.js"></script>
+  <script type="module" src="/vendor/holaf/holaf-qrcode.js"></script>
   <!-- Adaptateur galerie (script classique, comme les autres app-*.js) -->
   <script src="/js/app-gallery.js" id="script-gallery"></script>
+  <!-- Albums publics phase 3 : intégration galerie (script classique, APRÈS
+       l'adaptateur — accès tardif à window.AppGallery, jamais à l'import). -->
+  <script src="/js/app-albums.js" id="script-albums"></script>
 </body>
 </html>

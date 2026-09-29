@@ -749,6 +749,137 @@
     #gallery-auto-tag-preset { max-width: 160px; }
     #gallery-autotag-progress { line-height: 1.2; }
 
+    /* ===== Albums publics (phase 3) : modales création / résultat / gestion :
+       contenus hébergés par la brique holaf-modal → variables --hm-* du thème
+       de la modale (comme la modale « dossiers »). ===== */
+    .album-create { display: flex; flex-direction: column; gap: 6px; }
+    .album-create-hint { font-size: 12px; color: var(--hm-text-secondary); margin: 0 0 4px; }
+    .album-create-label { font-size: 11px; color: var(--hm-text-secondary); margin-top: 4px; }
+    .album-create-input {
+      width: 100%;
+      box-sizing: border-box;
+      font-size: 12px;
+      padding: 5px 8px;
+      border: 1px solid var(--hm-border);
+      border-radius: 6px;
+      background: var(--hm-bg-input);
+      color: var(--hm-text);
+      resize: vertical;
+    }
+    .album-create-input:focus { outline: none; border-color: var(--hm-accent); }
+
+    .album-result { display: flex; flex-direction: column; gap: 8px; }
+    .album-result-status { font-size: 13px; font-weight: 600; color: var(--hm-text); }
+    .album-result-progress { font-size: 11px; color: var(--hm-text-secondary); }
+    .album-result-url-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .album-result-url-input {
+      flex: 1;
+      min-width: 160px;
+      box-sizing: border-box;
+      font-size: 11px;
+      padding: 4px 8px;
+      border: 1px solid var(--hm-border);
+      border-radius: 6px;
+      background: var(--hm-bg-input);
+      color: var(--hm-text);
+    }
+    .album-result-help { flex-basis: 100%; font-size: 11px; color: var(--hm-text-secondary); margin: 0; }
+    .album-result-key {
+      font-size: 11px;
+      padding: 3px 6px;
+      border-radius: 6px;
+      background: var(--hm-bg-secondary);
+      color: var(--hm-text);
+      word-break: break-all;
+    }
+    .album-result-count { font-size: 12px; color: var(--hm-text); margin: 0; }
+    .album-result-subtitle { font-size: 11px; font-weight: 600; color: var(--hm-text-secondary); margin: 4px 0 0; }
+    .album-result-list {
+      margin: 0;
+      padding-left: 18px;
+      font-size: 11px;
+      color: var(--hm-text-secondary);
+      max-height: 120px;
+      overflow-y: auto;
+    }
+
+    .album-manage { display: flex; flex-direction: column; gap: 8px; height: 100%; }
+    .album-manage-toolbar { display: flex; align-items: center; gap: 8px; }
+    .album-manage-status-text { font-size: 11px; color: var(--hm-text-secondary); }
+    .album-manage-btn {
+      font-size: 12px;
+      padding: 3px 10px;
+      border: 1px solid var(--hm-border);
+      border-radius: 6px;
+      background: var(--hm-bg-secondary);
+      color: var(--hm-text-secondary);
+      cursor: pointer;
+    }
+    .album-manage-btn:hover:not(:disabled) { color: var(--hm-accent); border-color: var(--hm-accent); }
+    .album-manage-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .album-manage-list {
+      flex: 1 1 auto;
+      min-height: 140px;
+      overflow-y: auto;
+      border: 1px solid var(--hm-border);
+      border-radius: 6px;
+      background: var(--hm-bg-input);
+    }
+    .album-manage-item {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--hm-border);
+    }
+    .album-manage-item:last-child { border-bottom: 0; }
+    .album-manage-head { display: flex; align-items: center; gap: 8px; }
+    .album-manage-title {
+      flex: 1;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--hm-text);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .album-manage-badge { font-size: 10px; padding: 1px 6px; border-radius: 999px; background: var(--hm-bg-secondary); color: var(--hm-text-secondary); }
+    .album-manage-badge--ready { background: rgba(16, 185, 129, 0.15); color: #059669; }
+    .album-manage-badge--building { background: rgba(99, 102, 241, 0.15); color: var(--hm-accent); }
+    .album-manage-badge--error { background: rgba(225, 29, 72, 0.15); color: #e11d48; }
+    .album-manage-badge--revoked { background: rgba(148, 163, 184, 0.2); color: #64748b; }
+    .album-manage-meta { font-size: 11px; color: var(--hm-text-secondary); }
+    .album-manage-actions { display: flex; flex-wrap: wrap; gap: 4px; }
+    .album-manage-action {
+      font-size: 11px;
+      padding: 2px 8px;
+      border: 1px solid var(--hm-border);
+      border-radius: 6px;
+      background: transparent;
+      color: var(--hm-text-secondary);
+      cursor: pointer;
+    }
+    .album-manage-action:hover:not(:disabled) { color: var(--hm-accent); border-color: var(--hm-accent); }
+    .album-manage-action--danger { color: #e11d48; }
+    .album-manage-action--danger:hover:not(:disabled) { color: #be123c; border-color: #be123c; }
+    .album-manage-action:disabled { opacity: 0.5; cursor: not-allowed; }
+    .album-manage-empty { padding: 12px; font-size: 12px; color: var(--hm-text-secondary); text-align: center; }
+
+    /* Zone QR (phase 4) : SVG généré côté client par la brique vendue
+       HolafQrcode. Fond blanc forcé (contraste de scan), largeur bornée. */
+    .album-result-qr { display: flex; justify-content: center; }
+    .album-result-qr .holaf-qrcode,
+    .album-qr-box .holaf-qrcode {
+      background: #ffffff;
+      border-radius: 6px;
+      padding: 6px;
+      box-sizing: content-box;
+    }
+    .album-qr-help { flex-basis: 100%; font-size: 11px; color: var(--hm-text-secondary); margin: 0; text-align: center; }
+    .album-qr-modal { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+    .album-qr-box { display: flex; justify-content: center; }
+    .album-qr-hint { font-size: 11px; color: var(--hm-text-secondary); margin: 0; text-align: center; }
+
     /* Cellule : actions au survol + marqueur corbeille */
     .gallery-cell-actions {
       position: absolute;

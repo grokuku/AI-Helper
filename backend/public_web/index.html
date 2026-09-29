@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="fr">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex, nofollow, noarchive">
+    <meta name="referrer" content="no-referrer">
+    <title>Album</title>
+    <link rel="stylesheet" href="/assets/album.css">
+    <!--
+      Briques holaf VENDUES (copies pinnées, jamais éditées) chargées en modules.
+      Elles posent window.HolafViewport / window.HolafGrid / window.HolafLightbox,
+      lus par /assets/album.js. Aucun script inline (CSP script-src 'self').
+    -->
+    <script type="module" src="/assets/vendor/holaf/holaf-viewport.js"></script>
+    <script type="module" src="/assets/vendor/holaf/holaf-virtual-grid.js"></script>
+    <script type="module" src="/assets/vendor/holaf/holaf-lightbox.js"></script>
+    <script type="module" src="/assets/album.js"></script>
+</head>
+<body>
+    <header class="album-header">
+        <h1 id="album-title" class="album-title"></h1>
+        <p id="album-description" class="album-description" hidden></p>
+        <p id="album-count" class="album-count" hidden></p>
+    </header>
+    <main class="album-main">
+        <p id="album-status" class="album-status" role="status"></p>
+        <div id="album-grid" class="album-grid" tabindex="0" hidden></div>
+    </main>
+</body>
+</html>

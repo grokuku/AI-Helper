@@ -538,7 +538,8 @@ def _create_post_migration_tables(conn):
     """Crée les tables qui dépendent des migrations.
 
     Inclut : ``filter_unions``, ``enhance_sessions``, ``blobby_memories``,
-    ``shared_workflows``, ``file_uploads``, ``media_files`` et ``media_tags``.
+    ``shared_workflows``, ``file_uploads``, ``media_files``, ``media_tags``,
+    ``albums`` et ``album_media``.
 
     Args:
         conn (sqlite3.Connection): La connexion SQLite active.
@@ -701,6 +702,60 @@ def _create_post_migration_tables(conn):
         )
     """)
 
+    # ── Table Albums publics (partage par lien, INSTANTANÉ figé) ──
+    # Un album est un SNAPSHOT : la liste de ses images (``album_media``) est
+    # figée à la création (ou lors d'un ajout explicite) ; une image uploadée
+    # plus tard n'y entre JAMAIS automatiquement. ``key`` est l'identifiant
+    # PUBLIC opaque (``secrets.token_urlsafe(32)``) servant de nom de dossier
+    # web : jamais d'id séquentiel, jamais de donnée privée côté public.
+    # ``status`` : building (worker en cours) | ready | error | revoked.
+    # ``progress_total``/``progress_done`` alimentent le polling du client.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS albums (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            key TEXT NOT NULL UNIQUE,
+            title TEXT DEFAULT '',
+            description TEXT DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'building',
+            progress_total INTEGER NOT NULL DEFAULT 0,
+            progress_done INTEGER NOT NULL DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            revoked_at TEXT,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+    """)
+
+    # ── Table Album media (lien album ↔ média, snapshot) ──
+    # ``item_no`` = numéro OPAQUE de l'item (nom de fichier web ``0001.jpg``) ;
+    # ``ext``/``width``/``height`` sont figés au moment de la génération — le
+    # manifest public ne dépend QUE de cette table (aucune jointure vers
+    # ``media_files`` requise par le service public de la phase 2).
+    # ``status``/``error`` portent le rapport par item du worker : ok /
+    # unsupported_kind / source_unavailable / no_tools / generation_failed /
+    # trashed / not_found / not_owned. FK CASCADE : la purge des lignes média
+    # (et d'un album) nettoie les liens, mais la propagation EXPLICITE passe par
+    # ``_purge_media_row`` (réécriture du manifest + suppression des fichiers).
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS album_media (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            album_id INTEGER NOT NULL,
+            media_id INTEGER NOT NULL,
+            item_no INTEGER NOT NULL,
+            ext TEXT DEFAULT '',
+            width INTEGER,
+            height INTEGER,
+            status TEXT NOT NULL DEFAULT 'pending',
+            error TEXT DEFAULT '',
+            added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (album_id) REFERENCES albums(id) ON DELETE CASCADE,
+            FOREIGN KEY (media_id) REFERENCES media_files(id) ON DELETE CASCADE,
+            UNIQUE (album_id, media_id),
+            UNIQUE (album_id, item_no)
+        )
+    """)
+
 
 def _migrate_shared_workflows(conn):
     """Migration : colonne ``thumbnail`` pour ``shared_workflows``.
@@ -781,6 +836,45 @@ def _migrate_media_files(conn):
             conn.execute(f"ALTER TABLE media_files ADD COLUMN {col} {ddl}")
 
 
+def _migrate_albums(conn):
+    """Migrations idempotentes pour ``albums`` et ``album_media``.
+
+    Les tables sont créées dans ``_create_post_migration_tables`` ; cette
+    migration ajoute, de façon idempotente (garde via ``PRAGMA table_info``),
+    toute colonne qui manquerait sur une base créée par une version antérieure.
+    Même pattern que ``_migrate_media_files``.
+
+    Args:
+        conn (sqlite3.Connection): La connexion SQLite active.
+    """
+    album_cols = [r[1] for r in conn.execute("PRAGMA table_info(albums)").fetchall()]
+    for col, ddl in (
+        ("title", "TEXT DEFAULT ''"),
+        ("description", "TEXT DEFAULT ''"),
+        ("status", "TEXT NOT NULL DEFAULT 'building'"),
+        ("progress_total", "INTEGER NOT NULL DEFAULT 0"),
+        ("progress_done", "INTEGER NOT NULL DEFAULT 0"),
+        ("created_at", "TIMESTAMP"),
+        ("updated_at", "TIMESTAMP"),
+        ("revoked_at", "TEXT"),
+    ):
+        if col not in album_cols:
+            conn.execute(f"ALTER TABLE albums ADD COLUMN {col} {ddl}")
+
+    item_cols = [r[1] for r in conn.execute("PRAGMA table_info(album_media)").fetchall()]
+    for col, ddl in (
+        ("item_no", "INTEGER NOT NULL DEFAULT 0"),
+        ("ext", "TEXT DEFAULT ''"),
+        ("width", "INTEGER"),
+        ("height", "INTEGER"),
+        ("status", "TEXT NOT NULL DEFAULT 'pending'"),
+        ("error", "TEXT DEFAULT ''"),
+        ("added_at", "TIMESTAMP"),
+    ):
+        if col not in item_cols:
+            conn.execute(f"ALTER TABLE album_media ADD COLUMN {col} {ddl}")
+
+
 # ── Indexes ────────────────────────────────────────────────────────────
 
 def _create_indexes(conn):
@@ -809,6 +903,13 @@ def _create_indexes(conn):
     conn.execute("CREATE INDEX IF NOT EXISTS idx_media_tags_user_tag ON media_tags(user_id, tag)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_media_tags_media ON media_tags(media_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_whitelist_uid ON discord_whitelist(discord_uid)")
+    # Albums : (user_id) alimente la liste privée ; (media_id) alimente la
+    # propagation de la purge (« figure dans N albums ») ; (album_id) la
+    # reconstruction du manifest.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_albums_user ON albums(user_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_albums_status ON albums(status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_album_media_album ON album_media(album_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_album_media_media ON album_media(media_id)")
 
 
 # ── Default templates ────────────────────────────────────────────────
@@ -1142,6 +1243,7 @@ def _init_db():
     _migrate_shared_workflows(conn)
     _migrate_file_uploads(conn)
     _migrate_media_files(conn)
+    _migrate_albums(conn)
 
     # 5. Index
     _create_indexes(conn)

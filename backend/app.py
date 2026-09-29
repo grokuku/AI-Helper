@@ -60,6 +60,7 @@ def _load_ollama_config_at_startup():
 
 # Import route modules
 from routes.admin import *
+from routes.albums import *
 from routes.auth import *
 from routes.blobby import *
 from routes.elements_presets import *

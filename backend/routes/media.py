@@ -1305,6 +1305,15 @@ def _purge_media_row(row):
     for size in THUMB_SIZES:
         with contextlib.suppress(OSError):
             os.remove(_thumbnail_cache_path(row, size))
+    # ALBUMS PUBLICS : retirer ce média des albums qui le référencent (manifest
+    # réécrit, fichiers d'album supprimés) AVANT la suppression de la ligne — la
+    # FK CASCADE effacerait sinon les liens sans permettre de réécrire le
+    # manifest ni de nettoyer les fichiers. Connexion propre, hors transaction.
+    try:
+        from album_web import remove_media_from_albums
+        remove_media_from_albums(row["id"])
+    except Exception:
+        logging.exception("[media] propagation album échouée pour id=%s", row["id"])
     conn = get_db()
     try:
         # SUPPRESSION DES TAGS : EXPLICITE (la cascade demandée vit ICI). Elle

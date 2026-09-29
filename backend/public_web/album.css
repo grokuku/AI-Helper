@@ -1,0 +1,110 @@
+/* ─────────────────────────────────────────────────────────────────────────
+ * Album public — feuille de style MINIMALE et scopée.
+ *
+ * Ne touche QUE les classes de la page publique (.album-*). Le style interne
+ * des briques holaf (grille / lightbox) est injecté par les briques elles-mêmes
+ * et n'est jamais surchargé ici.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+:root {
+    --album-bg: #101014;
+    --album-fg: #e8e8ea;
+    --album-muted: #a0a0a8;
+    --album-gap: 12px;
+    --album-radius: 10px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--album-bg);
+    color: var(--album-fg);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+.album-header {
+    padding: 20px 20px 8px;
+    max-width: 1200px;
+    margin: 0 auto;
+}
+
+.album-title {
+    margin: 0;
+    font-size: 1.4rem;
+    font-weight: 600;
+    line-height: 1.25;
+    overflow-wrap: anywhere;
+}
+
+.album-description {
+    margin: 6px 0 0;
+    color: var(--album-muted);
+    font-size: 0.95rem;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.album-count {
+    margin: 6px 0 0;
+    color: var(--album-muted);
+    font-size: 0.85rem;
+}
+
+.album-main {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 12px 20px 40px;
+}
+
+.album-status {
+    margin: 24px 0;
+    color: var(--album-muted);
+    text-align: center;
+}
+
+.album-status[hidden] { display: none; }
+
+.album-grid {
+    outline: none;
+}
+
+/* Cellule de la grille (la brique pose .holaf-grid-cell par-dessus). */
+.album-cell {
+    display: block;
+    width: 100%;
+    height: 100%;
+    padding: 0;
+    border: 0;
+    border-radius: var(--album-radius);
+    background: #1a1a20;
+    overflow: hidden;
+    cursor: zoom-in;
+    appearance: none;
+}
+
+.album-cell:focus-visible {
+    outline: 2px solid #7aa2ff;
+    outline-offset: 2px;
+}
+
+.album-cell img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+/* Média de la vue grande (produit par renderMedia d'album.js). */
+.album-media {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    user-select: none;
+    -webkit-user-drag: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+}

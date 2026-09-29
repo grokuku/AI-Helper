@@ -20,8 +20,10 @@
 ```
 AI-Helper/
 ├── backend/          # Serveur Flask (app.py, auth.py, parser.py, etc.)
+│                     #   + service public des albums (public_app.py, public_web/)
 ├── frontend/         # Interface web (index.html)
 ├── android/          # Application Android
+├── docs/             # Documentation de déploiement (docs/albums.md : Caddy, env, sécurité)
 ├── AGENTS.md         # Règles du projet
 └── ROADMAP.md        # Roadmap et état d'avancement
 ```

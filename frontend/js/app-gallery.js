@@ -8,6 +8,10 @@
  * ACTIONS GROUPÉES (delete/restore/purge + téléchargement), restauration,
  * purge (avec confirmation), téléchargement de l'original (grille, infopane,
  * lightbox), toasts et verrouillage pendant les appels.
+ * ALBUMS PUBLICS (phase 3, app-albums.js) : cet adaptateur expose les helpers
+ * partagés (apiRequest/setBusy/confirm) et route l'action « Purger » vers
+ * l'avertissement « figure dans N album(s) public(s) » ; la création/gestion
+ * des albums vit dans le script frère frontend/js/app-albums.js.
  *
  * ADAPTATEUR des briques holaf VENDUES (frontend/vendor/holaf/, jamais
  * modifiées — cf. holaf-manifest.json + `holaf check`) :
@@ -1721,7 +1725,13 @@ function galleryOnAction(actionId, item, index) {
   if (actionId === 'download') galleryDownloadItem(item);
   else if (actionId === 'delete') galleryDeleteItem(item);
   else if (actionId === 'restore') galleryRestoreItem(item);
-  else if (actionId === 'purge') galleryPurgeItem(item);
+  else if (actionId === 'purge') {
+    // Albums publics (phase 3) : avertit « figure dans N album(s) » avant la purge
+    // définitive (replie sur la purge simple si app-albums.js n'est pas chargé).
+    var albumsApi = window.AppAlbums;
+    if (albumsApi && typeof albumsApi.purgeItemWarned === 'function') albumsApi.purgeItemWarned(item);
+    else galleryPurgeItem(item);
+  }
   else if (actionId === 'favorite') galleryToggleFavorite(item);
 }
 
@@ -2642,6 +2652,8 @@ function galleryUpdateActionBar() {
   var trash = galleryState.view === 'trash';
   galleryShowButton('gallery-action-delete', !trash);
   galleryShowButton('gallery-action-favorite', !trash);
+  // Albums publics (phase 3) : création à partir de la sélection, hors corbeille.
+  galleryShowButton('gallery-action-create-album', !trash);
   // Le tag est disponible dans les DEUX vues (une corbeille conserve ses tags).
   galleryShowButton('gallery-action-tags', true);
   galleryShowButton('gallery-action-restore', trash);
@@ -3051,14 +3063,20 @@ function galleryRestoreItem(item) {
     .then(function (r) { gallerySetBusy(false); return r; });
 }
 
-/** Purge DÉFINITIVEMENT UN média (DELETE /api/media/<id>/purge) — confirmation. */
-function galleryPurgeItem(item) {
+/**
+ * Purge DÉFINITIVEMENT UN média (DELETE /api/media/<id>/purge) — confirmation.
+ * @param {object} item média visé.
+ * @param {string} [warningText] avertissement albums publics ajouté au message
+ *   (calculé par app-albums.js : « figure dans N album(s) public(s) »).
+ */
+function galleryPurgeItem(item, warningText) {
   if (!item || galleryState.busy) return Promise.resolve(false);
   var id = item.id;
   var name = item.filename || ('média #' + id);
+  var message = 'Supprimer définitivement « ' + name + ' » ? Cette action est IRRÉVERSIBLE.';
+  if (warningText) message += '\n\n' + warningText;
   return new Promise(function (resolve) {
-    galleryConfirm('Supprimer définitivement',
-      'Supprimer définitivement « ' + name + ' » ? Cette action est IRRÉVERSIBLE.',
+    galleryConfirm('Supprimer définitivement', message,
       function (ok) {
         if (!ok) { resolve(false); return; }
         gallerySetBusy(true);
@@ -3414,14 +3432,19 @@ function galleryBulkRestore() {
   });
 }
 
-/** Purge groupée : POST /api/media/purge { ids } — confirmation explicite. */
-function galleryBulkPurge() {
+/**
+ * Purge groupée : POST /api/media/purge { ids } — confirmation explicite.
+ * @param {string} [warningText] avertissement albums publics ajouté au message.
+ */
+function galleryBulkPurge(warningText) {
   var ids = gallerySelectedIds();
   if (!ids.length) return Promise.resolve(false);
   var label = ids.length + ' média' + (ids.length > 1 ? 's' : '');
+  var message = 'Supprimer définitivement ' + label + ' ? Cette action est IRRÉVERSIBLE.';
+  if (warningText) message += '\n\n' + warningText;
   return new Promise(function (resolve) {
     galleryConfirm('Supprimer définitivement',
-      'Supprimer définitivement ' + label + ' ? Cette action est IRRÉVERSIBLE.',
+      message,
       function (ok) {
         if (!ok) { resolve(false); return; }
         resolve(galleryBulkRequest('POST', '/media/purge', ids, {
@@ -3763,6 +3786,11 @@ window.AppGallery = {
   downloadItem: galleryDownloadItem,
   downloadItems: galleryDownloadItems,
   toast: galleryToast,
+  // Helpers partagés avec app-albums.js (phase 3) : mêmes état lastRequest,
+  // verrou busy et confirmation que la galerie.
+  apiRequest: galleryApiRequest,
+  setBusy: gallerySetBusy,
+  confirm: galleryConfirm,
   constants: {
     PAGE_SIZE: GALLERY_PAGE_SIZE,
     PREFETCH: GALLERY_PREFETCH,
