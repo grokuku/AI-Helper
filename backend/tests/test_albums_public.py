@@ -28,6 +28,11 @@ Contrôles NÉGATIFS (un test doit ROUGIR si la protection disparaît) :
     blocage par IP, l'abus/balayage ne serait pas coupé en mode ``on`` ;
   - ``test_guard_logs_never_leak_full_key`` : une ligne de log contenant la
     clé complète exposerait une capability dans ``public_server.log``.
+  - ``test_bind_host_invalid_or_empty_falls_back`` : une valeur d'hôte vide
+    ou douteuse doit retomber sur le loopback — jamais un crash au démarrage ;
+  - ``test_run_public_script_exports_and_reports_bind_host`` : un lanceur qui
+    figerait ``127.0.0.1`` ou n'exporterait pas la variable rendrait le proxy
+    distant inutilisable et le diagnostic trompeur.
 """
 
 import ast
@@ -485,13 +490,77 @@ def test_service_is_read_only(pub_client, public_env):
 
 
 def test_bind_and_port_defaults(monkeypatch):
+    monkeypatch.delenv(public_app.ALBUM_BIND_HOST_ENV, raising=False)
     monkeypatch.delenv(public_app.ALBUM_PORT_ENV, raising=False)
-    assert public_app.ALBUM_BIND_HOST == "127.0.0.1"
+    assert public_app.ALBUM_BIND_HOST_DEFAULT == "127.0.0.1"
+    assert public_app.album_bind_host() == "127.0.0.1"
     assert public_app.album_port() == 8081
     monkeypatch.setenv(public_app.ALBUM_PORT_ENV, "9099")
     assert public_app.album_port() == 9099
     monkeypatch.setenv(public_app.ALBUM_PORT_ENV, "nawak")
     assert public_app.album_port() == 8081
+
+
+def test_bind_host_env_is_used_as_is(monkeypatch):
+    """Valeur fournie par l'env = utilisée TELLE QUELLE (proxy distant/Docker)."""
+    for value in ("0.0.0.0", "192.168.1.10", "::", "::1", "localhost"):
+        monkeypatch.setenv(public_app.ALBUM_BIND_HOST_ENV, value)
+        assert public_app.album_bind_host() == value
+
+
+def test_bind_host_invalid_or_empty_falls_back(monkeypatch, caplog):
+    """Vide → défaut silencieux ; invalide → défaut + avertissement, sans exception."""
+    monkeypatch.setenv(public_app.ALBUM_BIND_HOST_ENV, "")
+    assert public_app.album_bind_host() == "127.0.0.1"
+    monkeypatch.setenv(public_app.ALBUM_BIND_HOST_ENV, "   ")
+    assert public_app.album_bind_host() == "127.0.0.1"
+    assert caplog.text == "", "une valeur vide ne doit pas bruiter les logs"
+    for value in ("0.0.0.0:8081", "http://0.0.0.0", "[::1]", "0.0.0.0/0", "a b", "nawak"):
+        monkeypatch.setenv(public_app.ALBUM_BIND_HOST_ENV, value)
+        with caplog.at_level(logging.WARNING, logger="public_app"):
+            assert public_app.album_bind_host() == "127.0.0.1"
+        assert public_app.ALBUM_BIND_HOST_ENV in caplog.text
+        assert "repli sur 127.0.0.1" in caplog.text
+        caplog.clear()
+
+
+def test_main_defaults_to_loopback_and_port(monkeypatch, caplog):
+    """``main()`` passe le défaut loopback à ``app.run`` (aucune exposition)."""
+    captured = {}
+    monkeypatch.setattr(public_app.app, "run", lambda **kwargs: captured.update(kwargs))
+    monkeypatch.delenv(public_app.ALBUM_BIND_HOST_ENV, raising=False)
+    monkeypatch.delenv(public_app.ALBUM_PORT_ENV, raising=False)
+    with caplog.at_level(logging.INFO):
+        public_app.main()
+    assert captured == {"host": "127.0.0.1", "port": 8081, "threaded": True}
+    assert "http://127.0.0.1:8081" in caplog.text
+    assert "NON-LOOPBACK" not in caplog.text
+
+
+def test_main_uses_env_bind_host_and_warns_non_loopback(monkeypatch, caplog):
+    """``AIH_ALBUM_BIND_HOST=0.0.0.0`` effectif + avertissement firewall."""
+    captured = {}
+    monkeypatch.setattr(public_app.app, "run", lambda **kwargs: captured.update(kwargs))
+    monkeypatch.setenv(public_app.ALBUM_BIND_HOST_ENV, "0.0.0.0")
+    monkeypatch.setenv(public_app.ALBUM_PORT_ENV, "9123")
+    with caplog.at_level(logging.INFO):
+        public_app.main()
+    assert captured == {"host": "0.0.0.0", "port": 9123, "threaded": True}
+    assert "http://0.0.0.0:9123" in caplog.text
+    assert "NON-LOOPBACK" in caplog.text
+    assert "FIREWALL" in caplog.text
+
+
+def test_main_logs_ipv6_with_brackets(monkeypatch, caplog):
+    """IPv6 : hôte nu pour le bind, crochets dans l'URL logguée."""
+    captured = {}
+    monkeypatch.setattr(public_app.app, "run", lambda **kwargs: captured.update(kwargs))
+    monkeypatch.setenv(public_app.ALBUM_BIND_HOST_ENV, "::1")
+    with caplog.at_level(logging.INFO):
+        public_app.main()
+    assert captured["host"] == "::1"
+    assert "http://[::1]:" in caplog.text
+    assert "NON-LOOPBACK" not in caplog.text
 
 
 def test_webroot_default(monkeypatch, tmp_path):
@@ -759,3 +828,30 @@ def test_run_public_script_targets_only_public_process():
         # ``app.py`` non précédé de ``public_`` = entrée privée → interdit.
         assert re.search(r"(?<!public_)app\.py", line) is None, f"pkill ne doit pas viser le privé : {line}"
     assert "public_server.log" in src
+
+
+def test_run_public_script_exports_and_reports_bind_host():
+    """Le lanceur exporte le .env et affiche l'hôte effectif (proxy distant).
+
+    Contrôle négatif : un message figé ``127.0.0.1:$PUBLIC_PORT`` masquerait un
+    bind réseau réel — l'assertion sur ``$PUBLIC_HOST`` échoue alors.
+    """
+    script = os.path.join(os.path.dirname(BACKEND_DIR), "run_public.sh")
+    src = Path(script).read_text(encoding="utf-8")
+    assert public_app.ALBUM_BIND_HOST_ENV in src, "run_public.sh doit mentionner AIH_ALBUM_BIND_HOST"
+    assert 'PUBLIC_HOST="${AIH_ALBUM_BIND_HOST:-127.0.0.1}"' in src
+    assert r"\[public\] écoute" in src, "le lanceur doit relire l'hôte effectif dans le log"
+    assert "Écoute effective : $EFFECTIVE_URL" in src
+    assert "127.0.0.1:$PUBLIC_PORT" not in src, "le lancement ne doit plus figer le loopback"
+    assert "FIREWALL" in src, "avertissement firewall attendu si écoute non-loopback"
+
+
+def test_albums_doc_documents_bind_host_and_firewall():
+    """``docs/albums.md`` : variable, bind réseau, règle firewall, Docker, Sans Authentik."""
+    doc = Path(os.path.join(os.path.dirname(BACKEND_DIR), "docs", "albums.md")).read_text(encoding="utf-8")
+    assert "| `AIH_ALBUM_BIND_HOST` |" in doc
+    assert "AIH_ALBUM_BIND_HOST=0.0.0.0" in doc
+    assert "firewall" in doc.lower()
+    assert re.search(r"(?i)ufw allow from <IP_DU_PROXY>", doc), "règle ufw limitée au proxy attendue"
+    assert re.search(r"(?i)réseau Docker partagé", doc)
+    assert re.search(r"(?i)SANS Authentik", doc)

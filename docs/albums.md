@@ -18,6 +18,7 @@
               │ Caddy (TLS auto) │   PAS d'Authentik / forward_auth sur ce vhost
               └────────┬─────────┘
                        │ reverse_proxy 127.0.0.1:8081
+                       │ (Caddy sur une AUTRE machine → § 2 : bind réseau + firewall)
                        ▼
               ┌──────────────────────┐        ┌─────────────────────────────┐
               │ SERVICE PUBLIC        │ lit    │  <AIH_ALBUM_WEB_DIR>/<clé>/  │
@@ -36,8 +37,9 @@
   (`POST /api/albums`), un worker d'arrière-plan pré-génère les fichiers web,
   puis l'album passe `ready`. Le front affiche `public_url`
   (`AIH_ALBUM_PUBLIC_BASE_URL` + `/a/<clé>`).
-- **Public** (`./run_public.sh`, bind **127.0.0.1:8081**) : process **séparé,
-  lecture seule, isolé** — aucun import de la base, du storage, de l'auth ni de
+- **Public** (`./run_public.sh`, bind **127.0.0.1:8081** par défaut, réglable
+  par `AIH_ALBUM_BIND_HOST`) : process **séparé, lecture seule, isolé** — aucun
+  import de la base, du storage, de l'auth ni de
   `flask_cors`. Il ne lit que les fichiers du webroot et les assets de
   `backend/public_web/`. Il n'écrit **jamais** sur disque.
 
@@ -78,9 +80,78 @@ Notes :
   `albums.<domaine>` dès que le DNS pointe vers le serveur.
 - **CORS** : ne JAMAIS ajouter d'en-tête `Access-Control-Allow-*` ici ; le
   service vérifie activement l'absence de CORS (test dédié).
-- **Firewall** : rien à ouvrir côté service public — il n'écoute que sur
-  `127.0.0.1` (seuls 80/443 restent ouverts, déjà gérés par Caddy).
+- **Firewall** : rien à ouvrir tant que le service écoute sur `127.0.0.1`
+  (défaut) — seuls 80/443 restent ouverts, déjà gérés par Caddy. Si Caddy est
+  sur une AUTRE machine, lire le sous-chapitre suivant : bind réseau **et**
+  restriction firewall à l'IP du proxy.
 - Un vhost par sous-domaine : ne pas mélanger avec le vhost privé/Authentik.
+
+### Reverse proxy sur une autre machine (Caddy distant ou Docker)
+
+Par défaut le service écoute sur `127.0.0.1` : **injoignable depuis une autre
+machine**. Pour qu'un Caddy situé ailleurs puisse l'atteindre :
+
+1. Dans le `.env` racine, donner l'interface d'écoute — `0.0.0.0` (toutes) ou
+   l'IP de l'interface du réseau concerné :
+
+   ```dotenv
+   AIH_ALBUM_BIND_HOST=0.0.0.0
+   ```
+
+   Valeurs acceptées : IP nue IPv4/IPv6 (`0.0.0.0`, `::`, `192.168.1.10`,
+   `::1`) ou `localhost`. Toute autre valeur (vide, `hôte:port`, URL, crochets
+   `[::1]`…) est **ignorée** avec un avertissement dans `public_server.log` et
+   le service retombe sur `127.0.0.1` — jamais de crash au démarrage.
+
+2. Relancer `./run_public.sh` : le script exporte le `.env` et affiche l'hôte
+   effectif (avertissement explicite si l'écoute n'est plus loopback).
+   Vérifier ensuite côté machine :
+
+   ```bash
+   ss -ltnp | grep ':8081'   # attendu 0.0.0.0:8081 ou <IP>:8081 (adapter le port)
+   ```
+
+3. **Restreindre l'accès par firewall à la seule IP du reverse proxy** : sans
+   cela le service est exposé à tout le réseau et l'isolation loopback est
+   perdue (la clé d'album reste la seule capability). Exemple `ufw` :
+
+   ```bash
+   sudo ufw allow from <IP_DU_PROXY> to any port 8081 proto tcp
+   sudo ufw status numbered     # 8081/tcp ALLOW <IP_DU_PROXY> uniquement
+   ```
+
+   Équivalent `nftables` (chaîne input en politique `drop`) :
+
+   ```bash
+   sudo nft add rule inet filter input ip saddr <IP_DU_PROXY> tcp dport 8081 accept
+   ```
+
+   Contrôle négatif : depuis toute autre machine que le proxy,
+   `nc -vz <IP_SERVICE> 8081` doit **échouer** (refus/timeout).
+
+4. Côté Caddy (machine distante), viser l'IP du service **sur le réseau**, pas
+   `127.0.0.1` : `reverse_proxy <IP_SERVICE>:8081`.
+
+#### Cas Docker / réseau partagé
+
+- Dans un conteneur, `127.0.0.1` désigne **le conteneur lui-même** : Caddy ne
+  peut pas l'atteindre, même sur la même machine. Binder sur `0.0.0.0`
+  (`AIH_ALBUM_BIND_HOST=0.0.0.0` dans le `.env`) et faire communiquer Caddy et
+  le service par un **réseau Docker partagé**.
+- Caddy conteneurisé sur le même réseau : viser le **nom de service ou du
+  conteneur** (`reverse_proxy aih-public:8081`) sans publier le port sur
+  l'hôte — cas le plus étanche (aucun port réseau exposé), à préférer.
+- Caddy sur une autre machine que le conteneur : publier le port en le liant à
+  l'IP jointe (`-p <IP_INTERFACE>:8081:8081`, **pas** `-p 8081:8081` seul),
+  puis appliquer la règle firewall du point 3.
+- `AIH_ALBUM_WEB_DIR` doit rester **partagé** entre privé et public (volume
+  commun) quel que soit le mode réseau.
+
+> ⚠️ Rappel : ce vhost est **SANS Authentik** (pas de `forward_auth`, pas de
+> `basic_auth`) — la clé d'album opaque est la seule capability. Toute
+> exposition réseau non filtrée affaiblit donc directement l'isolation du
+> service public. En cas d'exposition, activer au minimum `AIH_ALBUM_GUARD=log`
+> (`on` si nécessaire) et surveiller `public_server.log`.
 
 ---
 
@@ -88,7 +159,8 @@ Notes :
 
 | Variable | Défaut | Rôle | Recommandé |
 |---|---|---|---|
-| `AIH_ALBUM_PORT` | `8081` | Port d'écoute du service public (bind **fixe** `127.0.0.1`) | `8081` si libre |
+| `AIH_ALBUM_PORT` | `8081` | Port d'écoute du service public | `8081` si libre |
+| `AIH_ALBUM_BIND_HOST` | `127.0.0.1` | Hôte d'écoute du service public. Loopback par défaut (**non exposé au réseau**) ; `0.0.0.0` ou IP d'interface pour un reverse proxy distant — **firewall obligatoire** (§ 2) | laisser `127.0.0.1`, sauf Caddy distant : `0.0.0.0` + firewall |
 | `AIH_ALBUM_WEB_DIR` | `<BASE_DIR>/.cache/albums` | Webroot des albums — **identique pour le privé et le public** | laisser le défaut (ou disque persistant) |
 | `AIH_ALBUM_PUBLIC_BASE_URL` | *(vide)* | Base des `public_url` renvoyées par l'API privée ; vide → `public_url: null` (le front affiche la clé) | `https://albums.<domaine>` |
 | `AIH_ALBUM_GUARD` | `off` | Garde-fou soft du service public : `off` \| `log` \| `on` (voir § 6) | `log` pour observer, `on` pour couper l'abus |
@@ -105,7 +177,8 @@ Bornes réelles à connaître :
   manifest réécrits, `backend/album_web.py:remove_media_from_albums`).
 
 `run_public.sh` exporte le `.env` racine (le service public n'importe pas
-dotenv) ; sans `.env`, les défauts ci-dessus s'appliquent.
+dotenv) ; sans `.env`, les défauts ci-dessus s'appliquent. Une valeur d'hôte
+invalide retombe sur `127.0.0.1` (avertissement dans `public_server.log`).
 
 ---
 
@@ -148,6 +221,9 @@ curl -sSI https://albums.<domaine>/a/inconnu | head -12
 # Manifest d'un album (remplacer <clé>) :
 curl -sS https://albums.<domaine>/a/<clé>/manifest.json | python3 -m json.tool
 
+# Hôte/port d'écoute effectifs (loopback par défaut ; 0.0.0.0 si proxy distant) :
+ss -ltnp | grep ':8081'
+
 # Service local (avant Caddy) :
 curl -sSI http://127.0.0.1:8081/a/inconnu
 
@@ -156,6 +232,7 @@ pgrep -af "backend/(public_)?app.py"
 
 # Logs :
 tail -n 50 public_server.log     # service public
+grep '\[public\] écoute' public_server.log | tail -1   # hôte:port effectifs au démarrage
 tail -n 50 server.log            # serveur privé
 ```
 
@@ -246,6 +323,11 @@ si nécessaire. Une valeur inconnue retombe sur `off` (fail-safe).
   limite de concurrence robuste. À durcir si l'audience grossit.
 - **Logs Caddy** : si le log d'accès Caddy est activé, il contient les URLs
   complètes (clés incluses) ; le placer sur un disque non exposé.
+- **Exposition réseau si bind non-loopback** : passer `AIH_ALBUM_BIND_HOST` à
+  `0.0.0.0` ou à une IP rend le service joignable au-delà de la machine ; sans
+  règle firewall limitée à l'IP du reverse proxy, toute la surface publique
+  (page, manifest, médias) l'est aussi. Le défaut loopback est conservé
+  précisément pour éviter ce scénario.
 
 ---
 

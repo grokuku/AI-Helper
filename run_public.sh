@@ -6,9 +6,12 @@
 #
 # Process SÉPARÉ du serveur privé (backend/app.py) : ce script ne touche
 # JAMAIS au privé (le pkill ne cible que « backend/public_app.py »).
-# Le service écoute sur 127.0.0.1:${AIH_ALBUM_PORT:-8081} — aucune exposition
-# directe : c'est Caddy qui publie le sous-domaine albums.<domaine>
+# Le service écoute par défaut sur 127.0.0.1:${AIH_ALBUM_PORT:-8081} — aucune
+# exposition directe : c'est Caddy qui publie le sous-domaine albums.<domaine>
 # (cf. docs/albums.md, snippet Caddy à recopier).
+# Reverse proxy sur une AUTRE machine : AIH_ALBUM_BIND_HOST=0.0.0.0 (ou l'IP de
+# l'interface) dans le .env, PUIS restreindre le port par FIREWALL à la seule
+# IP du proxy — sinon le service est exposé au réseau (docs/albums.md § 2).
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="$SCRIPT_DIR/.env"
@@ -19,7 +22,8 @@ echo "🚀 Démarrage du service PUBLIC des albums (AI-Helper)..."
 # 1. Variables d'environnement : le .env est EXPORTÉ dans le shell car
 #    public_app.py n'importe pas dotenv (contrairement au privé). Sans .env,
 #    les valeurs par défaut du service s'appliquent : webroot
-#    <BASE_DIR>/.cache/albums, port 8081, bind 127.0.0.1.
+#    <BASE_DIR>/.cache/albums, port 8081, bind 127.0.0.1 (AIH_ALBUM_PORT /
+#    AIH_ALBUM_BIND_HOST).
 if [ -f "$ENV_FILE" ]; then
     export $(grep -v '^#' "$ENV_FILE" | xargs)
 else
@@ -54,9 +58,10 @@ pkill -f "python backend/public_app.py" || true
 pkill -f "$VENV_PATH/bin/python backend/public_app.py" || true
 
 PUBLIC_PORT="${AIH_ALBUM_PORT:-8081}"
+PUBLIC_HOST="${AIH_ALBUM_BIND_HOST:-127.0.0.1}"
 LOG_FILE="$PROJECT_ROOT/public_server.log"
 
-echo "🌐 Lancement du service public sur 127.0.0.1:$PUBLIC_PORT..."
+echo "🌐 Lancement du service public (hôte demandé : $PUBLIC_HOST, port : $PUBLIC_PORT)..."
 nohup "$VENV_PATH/bin/python" backend/public_app.py > "$LOG_FILE" 2>&1 &
 
 # Petit délai pour laisser le temps au serveur de démarrer
@@ -66,7 +71,19 @@ sleep 2
 if ps aux | grep -v grep | grep "$VENV_PATH/bin/python backend/public_app.py" > /dev/null; then
     echo "✅ Service public lancé avec succès !"
     echo "Logs disponibles ici : $LOG_FILE"
-    echo "Écoute locale : http://127.0.0.1:$PUBLIC_PORT (PAS d'exposition directe — Caddy publie le sous-domaine, cf. docs/albums.md)"
+    # Hôte/port EFFECTIFS relus dans le log : public_app.py retombe sur
+    # 127.0.0.1 si AIH_ALBUM_BIND_HOST est invalide → message jamais trompeur.
+    EFFECTIVE_URL="$(grep -o '\[public\] écoute http://[^ ]*' "$LOG_FILE" | tail -1)"
+    EFFECTIVE_URL="${EFFECTIVE_URL#*écoute }"
+    EFFECTIVE_URL="${EFFECTIVE_URL:-http://$PUBLIC_HOST:$PUBLIC_PORT}"
+    echo "Écoute effective : $EFFECTIVE_URL (Caddy publie le sous-domaine — docs/albums.md)"
+    case "$EFFECTIVE_URL" in
+        http://127.0.0.1:*|http://\[::1\]:*|http://localhost:*) ;;
+        *)
+            echo "⚠  Écoute NON-LOOPBACK : restreindre le port $PUBLIC_PORT par FIREWALL à la seule"
+            echo "   IP du reverse proxy — vhost SANS Authentik (cf. docs/albums.md § 2)."
+            ;;
+    esac
 else
     echo "❌ Erreur lors du lancement du service public. Vérifie les logs : $LOG_FILE"
     exit 1

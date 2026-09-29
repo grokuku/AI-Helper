@@ -36,6 +36,12 @@ En-têtes de sécurité sur TOUTES les réponses : ``X-Robots-Tag`` (noindex…)
 ``Referrer-Policy: no-referrer``, ``X-Content-Type-Options: nosniff``,
 ``X-Frame-Options: DENY`` et une CSP stricte. AUCUN en-tête CORS n'est émis.
 
+Écoute : ``AIH_ALBUM_BIND_HOST`` (défaut ``127.0.0.1`` — loopback, AUCUNE
+exposition réseau) et ``AIH_ALBUM_PORT`` (défaut ``8081``). Pour un reverse
+proxy sur une AUTRE machine : binder sur une interface joignable (``0.0.0.0``
+ou l'IP de l'interface) **et** restreindre l'accès par firewall à la seule IP
+du proxy (``docs/albums.md``) — ce vhost reste SANS Authentik.
+
 GARDE-FOU SOFT de débit (phase 5) : ``AIH_ALBUM_GUARD`` ∈ ``off`` (défaut) |
 ``log`` | ``on``. En ``log``, les dépassements (rafale par IP, 404 répétés —
 signal d'énumération) sont comptés et loggués SANS bloquer ; en ``on``, la
@@ -49,6 +55,7 @@ la clé d'album complète : la capability ``/a/<clé-opaque>`` y est masquée en
 """
 
 import hashlib
+import ipaddress
 import json
 import logging
 import os
@@ -68,7 +75,11 @@ PUBLIC_WEB_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "publ
 ALBUM_WEB_DIR_ENV = "AIH_ALBUM_WEB_DIR"
 ALBUM_PORT_ENV = "AIH_ALBUM_PORT"
 ALBUM_PORT_DEFAULT = 8081
-ALBUM_BIND_HOST = "127.0.0.1"
+# Hôte d'écoute : LOOPBACK par défaut → le service n'est PAS exposé au réseau.
+# Reverse proxy sur une AUTRE machine : AIH_ALBUM_BIND_HOST=0.0.0.0 (ou l'IP de
+# l'interface) PUIS restriction FIREWALL à l'IP du proxy (docs/albums.md).
+ALBUM_BIND_HOST_ENV = "AIH_ALBUM_BIND_HOST"
+ALBUM_BIND_HOST_DEFAULT = "127.0.0.1"
 
 # Clé d'album opaque : alphabet URL-safe, sans ``/`` ni ``.`` (donc aucun
 # path-traversal possible par la clé). Même contrat que ``album_web``.
@@ -133,6 +144,44 @@ def album_port():
         return int(raw)
     except (TypeError, ValueError):
         return ALBUM_PORT_DEFAULT
+
+
+def _is_valid_bind_host(value):
+    """Hôte d'écoute accepté : IP nue (v4/v6) ou ``localhost``.
+
+    Volontairement STRICT : ni nom DNS arbitraire, ni ``hôte:port``, ni
+    crochets IPv6. Une valeur douteuse ne doit JAMAIS faire échouer ``app.run``
+    (``socket.gaierror``) : elle retombe sur ``ALBUM_BIND_HOST_DEFAULT``.
+    """
+    if value.lower() == "localhost":
+        return True
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return True
+
+
+def album_bind_host():
+    """Hôte d'écoute public (``AIH_ALBUM_BIND_HOST``, défaut ``127.0.0.1``).
+
+    Valeur vide → défaut (silencieux) ; valeur invalide → défaut +
+    avertissement dans ``public_server.log`` (aucune exception). Pour un
+    reverse proxy sur une autre machine, fournir ``0.0.0.0`` ou l'IP de
+    l'interface joignable **et** restreindre par firewall (``docs/albums.md``).
+    """
+    raw = os.environ.get(ALBUM_BIND_HOST_ENV, "")
+    value = raw.strip() if isinstance(raw, str) else ""
+    if _is_valid_bind_host(value):
+        return value
+    if value:
+        logger.warning(
+            "[public] %s=%r ignoré (attendu : IP nue ou localhost) — repli sur %s",
+            ALBUM_BIND_HOST_ENV,
+            value,
+            ALBUM_BIND_HOST_DEFAULT,
+        )
+    return ALBUM_BIND_HOST_DEFAULT
 
 
 def _is_within(path, root):
@@ -573,17 +622,26 @@ def public_asset(rel):
 
 
 def main():
-    """Lance le service public en écoute sur 127.0.0.1:<AIH_ALBUM_PORT>."""
+    """Lance le service public (``AIH_ALBUM_BIND_HOST``:``AIH_ALBUM_PORT``)."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
     # Le journal d'accès Werkzeug contient le CHEMIN COMPLET (donc la clé
     # d'album) : on masque les capabilities AVANT toute écriture dans
     # public_server.log. Le garde-fou n'a aucun effet sur ce point.
     logging.getLogger("werkzeug").addFilter(_redact_album_keys_filter)
-    webroot = album_web_root()
+    host = album_bind_host()
     port = album_port()
+    webroot = album_web_root()
     guard_mode = album_guard_mode()
     logging.info("[public] albums webroot = %s", webroot)
-    logging.info("[public] écoute http://%s:%s", ALBUM_BIND_HOST, port)
+    # IPv6 : crochets dans l'URL affichée (http://[::1]:8081), hôte nu pour bind.
+    logging.info("[public] écoute http://%s:%s", f"[{host}]" if ":" in host else host, port)
+    if host not in ("127.0.0.1", "::1", "localhost"):
+        logging.warning(
+            "[public] écoute NON-LOOPBACK (%s) : restreindre le port %s par FIREWALL "
+            "(seule l'IP du reverse proxy) — vhost SANS Authentik, cf. docs/albums.md",
+            host,
+            port,
+        )
     logging.info(
         "[public] garde-fou AIH_ALBUM_GUARD=%s (seuils %d req/%ds et %d 404/%ds par IP)",
         guard_mode,
@@ -592,7 +650,7 @@ def main():
         GUARD_MAX_404,
         int(GUARD_WINDOW_SECONDS),
     )
-    app.run(host=ALBUM_BIND_HOST, port=port, threaded=True)
+    app.run(host=host, port=port, threaded=True)
 
 
 if __name__ == "__main__":
