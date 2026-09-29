@@ -30,6 +30,127 @@ html, body {
     margin: 0 auto;
 }
 
+.album-header-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+/* Accès discret aux réglages (engrenage) — HORS plein écran. */
+.album-config-toggle {
+    flex: 0 0 auto;
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 50%;
+    background: #1a1a20;
+    color: var(--album-muted);
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.album-config-toggle:hover { color: var(--album-fg); border-color: rgba(255, 255, 255, 0.4); }
+
+.album-config-toggle:focus-visible {
+    outline: 2px solid #7aa2ff;
+    outline-offset: 2px;
+}
+
+.album-config-glyph { pointer-events: none; }
+
+/* Panneau de réglages (langue + diaporama), persisté en localStorage. */
+.album-config {
+    margin: 14px 0 0;
+    padding: 16px;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: var(--album-radius);
+    background: #16161c;
+}
+
+.album-config[hidden] { display: none; }
+
+.album-config-title {
+    margin: 0 0 12px;
+    font-size: 1rem;
+    font-weight: 600;
+}
+
+.album-config-field {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin: 0 0 10px;
+    font-size: 0.9rem;
+}
+
+.album-config-field select {
+    min-width: 120px;
+    padding: 4px 8px;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 6px;
+    background: #101014;
+    color: var(--album-fg);
+}
+
+.album-config-range {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 200px;
+}
+
+.album-config-range input[type="range"] {
+    flex: 1 1 auto;
+    min-width: 120px;
+    accent-color: #7aa2ff;
+}
+
+.album-config-range output {
+    min-width: 64px;
+    text-align: right;
+    color: var(--album-muted);
+    font-variant-numeric: tabular-nums;
+}
+
+.album-config-field--check {
+    justify-content: flex-start;
+    gap: 8px;
+}
+
+.album-config-field--check input { accent-color: #7aa2ff; }
+
+.album-config-close {
+    margin-top: 4px;
+    padding: 6px 14px;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 6px;
+    background: #1a1a20;
+    color: var(--album-fg);
+    cursor: pointer;
+}
+
+.album-config-close:hover { background: #24242c; }
+
+/* ── Contrôle HÔTE dans le plein écran : bouton diaporama ────────────────
+   La brique crée l'overlay `.holaf-lightbox-overlay` ; album.js y ajoute la
+   classe `album-lightbox` avant d'y poser ce bouton, ce qui permet de le
+   positionner (et de fixer sa taille de glyphe) SANS jamais toucher au style
+   de la brique. La classe `.holaf-lightbox-nav` (aussi posée) le fait
+   participer au chrome auto-masqué (fondu d'opacité de la brique). */
+
+.album-lightbox .album-slideshow-btn {
+    top: 20px;
+    right: 70px;
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    font-size: 17px;
+}
+
 .album-title {
     margin: 0;
     font-size: 1.4rem;

@@ -19,9 +19,55 @@
 </head>
 <body>
     <header class="album-header">
-        <h1 id="album-title" class="album-title"></h1>
+        <div class="album-header-row">
+            <h1 id="album-title" class="album-title"></h1>
+            <!--
+              Accès DISCRET aux réglages du visiteur (langue + diaporama).
+              Panneau dans la page (pas de page/route séparée) : les textes
+              visibles sont réécrits par album.js selon la langue mémorisée ;
+              le contenu ci-dessous est le repli français sans JavaScript.
+            -->
+            <button id="album-config-toggle" class="album-config-toggle" type="button"
+                    aria-expanded="false" aria-controls="album-config"
+                    title="Réglages" aria-label="Réglages">
+                <span class="album-config-glyph" aria-hidden="true">&#9881;</span>
+            </button>
+        </div>
         <p id="album-description" class="album-description" hidden></p>
         <p id="album-count" class="album-count" hidden></p>
+        <section id="album-config" class="album-config" hidden aria-labelledby="album-config-title">
+            <h2 id="album-config-title" class="album-config-title">Réglages</h2>
+            <div class="album-config-field">
+                <label id="album-config-lang-label" for="album-config-lang">Langue</label>
+                <select id="album-config-lang">
+                    <option value="fr">Français</option>
+                    <option value="en">English</option>
+                </select>
+            </div>
+            <div class="album-config-field">
+                <label id="album-config-duration-label" for="album-config-duration">Durée d&#8217;affichage</label>
+                <div class="album-config-range">
+                    <input id="album-config-duration" type="range" min="1000" max="20000" step="500" value="4000">
+                    <output id="album-config-duration-value" for="album-config-duration">4,0 s</output>
+                </div>
+            </div>
+            <div class="album-config-field">
+                <label id="album-config-transition-label" for="album-config-transition">Vitesse de transition</label>
+                <div class="album-config-range">
+                    <input id="album-config-transition" type="range" min="0" max="2000" step="100" value="400">
+                    <output id="album-config-transition-value" for="album-config-transition">0,4 s</output>
+                </div>
+            </div>
+            <div class="album-config-field album-config-field--check">
+                <input id="album-config-random" type="checkbox">
+                <label id="album-config-random-label" for="album-config-random">Ordre aléatoire</label>
+            </div>
+            <div class="album-config-field album-config-field--check">
+                <input id="album-config-loop" type="checkbox">
+                <label id="album-config-loop-label" for="album-config-loop">Boucle</label>
+            </div>
+            <button id="album-config-close" class="album-config-close" type="button">Fermer</button>
+        </section>
     </header>
     <main class="album-main">
         <p id="album-status" class="album-status" role="status"></p>

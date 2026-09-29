@@ -28,6 +28,11 @@ AI-Helper/
 └── ROADMAP.md        # Roadmap et état d'avancement
 ```
 
+**Lancement** : `./run.sh` démarre les DEUX services (privé + service public des
+albums ; désactivable par `AIH_ALBUM_ENABLE=0`) et affiche un résumé des
+URLs/ports et des logs ; `./run_public.sh` ne relance que le service public
+(détails : `docs/albums.md`).
+
 ⚠️ **Pack ComfyUI séparé** : les nodes/widgets ComfyUI (Elements Picker, Enhance,
 Ideogram 4, Music, Keywords, menus, terminal, Blobby…) vivent désormais dans le
 dépôt distinct **ComfyUI-AI-Helper** (pack installé dans `ComfyUI/custom_nodes/`).

@@ -37,7 +37,8 @@
   (`POST /api/albums`), un worker d'arrière-plan pré-génère les fichiers web,
   puis l'album passe `ready`. Le front affiche `public_url`
   (`AIH_ALBUM_PUBLIC_BASE_URL` + `/a/<clé>`).
-- **Public** (`./run_public.sh`, bind **127.0.0.1:8081** par défaut, réglable
+- **Public** (`./run.sh` le démarre par défaut, avec le privé ; `./run_public.sh`
+  pour le relancer SEUL — bind **127.0.0.1:8081** par défaut, réglable
   par `AIH_ALBUM_BIND_HOST`) : process **séparé, lecture seule, isolé** — aucun
   import de la base, du storage, de l'auth ni de
   `flask_cors`. Il ne lit que les fichiers du webroot et les assets de
@@ -45,6 +46,31 @@
 
 Les deux processes doivent partager **le même `AIH_ALBUM_WEB_DIR`** (le privé
 écrit, le public lit). Le webroot par défaut est `<BASE_DIR>/.cache/albums`.
+
+### Une seule commande au reboot : `./run.sh`
+
+`./run.sh` démarre le privé **puis** le public (le public est **démarré par
+défaut**) et termine par un résumé des URLs/ports effectifs et des logs
+(`server.log`, `public_server.log`). Le lancement du public est **délégué** à
+`./run_public.sh` (source unique : venv, export du `.env`, `pkill` limité au
+public, vérification de l'écoute effective) — les deux entrées ne peuvent pas
+diverger.
+
+- **Désactiver le public** (déploiement qui ne veut pas de cette surface) :
+  `AIH_ALBUM_ENABLE=0 ./run.sh`, ou `AIH_ALBUM_ENABLE=0` dans le `.env`.
+  Valeurs `0`/`false`/`no`/`off` → non démarré ; `1`/`true`/`yes`/`on` ou
+  variable absente → démarré (défaut). Une valeur **inconnue** retombe sur
+  « non démarré » (fail-closed : pas d'exposition par faute de frappe).
+  La variable ne **stoppe pas** un public déjà lancé et ne concerne **que**
+  `run.sh` (`./run_public.sh` démarre toujours le public — appel explicite).
+- **Relancer le public seul** (changement de `.env` public, bind, garde-fou…) :
+  `./run_public.sh` — le privé n'est jamais touché.
+- **Idempotence / échec partiel** : chaque lanceur commence par `pkill` **son**
+  process (jamais celui de l'autre service) puis démarre une nouvelle instance
+  → relancer `./run.sh` laisse exactement un process de chaque. Si le public
+  échoue (port occupé…), le privé reste lancé — et inversement : un échec du
+  privé n'empêche pas la tentative publique. `run.sh` sort en code `1` si un
+  service **demandé** ne tourne pas (`0` si tout est up).
 
 > ⚠️ Ne pas exposer `backend/app.py` sur ce sous-domaine : seule la surface
 > d'album est publique par conception. Le privé reste derrière Authentik.
@@ -103,7 +129,8 @@ machine**. Pour qu'un Caddy situé ailleurs puisse l'atteindre :
    `[::1]`…) est **ignorée** avec un avertissement dans `public_server.log` et
    le service retombe sur `127.0.0.1` — jamais de crash au démarrage.
 
-2. Relancer `./run_public.sh` : le script exporte le `.env` et affiche l'hôte
+2. Relancer `./run.sh` (ou `./run_public.sh` pour le public seul) : le script
+   exporte le `.env` et affiche l'hôte
    effectif (avertissement explicite si l'écoute n'est plus loopback).
    Vérifier ensuite côté machine :
 
@@ -160,6 +187,7 @@ machine**. Pour qu'un Caddy situé ailleurs puisse l'atteindre :
 | Variable | Défaut | Rôle | Recommandé |
 |---|---|---|---|
 | `AIH_ALBUM_PORT` | `8081` | Port d'écoute du service public | `8081` si libre |
+| `AIH_ALBUM_ENABLE` | `1` | Lancement du service public depuis `./run.sh` : `1`/`true`/`yes`/`on` = démarré (défaut), `0`/`false`/`no`/`off` = non démarré ; valeur inconnue → non démarré. La ligne de commande prime sur le `.env`. Sans effet sur `./run_public.sh` | `0` si la surface publique n'est pas voulue |
 | `AIH_ALBUM_BIND_HOST` | `127.0.0.1` | Hôte d'écoute du service public. Loopback par défaut (**non exposé au réseau**) ; `0.0.0.0` ou IP d'interface pour un reverse proxy distant — **firewall obligatoire** (§ 2) | laisser `127.0.0.1`, sauf Caddy distant : `0.0.0.0` + firewall |
 | `AIH_ALBUM_WEB_DIR` | `<BASE_DIR>/.cache/albums` | Webroot des albums — **identique pour le privé et le public** | laisser le défaut (ou disque persistant) |
 | `AIH_ALBUM_PUBLIC_BASE_URL` | *(vide)* | Base des `public_url` renvoyées par l'API privée ; vide → `public_url: null` (le front affiche la clé) | `https://albums.<domaine>` |
@@ -192,9 +220,11 @@ invalide retombe sur `127.0.0.1` (avertissement dans `public_server.log`).
 3. **`.env`** (racine du projet) : ajouter au minimum
    `AIH_ALBUM_PUBLIC_BASE_URL=https://albums.<domaine>` (optionnel :
    `AIH_ALBUM_GUARD=log`, `AIH_ALBUM_WEB_DIR=...`).
-4. **Redémarrer le privé** : `./run.sh` — le privé relit le `.env` et affiche
-   désormais les URLs publiques complètes.
-5. **Lancer le public** : `./run_public.sh` — vérifie le venv, tue l'ancien
+4. **Redémarrer les services** : `./run.sh` — privé **et** public (démarré par
+   défaut) relisent le `.env` et le script affiche un résumé (URLs/ports +
+   logs). Pour ne pas lancer le public : `AIH_ALBUM_ENABLE=0 ./run.sh`.
+5. **Relancer le public seul** (facultatif, sans toucher au privé) :
+   `./run_public.sh` — vérifie le venv, tue l'ancien
    process public uniquement, écrit les logs dans `public_server.log`.
 6. **Vérifier** :
    - `curl -sSI https://albums.<domaine>/a/inconnu` → `HTTP/2 404`,
@@ -215,6 +245,12 @@ invalide retombe sur `127.0.0.1` (avertissement dans `public_server.log`).
 ## 5. Vérifications rapides (aide-mémoire)
 
 ```bash
+# Relancer les DEUX services (privé + public) :
+./run.sh
+
+# Ne PAS démarrer le service public (privé seul) :
+AIH_ALBUM_ENABLE=0 ./run.sh
+
 # 404 uniforme, sans login (le point de contrôle de la checklist) :
 curl -sSI https://albums.<domaine>/a/inconnu | head -12
 
@@ -343,11 +379,60 @@ si nécessaire. Une valeur inconnue retombe sur `off` (fail-safe).
 
 ## 9. Fichiers concernés (repères)
 
-- `run_public.sh` — lanceur du service public (à ne pas confondre avec `run.sh`,
-  lanceur privé ; le pkill du public ne cible que `backend/public_app.py`).
+- `run.sh` — lanceur UNIFIÉ : démarre le privé puis le public (délégué à
+  `run_public.sh`, désactivable par `AIH_ALBUM_ENABLE=0`) et affiche le résumé
+  final des deux services.
+- `run_public.sh` — lanceur du service public SEUL (« source unique » du
+  lancement public, appelée par `run.sh` ; le pkill du public ne cible que
+  `backend/public_app.py`).
 - `backend/public_app.py` — service public (routes, en-têtes, garde-fou).
 - `backend/public_web/` — coquille HTML + assets + briques holaf vendues.
 - `backend/album_web.py` — génération des fichiers/manifest (côté privé).
 - `backend/routes/albums.py` — API privée `/api/albums/*`.
 - `backend/tests/test_albums.py`, `backend/tests/test_albums_public.py` —
   suites privée et publique (contrôles négatifs inclus).
+
+---
+
+## 10. Confort de visionnage & réglages du visiteur
+
+La page publique (`backend/public_web/album.js`) active les capacités OPT-IN
+de la brique `holaf-lightbox` 0.2.0 (vendue, jamais modifiée) :
+
+- **clic simple** sur une vignette → **plein écran** (`activateOnClick` +
+  `onActivate(item, index, 'click')` → `openFullscreen`) ;
+- **flèches ←/→** (clavier) dans la visionneuse — la brique 0.2.0 n'attache
+  aucun listener clavier : la page lui transmet `keydown` (`handleKey`), les
+  deux sens sont donc actifs, en diaporama comme hors diaporama ;
+- **bouton diaporama** ▶/❚❚ (icône seule, classe `.holaf-lightbox-nav` pour
+  participer au chrome discret) piloté par les événements
+  `slideshowstart/stop/pause/resume` ;
+- **crossfade** entre images via l'option `transition` (réglable) ;
+- **Espace** en plein écran : démarre le diaporama puis play/pause ;
+- **chrome épuré** : icônes seules, aucun texte ; masquage après **3 s**
+  d'immobilité de la souris (même curseur posé sur un icône) et réapparition
+  au moindre mouvement, en fondu de 300 ms (`chrome: {icons: true,
+  autoHide: true, idleDelay: 3000, fadeDuration: 300}`).
+
+### Réglages : panneau dans la page (pas de page séparée)
+
+Le choix a été le **panneau dans la page**, ouvert par l'engrenage de
+l'en-tête (HORS plein écran), plutôt qu'une page servie via `/assets/…` :
+
+- aucune nouvelle page/asset HTML → **aucune route à ajouter** (la route
+  `/assets/<path>` suffit déjà et l'uniformité des 404 est intacte) ;
+- le visiteur ne quitte jamais l'album (un aller-retour vers une page de
+  configuration ferait perdre la visionneuse de vue) ;
+- avec `Referrer-Policy: no-referrer`, une page de config ne pourrait pas
+  reconstruire l'URL `/a/<clé>` sans remettre la capability dans une query —
+  surface exposée et logs supplémentaires inutiles.
+
+Les réglages sont **propres au visiteur** et persistés dans son `localStorage`
+(clé `aih-album-settings-v1`) : langue (`fr`/`en`), durée d'affichage
+(1000–20000 ms, défaut 4000), vitesse de transition (0–2000 ms, défaut 400,
+`0` = coupe franche), ordre aléatoire, boucle. Ils sont **validés à la
+relecture** (JSON corrompu, valeurs hors bornes ou de type douteux → bornés
+ou défauts) puis appliqués à l'ouverture de la visionneuse (une visionneuse
+fermée est détruite au changement pour reprendre les nouveaux réglages ; le
+bouton diaporama surcharge aussi la session en cours). Le service public
+reste **en lecture seule** : aucun de ces réglages ne quitte le navigateur.

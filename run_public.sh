@@ -4,6 +4,14 @@
 # Projet : AI-Helper — chantier « albums publics » (phase 5)
 # Description : lancement du SERVICE PUBLIC des albums (backend/public_app.py).
 #
+# Ce script est LA source UNIQUE du lancement public : ./run.sh (privé +
+# public) l'APPELLE en sous-process quand le public est activé — il ne
+# duplique donc aucune de ces étapes. Utilisable seul pour relancer UNIQUEMENT
+# le public :
+#   ./run_public.sh
+# La variable AIH_ALBUM_ENABLE ne concerne QUE run.sh : ce lanceur-ci démarre
+# toujours le public (appel explicite).
+#
 # Process SÉPARÉ du serveur privé (backend/app.py) : ce script ne touche
 # JAMAIS au privé (le pkill ne cible que « backend/public_app.py »).
 # Le service écoute par défaut sur 127.0.0.1:${AIH_ALBUM_PORT:-8081} — aucune

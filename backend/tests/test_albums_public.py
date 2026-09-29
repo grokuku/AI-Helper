@@ -20,6 +20,19 @@ Contrôles NÉGATIFS (un test doit ROUGIR si la protection disparaît) :
     (``db``, ``storage``, ``auth``, ``flask_cors``…) ferait échouer l'AST ;
   - ``test_page_js_uses_textcontent_never_innerhtml`` : un ``innerHTML`` dans
     ``album.js`` rouvrirait la porte à une XSS ;
+  - ``test_shell_has_settings_panel_and_gear_without_inline`` : un panneau non
+    masqué au chargement flasherait les réglages avant lecture de localStorage,
+    et un ``<style>``/handler/style inline violerait la CSP ;
+  - ``test_page_js_wires_viewing_comfort`` : sans transmission ``keydown`` →
+    ``handleKey`` les flèches/Espace seraient inertes (la brique 0.2.0
+    n'attache aucun listener clavier) ; sans ``kind !== 'click'`` un double-clic
+    ouvrirait deux fois ; sans les options ``slideshow``/``transition``/
+    ``chrome`` le confort de visionnage ne serait pas activé ;
+  - ``test_page_js_keeps_styles_in_css_never_inline`` : un ``.style.`` dans
+    ``album.js`` ferait sortir le style d'``album.css`` ;
+  - harnais jsdom : un clic ``dblclick`` qui ouvrirait, des réglages
+    localStorage corrompus non bornés, ou une touche consommée visionneuse
+    fermée feraient échouer les scénarios 1/4/5 ;
   - ``test_guard_off_is_strictly_inert`` : le moindre 429/log en mode ``off``
     signalerait un garde-fou non désactivable (défaut du chantier) ;
   - ``test_guard_log_counts_without_blocking`` : un 429 en mode ``log``
@@ -32,7 +45,15 @@ Contrôles NÉGATIFS (un test doit ROUGIR si la protection disparaît) :
     ou douteuse doit retomber sur le loopback — jamais un crash au démarrage ;
   - ``test_run_public_script_exports_and_reports_bind_host`` : un lanceur qui
     figerait ``127.0.0.1`` ou n'exporterait pas la variable rendrait le proxy
-    distant inutilisable et le diagnostic trompeur.
+    distant inutilisable et le diagnostic trompeur ;
+  - ``test_run_sh_disable_switch_mapping_and_default`` : un défaut « non
+    démarré » casserait la promesse « ./run.sh lance tout » ; traiter une
+    valeur inconnue d'``AIH_ALBUM_ENABLE`` comme « démarrer » exposerait la
+    surface publique par faute de frappe (fail-closed exigé) ;
+  - ``test_run_sh_pkill_targets_only_private_process`` /
+    ``test_run_sh_delegates_public_to_run_public_script`` : un pkill croisé ou
+    un appel non capturé de ``run_public.sh`` casserait la robustesse promise
+    (échec partiel sans impact, un seul process par service).
 """
 
 import ast
@@ -77,6 +98,11 @@ ALBUM_CSS_PATH = os.path.join(PUBLIC_WEB_DIR, "album.css")
 INDEX_HTML_PATH = os.path.join(PUBLIC_WEB_DIR, "index.html")
 PUBLIC_APP_PATH = os.path.join(BACKEND_DIR, "public_app.py")
 JSDOM_HARNESS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "js", "album_public_page.mjs")
+
+REPO_ROOT = os.path.dirname(BACKEND_DIR)
+RUN_SH_PATH = os.path.join(REPO_ROOT, "run.sh")
+RUN_PUBLIC_PATH = os.path.join(REPO_ROOT, "run_public.sh")
+ALBUMS_DOC_PATH = os.path.join(REPO_ROOT, "docs", "albums.md")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────
@@ -633,7 +659,7 @@ def test_page_js_uses_textcontent_never_innerhtml():
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node absent → harnais jsdom non exécutable")
 def test_page_js_jsdom_harness():
-    """Exécute le harnais jsdom de album.js (titre/description/grille/états)."""
+    """Exécute le harnais jsdom d'album.js (titre/description/grille/états)."""
     env = os.environ.copy()
     env.setdefault("JSDOM_DIR", "/projects/holaf-lib/node_modules")
     proc = subprocess.run(
@@ -647,6 +673,89 @@ def test_page_js_jsdom_harness():
         pytest.skip("jsdom introuvable → harnais ignoré (SKIP, pas un succès)")
     assert proc.returncode == 0, f"harnais jsdom en échec :\n{proc.stdout}\n{proc.stderr}"
     assert "textContent" in proc.stdout
+
+
+# ── 12bis. Confort de visionnage (phase B) ────────────────────────────
+
+
+def test_shell_has_settings_panel_and_gear_without_inline():
+    """Panneau de réglages dans la coquille, masqué par défaut, SANS inline.
+
+    Contrôle négatif : si le panneau n'était pas `hidden` au chargement, un
+    flash de réglages apparaîtrait avant la lecture de localStorage ; tout
+    `<style>`, handler ou style inline violerait la CSP/uniformité exigée.
+    """
+    html = Path(INDEX_HTML_PATH).read_text(encoding="utf-8")
+    for element_id in (
+        "album-config-toggle",
+        "album-config",
+        "album-config-lang",
+        "album-config-duration",
+        "album-config-transition",
+        "album-config-random",
+        "album-config-loop",
+        "album-config-close",
+    ):
+        assert f'id="{element_id}"' in html, f"élément de réglages manquant : {element_id}"
+    section = re.search(r'<section[^>]*id="album-config"[^>]*>', html)
+    assert section, "section de réglages absente"
+    assert "hidden" in section.group(0), "panneau masqué par défaut exigé"
+    assert "<style" not in html.lower(), "aucun <style> inline (CSP)"
+    assert re.search(r"\son[a-z]+\s*=", html) is None, "aucun handler inline"
+    assert re.search(r"\sstyle\s*=", html) is None, "aucun style inline"
+    tags = re.findall(r"<script\b[^>]*>", html)
+    assert tags and all("src=" in tag for tag in tags)
+
+
+def test_page_js_wires_viewing_comfort():
+    """album.js branche plein écran, diaporama, crossfade, chrome et clavier.
+
+    Contrôles négatifs : sans `kind !== 'click'` un double-clic déclencherait
+    deux ouvertures ; sans transmission keydown les flèches/Espace resteraient
+    inertes (la brique 0.2.0 n'attache AUCUN listener clavier).
+    """
+    src = Path(ALBUM_JS_PATH).read_text(encoding="utf-8")
+    # Clic simple → plein écran (jamais la vue zoom).
+    assert "activateOnClick: true" in src
+    assert re.search(r"kind !== 'click'", src)
+    assert "openFullscreen(" in src
+    assert ".openZoom" not in src
+    # Opt-in brique : diaporama complet, crossfade, chrome épuré à 3 s.
+    assert "slideshow: slideshowConfig()" in src
+    assert "transition: ui.settings.transition" in src
+    assert "icons: true" in src and "autoHide: true" in src
+    assert "idleDelay: 3000" in src and "fadeDuration: 300" in src
+    # Bouton diaporama HÔTE (icône seule) piloté par les événements.
+    assert "holaf-lightbox-nav album-slideshow-btn" in src
+    assert "toggleSlideshow(" in src
+    for event in ("onSlideshowStart", "onSlideshowStop", "onSlideshowPause", "onSlideshowResume"):
+        assert event in src, f"événement non branché : {event}"
+    # Clavier : l'hôte transmet keydown à la brique.
+    assert "keydown" in src and "handleKey(" in src
+    # Réglages visiteur persistés en localStorage.
+    assert "localStorage" in src
+    assert "'aih-album-settings-v1'" in src
+    # i18n FR/EN, y compris les libellés passés à la brique.
+    for text in ("prev: 'Image précédente'", "prev: 'Previous image'", "region: 'Visionneuse'", "region: 'Viewer'"):
+        assert text in src, f"libellé i18n manquant : {text}"
+
+
+def test_page_js_keeps_styles_in_css_never_inline():
+    """Les AJOUTS phase B n'introduisent ni innerHTML ni style inline.
+
+    Contrôle négatif : `.style.` dans album.js (ou un <style> injecté)
+    ferait basculer le style hors d'album.css, contrairement à la contrainte.
+    """
+    src = Path(ALBUM_JS_PATH).read_text(encoding="utf-8")
+    assert re.search(r"\.innerHTML\b", src) is None
+    assert re.search(r"\.outerHTML\b", src) is None
+    assert re.search(r"\.style\.", src) is None, "les styles doivent rester dans album.css"
+    assert "createElement" in src and "textContent" in src
+    css = Path(ALBUM_CSS_PATH).read_text(encoding="utf-8")
+    assert ".album-config" in css and ".album-config-toggle" in css
+    # Bouton diaporama positionné via une portée hôte, jamais le style de la brique.
+    assert ".album-lightbox .album-slideshow-btn" in css
+    assert ".album-slideshow-btn" in src
 
 
 # ── 13. Garde-fou SOFT de débit (phase 5) ─────────────────────────────
@@ -817,7 +926,7 @@ def test_run_public_script_targets_only_public_process():
     Contrôle négatif : un ``pkill`` visant ``backend/app.py`` (l'entrée privée)
     tuerait le serveur privé au lancement du service public → le test échoue.
     """
-    script = os.path.join(os.path.dirname(BACKEND_DIR), "run_public.sh")
+    script = RUN_PUBLIC_PATH
     assert os.path.isfile(script), "run_public.sh manquant"
     assert os.access(script, os.X_OK), "run_public.sh doit être exécutable"
     src = Path(script).read_text(encoding="utf-8")
@@ -836,7 +945,7 @@ def test_run_public_script_exports_and_reports_bind_host():
     Contrôle négatif : un message figé ``127.0.0.1:$PUBLIC_PORT`` masquerait un
     bind réseau réel — l'assertion sur ``$PUBLIC_HOST`` échoue alors.
     """
-    script = os.path.join(os.path.dirname(BACKEND_DIR), "run_public.sh")
+    script = RUN_PUBLIC_PATH
     src = Path(script).read_text(encoding="utf-8")
     assert public_app.ALBUM_BIND_HOST_ENV in src, "run_public.sh doit mentionner AIH_ALBUM_BIND_HOST"
     assert 'PUBLIC_HOST="${AIH_ALBUM_BIND_HOST:-127.0.0.1}"' in src
@@ -848,10 +957,162 @@ def test_run_public_script_exports_and_reports_bind_host():
 
 def test_albums_doc_documents_bind_host_and_firewall():
     """``docs/albums.md`` : variable, bind réseau, règle firewall, Docker, Sans Authentik."""
-    doc = Path(os.path.join(os.path.dirname(BACKEND_DIR), "docs", "albums.md")).read_text(encoding="utf-8")
+    doc = Path(ALBUMS_DOC_PATH).read_text(encoding="utf-8")
     assert "| `AIH_ALBUM_BIND_HOST` |" in doc
     assert "AIH_ALBUM_BIND_HOST=0.0.0.0" in doc
     assert "firewall" in doc.lower()
     assert re.search(r"(?i)ufw allow from <IP_DU_PROXY>", doc), "règle ufw limitée au proxy attendue"
     assert re.search(r"(?i)réseau Docker partagé", doc)
     assert re.search(r"(?i)SANS Authentik", doc)
+
+
+# ── 15. Lanceur UNIFIÉ : run.sh démarre le privé ET le public ──────────
+
+
+def _run_sh_src():
+    return Path(RUN_SH_PATH).read_text(encoding="utf-8")
+
+
+def _run_sh_source(expr, *args):
+    """Charge ``run.sh`` en mode TEST (aucun effet de bord) puis évalue ``expr``.
+
+    Le mode test (``AIH_RUN_SH_SOURCE_ONLY=1``) définit les fonctions du
+    lanceur sans aucun pkill ni lancement : les décisions sont ainsi testées
+    comme du CODE, pas comme des chaînes de caractères.
+    """
+    env = os.environ.copy()
+    env["AIH_RUN_SH_SOURCE_ONLY"] = "1"
+    code = (
+        'source "$0" || { echo "SOURCE-KO" >&2; exit 9; }; '
+        'declare -F public_service_enabled >/dev/null || { echo "FONCTION-ABSENTE" >&2; exit 8; }; ' + expr
+    )
+    proc = subprocess.run(
+        ["bash", "-c", code, RUN_SH_PATH, *args],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=30,
+    )
+    assert proc.returncode == 0, f"évaluation de run.sh en mode test :\n{proc.stdout}\n{proc.stderr}"
+    return proc.stdout
+
+
+def test_launchers_are_executable_and_syntactically_valid():
+    """``bash -n`` sur les deux lanceurs (un script cassé = reboot en échec)."""
+    for path in (RUN_SH_PATH, RUN_PUBLIC_PATH):
+        assert os.path.isfile(path), f"{path} manquant"
+        assert os.access(path, os.X_OK), f"{path} doit être exécutable"
+        proc = subprocess.run(["bash", "-n", path], capture_output=True, text=True, timeout=30)
+        assert proc.returncode == 0, f"bash -n {path} :\n{proc.stderr}"
+
+
+def test_run_sh_test_mode_is_silent():
+    """Le mode source ne doit produire AUCUN effet de bord (sinon les tests le
+    déclencheraient pour de vrai : pkill, venv, serveurs…)."""
+    out = _run_sh_source("echo EXPR-OK")
+    assert out.strip() == "EXPR-OK", f"sorties parasites en mode test : {out!r}"
+
+
+def test_run_sh_disable_switch_mapping_and_default():
+    """``AIH_ALBUM_ENABLE`` : défaut DÉMARRÉ, off explicite, inconnu fail-closed.
+
+    Contrôles négatifs : si ``0`` n'était pas reconnu, ``AIH_ALBUM_ENABLE=0
+    ./run.sh`` lancerait quand même le public ; si une valeur inconnue était
+    traitée comme « démarrer », une faute de frappe exposerait la surface
+    publique ; si le défaut n'était pas « démarrer », ``./run.sh`` ne tiendrait
+    pas la promesse « une seule commande ».
+    """
+    for value in ("1", "true", "YES", "on", "Enable", "enabled", ""):
+        assert _run_sh_source('public_service_enabled "$1"; echo "rc=$?"', value).strip() == "rc=0", value
+    for value in ("0", "false", "NO", "off", "Disable", "disabled"):
+        assert _run_sh_source('public_service_enabled "$1"; echo "rc=$?"', value).strip() == "rc=1", value
+    for value in ("nawak", "2", "yes please", "-1"):
+        assert _run_sh_source('public_service_enabled "$1"; echo "rc=$?"', value).strip() == "rc=2", value
+    # Argument totalement absent : défaut = démarré.
+    assert _run_sh_source('public_service_enabled; echo "rc=$?"').strip() == "rc=0"
+
+
+def test_run_sh_default_is_enabled_and_cli_wins_over_env():
+    """Défaut « démarré », priorité de la ligne de commande, fail-closed."""
+    src = _run_sh_src()
+    assert "AIH_ALBUM_ENABLE" in src
+    assert "${AIH_ALBUM_ENABLE:-1}" in src, "défaut attendu : service public DÉMARRÉ"
+    assert 'CLI_ALBUM_ENABLE="${AIH_ALBUM_ENABLE:-}"' in src, "valeur CLI capturée"
+    # La valeur CLI est capturée AVANT l'export du .env (sinon le .env l'écrase).
+    assert src.index("CLI_ALBUM_ENABLE=") < src.index("export $(grep -v '^#'")
+    # Valeur inconnue → branche *) qui force PUBLIC_ENABLED=0 (fail-closed).
+    assert re.search(r"\*\)\s*\n\s*PUBLIC_ENABLED=0", src), "branche inconnue non fail-closed"
+
+
+def test_run_sh_pkill_targets_only_private_process():
+    """Les pkill de ``run.sh`` ne visent QUE ``backend/app.py``.
+
+    Contrôle négatif : un pattern contenant ``public`` (ou un pkill trop large)
+    tuerait le service public à chaque relance du privé.
+    """
+    pkill_lines = [line.strip() for line in _run_sh_src().splitlines() if line.strip().startswith("pkill")]
+    assert pkill_lines, "au moins un pkill privé attendu"
+    for line in pkill_lines:
+        assert re.search(r"(?<!public_)app\.py", line), f"pkill privé attendu : {line}"
+        assert "public" not in line, f"pkill du privé ne doit pas viser le public : {line}"
+
+
+def test_run_sh_restarts_private_before_starting_fresh():
+    """Idempotence statique : pkill AVANT le nohup (jamais deux privés)."""
+    lines = _run_sh_src().splitlines()
+    pkill_idx = next(i for i, line in enumerate(lines) if line.strip().startswith("pkill") and "app.py" in line)
+    nohup_idx = next(i for i, line in enumerate(lines) if "nohup" in line and "backend/app.py" in line)
+    assert pkill_idx < nohup_idx, "l'ancien process privé doit être arrêté AVANT le nouveau"
+
+
+def test_run_sh_delegates_public_to_run_public_script():
+    """``run.sh`` appelle ``run_public.sh`` (source unique) — sans en dépendre.
+
+    Contrôles négatifs :
+      - pas d'appel → le public ne serait jamais lancé depuis ``run.sh`` ;
+      - appel non capturé → un échec du public ferait tomber tout le script ;
+      - ordre inversé → le public serait tenté avant que le venv/les
+        dépendances communs soient prêts ;
+      - échec du privé suivi d'un ``exit`` → le public ne serait jamais tenté.
+    """
+    src = _run_sh_src()
+    assert 'PUBLIC_SCRIPT="$SCRIPT_DIR/run_public.sh"' in src
+    assert 'if bash "$PUBLIC_SCRIPT"; then' in src, "appel en sous-process, code retour capturé"
+    assert 'if [ "$PUBLIC_ENABLED" -ne 1 ]; then' in src, "garde de désactivation autour de l'appel"
+    assert "PUBLIC_OK=0" in src and "PUBLIC_OK=1" in src
+    # Ordre : privé lancé AVANT la tentative publique.
+    assert src.index('nohup "$VENV_PATH/bin/python" backend/app.py') < src.index('bash "$PUBLIC_SCRIPT"')
+    # Un échec du privé n'interrompt pas le script avant la tentative publique.
+    entre = src[src.index("PRIVATE_OK=0"):src.index('if bash "$PUBLIC_SCRIPT"')]
+    assert "exit 1" not in entre, "l'échec du privé ne doit pas couper le script"
+
+
+def test_run_sh_prints_summary_with_both_services_urls_and_logs():
+    """Résumé final : les DEUX services, URLs effectives et logs respectifs."""
+    src = _run_sh_src()
+    assert "RÉSUMÉ" in src
+    assert "server.log" in src and "public_server.log" in src
+    # URL publique effective relue dans le log, comme dans run_public.sh.
+    assert 'PUBLIC_URL="${PUBLIC_URL#*écoute }"' in src
+    assert "exit 1" in src, "code retour non nul si un service demandé ne tourne pas"
+
+
+def test_run_public_script_is_not_gated_by_run_sh_switch():
+    """``./run_public.sh`` reste un lanceur EXPLICITE : ``AIH_ALBUM_ENABLE`` ne
+    doit y être cité qu'en commentaire (jamais testé), sinon une relance
+    manuelle du public pourrait être bloquée par un ``.env`` à 0."""
+    src = Path(RUN_PUBLIC_PATH).read_text(encoding="utf-8")
+    for line in src.splitlines():
+        if "AIH_ALBUM_ENABLE" in line:
+            assert line.strip().startswith("#"), f"AIH_ALBUM_ENABLE ne doit pas piloter run_public.sh : {line}"
+
+
+def test_albums_doc_documents_unified_launcher_and_disable_switch():
+    """``docs/albums.md`` : une seule commande, défaut démarré, désactivation."""
+    doc = Path(ALBUMS_DOC_PATH).read_text(encoding="utf-8")
+    assert "AIH_ALBUM_ENABLE" in doc
+    assert re.search(r"\|\s*`AIH_ALBUM_ENABLE`\s*\|", doc), "variable absente du tableau § 3"
+    assert re.search(r"(?i)seule commande", doc), "l'usage « une seule commande » doit être documenté"
+    assert re.search(r"(?i)démarré\W*par\W*défaut", doc), "le défaut « démarré » doit être explicite"
+    assert re.search(r"(?i)relancer le public seul", doc), "run_public.sh doit rester documenté"
+    assert re.search(r"(?i)fail-closed", doc), "le comportement fail-closed doit être documenté"
