@@ -25,6 +25,12 @@ CRÉATION ASYNCHRONE : la requête HTTP rend la main IMMÉDIATEMENT (statut
 progression en base puis passe en ``ready`` (ou ``error``). Le client suit
 l'avancement par polling du GET détail.
 
+PERFORMANCE : les items sont traités par un petit pool borné
+(``AIH_ALBUM_WORKERS``, défaut 2) pour recouvrir téléchargement et encodage ;
+chaque item est journalisé avec ses durées par phase (``download``,
+``decode``, ``full``, ``thumb``) et un bilan agrégé est loggé en fin de
+préparation — le goulot réel est ainsi mesurable en production.
+
 GARDE-FOU (phase 5) : ``AIH_ALBUM_GUARD`` ∈ off|log|on (défaut off) est branché
 DANS LE SERVICE PUBLIC (``backend/public_app.py``) — c'est la surface exposée
 qui est protégée. Ce module privé n'en a pas besoin (authentification).
@@ -37,6 +43,8 @@ import os
 import secrets
 import shutil
 import threading
+import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
 import album_web
 from album_web import (
@@ -66,6 +74,15 @@ ALBUM_GUARD = os.environ.get("AIH_ALBUM_GUARD", "off")
 # Base publique des albums (phase 5 : sous-domaine Caddy). Lue à CHAQUE
 # sérialisation (monkeypatch/env en test) ; absente → ``public_url = null``.
 ALBUM_PUBLIC_BASE_URL_ENV = "AIH_ALBUM_PUBLIC_BASE_URL"
+
+# Nombre d'items traités EN PARALLÈLE par le worker d'album (pipeline : le
+# téléchargement d'un item recouvre le décodage/encodage d'un autre). 1 =
+# comportement séquentiel historique. Borné (mémoire : une image décodée peut
+# peser ~100 Mo) et surchargeable par ``AIH_ALBUM_WORKERS``.
+try:
+    ALBUM_ITEM_WORKERS = max(1, min(8, int(os.environ.get("AIH_ALBUM_WORKERS", "2"))))
+except (TypeError, ValueError):
+    ALBUM_ITEM_WORKERS = 2
 
 
 def _album_public_base():
@@ -347,37 +364,98 @@ def _set_album_status(album_id, status):
         conn.close()
 
 
-def _persist_item_report(link_id, report):
+def _claim_next_pending(album_id, claimed):
+    """Prochain item ``pending`` non déjà réservé (ids dans ``claimed``).
+
+    Le dispatcher est UNIQUE (thread principal de ``_prepare_album``) : la
+    sélection + la mise dans ``claimed`` sont donc atomiques de fait, aucun
+    item n'est traité deux fois. ``claimed`` ne grandit que d'un cran par item
+    (max 500) et les items terminés ne sont plus ``pending``.
+    """
     conn = get_db()
     try:
-        conn.execute(
-            "UPDATE album_media SET status = ?, error = ?, ext = ?, width = ?, height = ? WHERE id = ?",
-            (report["status"], report["error"], report["ext"], report["width"], report["height"], link_id),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def _bump_progress(album_id):
-    """Recalcule ``progress_done`` = items non ``pending`` (robuste au re-run)."""
-    conn = get_db()
-    try:
-        done = conn.execute(
-            "SELECT COUNT(*) FROM album_media WHERE album_id = ? AND status != 'pending'",
+        if claimed:
+            placeholders = ",".join("?" for _ in claimed)
+            return conn.execute(
+                f"SELECT * FROM album_media WHERE album_id = ? AND status = 'pending' "
+                f"AND id NOT IN ({placeholders}) ORDER BY item_no LIMIT 1",
+                (album_id, *claimed),
+            ).fetchone()
+        return conn.execute(
+            "SELECT * FROM album_media WHERE album_id = ? AND status = 'pending' ORDER BY item_no LIMIT 1",
             (album_id,),
-        ).fetchone()[0]
-        conn.execute(
-            "UPDATE albums SET progress_done = ?, updated_at = ? WHERE id = ?",
-            (done, _now_iso(), album_id),
-        )
-        conn.commit()
+        ).fetchone()
     finally:
         conn.close()
+
+
+# Les rapports d'items sont écrits par plusieurs threads : on les sérialise
+# (transactions courtes et ordonnées → aucune contention SQLite perceptible).
+_db_write_lock = threading.Lock()
+
+
+def _record_item_result(album_id, link_id, report):
+    """Écrit le rapport d'UN item puis recalcule la progression (1 transaction)."""
+    with _db_write_lock:
+        conn = get_db()
+        try:
+            conn.execute(
+                "UPDATE album_media SET status = ?, error = ?, ext = ?, width = ?, height = ? WHERE id = ?",
+                (report["status"], report["error"], report["ext"], report["width"], report["height"], link_id),
+            )
+            done = conn.execute(
+                "SELECT COUNT(*) FROM album_media WHERE album_id = ? AND status != 'pending'",
+                (album_id,),
+            ).fetchone()[0]
+            conn.execute(
+                "UPDATE albums SET progress_done = ?, updated_at = ? WHERE id = ?",
+                (done, _now_iso(), album_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def _process_album_item(album_id, item, base, owner):
+    """Télécharge + génère UN item puis écrit son rapport (jamais d'exception).
+
+    Exécuté dans un thread du pool : un échec d'item ne doit jamais tuer les
+    autres. Retourne le dict des durées par phase (pour l'agrégat de logs).
+    """
+    timings = {}
+    try:
+        media = _fetch_media_row(item["media_id"])
+        report = generate_album_item(media, item["item_no"], base, owner, timings=timings)
+        t0 = time.perf_counter()
+        _record_item_result(album_id, item["id"], report)
+        timings["db"] = time.perf_counter() - t0
+        logger.info(
+            "[album] id=%s item=%d %s en %.2fs (download=%.2fs decode=%.2fs full=%.2fs thumb=%.2fs)%s",
+            album_id, item["item_no"], report["status"], sum(timings.values()),
+            timings.get("download", 0.0), timings.get("decode", 0.0),
+            timings.get("full", 0.0), timings.get("thumb", 0.0),
+            f" — {report['error']}" if report["error"] else "",
+        )
+    except Exception:
+        # Garde-fou : sans lui, un bug inattendu laisserait l'item ``pending``
+        # et l'album ne pourrait jamais devenir ``ready``.
+        logger.exception("[album] item=%s en échec album=%s", item["item_no"], album_id)
+        with contextlib.suppress(Exception):
+            _record_item_result(
+                album_id, item["id"],
+                {"status": "failed", "error": album_web.REASON_GENERATION_FAILED,
+                 "ext": "", "width": None, "height": None},
+            )
+    return timings
 
 
 def _prepare_album(album_id):
-    """Traite tous les items ``pending`` puis finalise (manifest + statut)."""
+    """Traite tous les items ``pending`` (parallélisation bornée) puis finalise.
+
+    Boucle de dispatch : remplit le pool tant qu'il reste des ``pending`` non
+    réservés, consomme les items terminés au fur et à mesure, puis relit les
+    ``pending`` (un ajout pendant la préparation est ainsi pris en charge).
+    """
     album = _fetch_album(album_id)
     if not album or album["status"] == "revoked":
         return
@@ -391,23 +469,41 @@ def _prepare_album(album_id):
     os.makedirs(os.path.join(base, album_web.FULL_SUBDIR), exist_ok=True)
 
     owner = album["user_id"]
-    while True:
-        conn = get_db()
-        try:
-            item = conn.execute(
-                "SELECT * FROM album_media WHERE album_id = ? AND status = 'pending' ORDER BY item_no LIMIT 1",
-                (album_id,),
-            ).fetchone()
-        finally:
-            conn.close()
-        if item is None:
-            break
-        media = _fetch_media_row(item["media_id"])
-        report = generate_album_item(media, item["item_no"], base, owner)
-        _persist_item_report(item["id"], report)
-        _bump_progress(album_id)
+    workers = max(1, int(ALBUM_ITEM_WORKERS))
+    totals = {"download": 0.0, "decode": 0.0, "full": 0.0, "thumb": 0.0, "db": 0.0}
+    done = 0
+    t0 = time.perf_counter()
+    claimed = set()
+    inflight = {}
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="aih-album-item") as pool:
+        while True:
+            while len(inflight) < workers:
+                item = _claim_next_pending(album_id, claimed)
+                if item is None:
+                    break
+                claimed.add(item["id"])
+                inflight[pool.submit(_process_album_item, album_id, item, base, owner)] = item["id"]
+            if not inflight:
+                break
+            finished, _ = wait(list(inflight), return_when=FIRST_COMPLETED)
+            for future in finished:
+                inflight.pop(future, None)
+                done += 1
+                try:
+                    timings = future.result() or {}
+                except Exception:
+                    logger.exception("[album] item en échec album=%s", album_id)
+                    timings = {}
+                for phase in totals:
+                    totals[phase] += float(timings.get(phase) or 0.0)
 
     _finalize_album(album_id)
+    logger.info(
+        "[album] préparation id=%s terminée en %.1fs : %d item(s), workers=%d "
+        "(Σ download=%.1fs decode=%.1fs full=%.1fs thumb=%.1fs db=%.1fs)",
+        album_id, time.perf_counter() - t0, done, workers,
+        totals["download"], totals["decode"], totals["full"], totals["thumb"], totals["db"],
+    )
 
 
 def _finalize_album(album_id):

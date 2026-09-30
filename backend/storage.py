@@ -16,12 +16,15 @@ Env vars:
   SFTP_PASSWORD   — password (or use SFTP_KEY_PATH)
   SFTP_KEY_PATH   — path to SSH private key
   SFTP_BASE_PATH  — base directory on the SFTP server (default /aih)
+  SFTP_TIMEOUT    — socket/connect timeout in seconds (default 30)
+  SFTP_DOWNLOAD_CONNECTIONS — canaux SFTP parallèles pour download (défaut 2)
 """
 
 import contextlib
 import logging
 import os
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -33,6 +36,18 @@ from pathlib import Path
 # uploads ComfyUI, downloads) pendent derrière elle : galerie « figée ».
 # Surchargeable via la variable d'environnement ``SFTP_TIMEOUT`` (secondes).
 SFTP_TIMEOUT = float(os.environ.get("SFTP_TIMEOUT", "30"))
+
+# Nombre de canaux SFTP de TÉLÉCHARGEMENT utilisables en parallèle (sur la MÊME
+# connexion SSH: paramiko multiplexe les canaux). Un canal SFTP n'est pas
+# thread-safe, donc chaque canal du pool est utilisé par un seul thread à la
+# fois ; au-delà du plafond, on attend ou on retombe sur le canal principal
+# sérialisé. 1 = un seul téléchargement à la fois (comportement historique),
+# 2+ = les gros downloads (worker d'album) n'immobilisent plus toute la pile
+# de stockage. Surchargeable via ``SFTP_DOWNLOAD_CONNECTIONS``.
+try:
+    SFTP_DOWNLOAD_CONNECTIONS = max(1, min(8, int(os.environ.get("SFTP_DOWNLOAD_CONNECTIONS", "2"))))
+except (TypeError, ValueError):
+    SFTP_DOWNLOAD_CONNECTIONS = 2
 
 # ── Interface ────────────────────────────────────────────────────────
 
@@ -206,6 +221,11 @@ class SFTPStorage(StorageBackend):
         # paramiko SFTPClient n'est PAS thread-safe : le canal partagé est
         # sérialisé par ce verrou (réentrant, car _connect le reprend).
         self._lock = threading.RLock()
+        # Pool de canaux SFTP dédiés aux TÉLÉCHARGEMENTS (le canal principal
+        # `_sftp` reste réservé aux autres opérations, sérialisées par `_lock`).
+        self._download_free = []       # canaux disponibles (réutilisables)
+        self._download_created = 0     # canaux créés (en service OU libres)
+        self._download_cond = threading.Condition()
 
     def _known_hosts_path(self) -> Path:
         """Fichier known_hosts persistant (TOFU).
@@ -405,16 +425,102 @@ class SFTPStorage(StorageBackend):
                 logging.exception(f"[SFTP] upload failed: {e}")
                 return False
 
-    def download(self, remote_path: str, local_path: str) -> bool:
+    def _new_sftp_channel(self):
+        """Ouvre un canal SFTP supplémentaire sur la connexion SSH (pool).
+
+        Créé sous ``_lock`` : ne court jamais avec une reconnexion du canal
+        principal. Le canal reçoit le même timeout socket que celui-ci.
+        """
+        with self._lock:
+            self._connect()  # garantit une connexion SSH vivante (reconnecte au besoin)
+            sftp = self._ssh.open_sftp()
+        with contextlib.suppress(Exception):
+            chan = sftp.get_channel()
+            if chan is not None:
+                chan.settimeout(SFTP_TIMEOUT)
+        return sftp
+
+    def _borrow_download_channel(self):
+        """Réserve un canal de téléchargement (``None`` si aucun disponible).
+
+        Jusqu'à ``SFTP_DOWNLOAD_CONNECTIONS`` canaux simultanés. Si le plafond
+        est atteint, attend qu'un canal se libère (borne ``SFTP_TIMEOUT``) ;
+        au-delà, ``None`` → repli sur le canal principal sérialisé (un
+        téléchargement ne doit JAMAIS échouer à cause du pool).
+        """
+        with self._download_cond:
+            if self._download_free:
+                return self._download_free.pop()
+            must_create = self._download_created < SFTP_DOWNLOAD_CONNECTIONS
+            if must_create:
+                self._download_created += 1
+            else:
+                deadline = time.monotonic() + SFTP_TIMEOUT
+                while not self._download_free:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        return None
+                    self._download_cond.wait(remaining)
+                return self._download_free.pop()
+        try:
+            return self._new_sftp_channel()
+        except Exception as e:
+            with self._download_cond:
+                self._download_created = max(0, self._download_created - 1)
+                self._download_cond.notify()
+            logging.warning(f"[SFTP] canal de téléchargement indisponible, repli sérialisé : {e}")
+            raise
+
+    def _release_download_channel(self, channel, broken=False):
+        """Rend un canal au pool (ou le ferme s'il est cassé)."""
+        with self._download_cond:
+            if broken:
+                with contextlib.suppress(Exception):
+                    channel.close()
+                self._download_created = max(0, self._download_created - 1)
+            else:
+                self._download_free.append(channel)
+            self._download_cond.notify()
+
+    def _download_serialized(self, remote_path, local_path):
+        """Téléchargement via le canal principal (sérialisé par ``_lock``)."""
         with self._lock:
             try:
                 sftp = self._connect()
-                full = self._full_path(remote_path)
-                sftp.get(full, local_path)
+                sftp.get(self._full_path(remote_path), local_path)
                 return True
             except Exception as e:
                 logging.exception(f"[SFTP] download failed: {e}")
                 return False
+
+    def download(self, remote_path: str, local_path: str) -> bool:
+        """Télécharge un fichier distant vers ``local_path``.
+
+        Utilise un canal DÉDIÉ du pool quand un est disponible : plusieurs
+        téléchargements avancent en parallèle et le canal principal
+        (uploads/stat/delete) n'est plus immobilisé par un gros download.
+        Repli sérialisé (comportement historique) si le pool est indisponible.
+        """
+        try:
+            channel = self._borrow_download_channel()
+        except Exception:
+            channel = None
+        if channel is None:
+            return self._download_serialized(remote_path, local_path)
+        released = False
+        try:
+            channel.get(self._full_path(remote_path), local_path)
+            return True
+        except Exception as e:
+            # Canal peut-être mort (transport reconnecté…) : on le jette puis on
+            # retente UNE fois sur le canal principal (qui reconnecte au besoin).
+            logging.warning(f"[SFTP] download via canal dédié échoué, nouvel essai sérialisé : {e}")
+            released = True
+            self._release_download_channel(channel, broken=True)
+            return self._download_serialized(remote_path, local_path)
+        finally:
+            if not released:
+                self._release_download_channel(channel)
 
     def delete(self, remote_path: str) -> bool:
         with self._lock:
@@ -449,8 +555,14 @@ class SFTPStorage(StorageBackend):
         return f"sftp://{self.host}:{self.port}{self.base_path}"
 
     def close(self):
-        """Ferme proprement la connexion."""
+        """Ferme proprement la connexion et les canaux du pool de téléchargement."""
         with self._lock:
+            with self._download_cond:
+                for channel in self._download_free:
+                    with contextlib.suppress(Exception):
+                        channel.close()
+                self._download_free.clear()
+                self._download_created = 0
             try:
                 if self._sftp:
                     self._sftp.close()

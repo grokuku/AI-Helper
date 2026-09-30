@@ -15,11 +15,20 @@
  * confirm, setBusy, selectedIds, state.grid) et la brique VENDUE HolafModal.
  * AUCUNE brique frontend/vendor/holaf/* n'est modifiée (cf. `holaf check`).
  *
- * POLLING DE PRÉPARATION : la création rend la main en statut ``building`` ; la
- * modale de résultat suit l'avancement par GET détail. Ré-armement par
- * setTimeout (jamais setInterval → aucune requête concurrente) ; le suivi
- * s'ARRÊTE sur ready/error/revoked, à la fermeture de la modale, après
- * ``state.pollMax`` ticks ou ``state.pollErrorsMax`` erreurs réseau consécutives.
+ * POLLING DE PRÉPARATION (modale de RÉSULTAT) : la création rend la main en
+ * statut ``building`` ; la modale de résultat suit l'avancement par GET détail.
+ * POLLING DE GESTION (modale « Albums publics ») : tant qu'au moins un album
+ * de la liste est ``building``, la liste se rafraîchit toute seule (cadence
+ * légère, ``ALBUMS_MANAGE_POLL_MS``) en affichant « Préparation en cours… x/y ».
+ * Les deux suivis sont indépendants. Ré-armement par setTimeout (jamais
+ * setInterval → aucune requête concurrente, aucun empilement de timers) ; le
+ * suivi de gestion s'ARRÊTE dès qu'aucun album n'est en préparation, à la
+ * fermeture de la modale, après ``state.managePollMax`` ticks ou
+ * ``state.managePollErrorsMax`` erreurs réseau consécutives. Le DOM n'est
+ * reconstruit que si la liste a réellement changé (focus/survol préservés).
+ * Le suivi de RÉSULTAT s'ARRÊTE sur ready/error/revoked, à la fermeture de la
+ * modale, après ``state.pollMax`` ticks ou ``state.pollErrorsMax`` erreurs
+ * réseau consécutives.
  *
  * Script CLASSIQUE (comme les autres app-*.js) : les points d'entrée des
  * boutons (galleryAlbumsOpenCreate / galleryAlbumsOpenManage /
@@ -33,6 +42,12 @@ var ALBUMS_POLL_MS = 1500;
 // Garde-fous : 240 ticks ≈ 6 min de préparation, 8 erreurs réseau consécutives.
 var ALBUMS_POLL_MAX = 240;
 var ALBUMS_POLL_ERRORS_MAX = 8;
+// Rafraîchissement automatique de la modale de GESTION tant qu'un album est en
+// préparation (cadence légère ; surchargeable en test : state.managePollMs).
+var ALBUMS_MANAGE_POLL_MS = 3000;
+// Garde-fous : 480 ticks ≈ 24 min, 5 erreurs réseau consécutives.
+var ALBUMS_MANAGE_POLL_MAX = 480;
+var ALBUMS_MANAGE_POLL_ERRORS_MAX = 5;
 // Requêtes parallèles pour l'avertissement avant purge (sélection potentiellement large).
 var ALBUMS_FOR_MEDIA_CONCURRENCY = 4;
 
@@ -81,10 +96,20 @@ var albumsState = {
   result: null,
   // Suivi de préparation : unique album suivi à la fois.
   poll: { active: false, albumId: null, timer: null, attempts: 0, errors: 0, status: null },
+  // Suivi de la modale de GESTION : la LISTE est rafraîchie tant qu'au moins
+  // un album est ``building`` (aucun albumId : un seul suivi de liste à la
+  // fois). ``inflight`` évite tout chevauchement de requêtes.
+  managePoll: { active: false, timer: null, attempts: 0, errors: 0, inflight: false },
+  // Dernière empreinte de liste rendue (évite de reconstruire le DOM à chaque
+  // tick quand rien n'a changé → focus et survol préservés).
+  manageRenderKey: null,
   // Surcharges de test.
   pollMs: ALBUMS_POLL_MS,
   pollMax: ALBUMS_POLL_MAX,
   pollErrorsMax: ALBUMS_POLL_ERRORS_MAX,
+  managePollMs: ALBUMS_MANAGE_POLL_MS,
+  managePollMax: ALBUMS_MANAGE_POLL_MAX,
+  managePollErrorsMax: ALBUMS_MANAGE_POLL_ERRORS_MAX,
 };
 
 /* ── Accès à l'adaptateur galerie (late binding : l'ordre des scripts classiques
@@ -381,21 +406,168 @@ function albumsTotalOf(album) {
   return 0;
 }
 
-function albumsRefreshList() {
-  var ctrl = albumsState.manageModal;
+/** Au moins un album de la liste est-il en préparation (``building``) ? */
+function albumsAnyBuilding(items) {
+  return (items || []).some(function (a) { return a && a.status === 'building'; });
+}
+
+/** État de la barre de statut de la gestion (progression agrégée si besoin). */
+function albumsManageStatusText(items) {
+  if (!items || !items.length) return 'Aucun album';
+  var building = items.filter(function (a) { return a && a.status === 'building'; });
+  if (building.length) {
+    var done = 0, total = 0;
+    building.forEach(function (a) {
+      var p = a.progress || {};
+      done += Number(p.done) || 0;
+      total += Number(p.total) || 0;
+    });
+    return 'Préparation en cours… ' + done + '/' + total;
+  }
+  return items.length + ' album' + (items.length > 1 ? 's' : '');
+}
+
+/** Empreinte légère de la liste (rendu seulement si elle change réellement). */
+function albumsManageRenderKeyOf(items) {
+  return JSON.stringify((items || []).map(function (a) {
+    var p = a.progress || {};
+    var c = a.counts || {};
+    return [a.id, a.title, a.description, a.status, p.done, p.total, c.ok, c.failed, c.total];
+  }));
+}
+
+function albumsManageSetStatus(text) {
   var status = albumsById('gallery-albums-manage-status');
-  if (status) status.textContent = 'Chargement…';
-  if (ctrl && typeof ctrl.setBusy === 'function') ctrl.setBusy(true, 'Chargement des albums…');
-  return albumsFetchList().then(function (items) {
+  if (status) status.textContent = text;
+}
+
+/** Applique une liste reçue : rendu (si changé), statut, mémorisation. */
+function albumsApplyList(items, opts) {
+  items = items || [];
+  var key = albumsManageRenderKeyOf(items);
+  var list = albumsById('gallery-albums-list');
+  var empty = !list || !list.firstChild;
+  albumsState.lastList = items;
+  if (!(opts && opts.keepIfUnchanged) || key !== albumsState.manageRenderKey || empty) {
     albumsRenderList(items);
-    if (status) status.textContent = items.length ? items.length + ' album' + (items.length > 1 ? 's' : '') : 'Aucun album';
-    if (ctrl && typeof ctrl.setBusy === 'function') ctrl.setBusy(false);
+    albumsState.manageRenderKey = key;
+  }
+  albumsManageSetStatus(albumsManageStatusText(items));
+  return items;
+}
+
+function albumsRefreshList(opts) {
+  var silent = !!(opts && opts.silent);
+  var ctrl = albumsState.manageModal;
+  if (!silent) {
+    albumsManageSetStatus('Chargement…');
+    if (ctrl && typeof ctrl.setBusy === 'function') ctrl.setBusy(true, 'Chargement des albums…');
+  }
+  return albumsFetchList().then(function (items) {
+    albumsApplyList(items, { keepIfUnchanged: silent });
+    albumsSyncManagePolling(items);
     return items;
   }).catch(function (err) {
-    albumsRenderList([]);
-    if (status) status.textContent = 'Erreur : ' + albumsErrorMessage(err);
-    if (ctrl && typeof ctrl.setBusy === 'function') ctrl.setBusy(false);
+    if (!silent) {
+      albumsApplyList([], { keepIfUnchanged: false });
+      albumsManageSetStatus('Erreur : ' + albumsErrorMessage(err));
+    }
     return [];
+  }).then(function (items) {
+    if (!silent && ctrl && typeof ctrl.setBusy === 'function') ctrl.setBusy(false);
+    return items;
+  });
+}
+
+/* ── Suivi automatique de la modale de GESTION (albums en préparation) ──── */
+
+function albumsStopManagePolling() {
+  var p = albumsState.managePoll;
+  p.active = false;
+  p.inflight = false;
+  if (p.timer) {
+    clearTimeout(p.timer);
+    p.timer = null;
+  }
+}
+
+function albumsScheduleManagePoll() {
+  var p = albumsState.managePoll;
+  if (!p.active || p.timer) return;
+  p.timer = setTimeout(function () {
+    p.timer = null;
+    albumsManagePollTick();
+  }, albumsState.managePollMs);
+}
+
+/** Démarre (ou relance) le suivi de liste sans jamais empiler de timer. */
+function albumsStartManagePolling() {
+  var p = albumsState.managePoll;
+  if (p.active) {
+    albumsScheduleManagePoll();
+    return;
+  }
+  p.active = true;
+  p.attempts = 0;
+  p.errors = 0;
+  albumsScheduleManagePoll();
+}
+
+/** Démarre le suivi si un album est en préparation, l'arrête sinon. */
+function albumsSyncManagePolling(items) {
+  if (!albumsState.manageModal || !albumsById('gallery-albums-list')) {
+    albumsStopManagePolling();
+    return false;
+  }
+  if (albumsAnyBuilding(items)) {
+    albumsStartManagePolling();
+    return true;
+  }
+  albumsStopManagePolling();
+  return false;
+}
+
+/** Un tick de suivi de la GESTION (testable sans attendre le timer). */
+function albumsManagePollNow() {
+  return albumsManagePollTick();
+}
+
+function albumsManagePollTick() {
+  var p = albumsState.managePoll;
+  if (!p.active || p.inflight) return Promise.resolve(null);
+  if (!albumsState.manageModal || !albumsById('gallery-albums-list')) {
+    albumsStopManagePolling();
+    return Promise.resolve(null);
+  }
+  p.inflight = true;
+  p.attempts += 1;
+  return albumsFetchList().then(function (items) {
+    p.inflight = false;
+    if (!p.active) return null;
+    p.errors = 0;
+    albumsApplyList(items, { keepIfUnchanged: true });
+    if (!albumsAnyBuilding(items)) {
+      albumsStopManagePolling();
+      return items;
+    }
+    if (p.attempts >= albumsState.managePollMax) {
+      albumsManageSetStatus('Suivi interrompu (préparation trop longue) — clique « Rafraîchir ».');
+      albumsStopManagePolling();
+      return items;
+    }
+    albumsScheduleManagePoll();
+    return items;
+  }).catch(function (err) {
+    p.inflight = false;
+    if (!p.active) return null;
+    p.errors += 1;
+    if (p.errors >= albumsState.managePollErrorsMax) {
+      albumsManageSetStatus('Suivi interrompu (erreur réseau) : ' + albumsErrorMessage(err));
+      albumsStopManagePolling();
+      return null;
+    }
+    albumsScheduleManagePoll();
+    return null;
   });
 }
 
@@ -431,6 +603,17 @@ function albumsBuildManageContent() {
 function albumsRenderList(albums) {
   var list = albumsById('gallery-albums-list');
   if (!list) return;
+  // Focus préservé : un tick peut reconstruire la liste sous les doigts de
+  // l'utilisateur (Tab) ; on rend le focus au bouton équivalent après rendu.
+  var active = document.activeElement;
+  var focused = null;
+  if (active && typeof list.contains === 'function' && list.contains(active)
+      && active.getAttribute && active.getAttribute('data-album-action')) {
+    focused = {
+      action: active.getAttribute('data-album-action'),
+      albumId: active.getAttribute('data-album-id'),
+    };
+  }
   while (list.firstChild) list.removeChild(list.firstChild);
 
   if (!albums || !albums.length) {
@@ -494,6 +677,12 @@ function albumsRenderList(albums) {
     row.appendChild(actions);
     list.appendChild(row);
   });
+
+  if (focused) {
+    var next = list.querySelector('[data-album-action="' + focused.action
+      + '"][data-album-id="' + focused.albumId + '"]');
+    if (next && typeof next.focus === 'function') next.focus();
+  }
 }
 
 function albumsManageAction(action, album) {
@@ -737,7 +926,10 @@ function galleryAlbumsOpenManage() {
     storageKey: 'gallery-album-manage-modal',
     content: albumsBuildManageContent(),
     buttons: [{ text: 'Fermer', value: false, type: 'cancel' }],
-    onClose: function () { albumsState.manageModal = null; },
+    onClose: function () {
+      albumsState.manageModal = null;
+      albumsStopManagePolling();
+    },
   });
   albumsState.manageModal = ctrl;
   albumsRefreshList();
@@ -843,6 +1035,9 @@ function albumsCreateSubmit(ids, title, description) {
         albumsState.resultModal = null;
       }
       albumsOpenResult(data.album, skipped);
+      // Si la modale de GESTION est ouverte, la liste doit refléter le nouvel
+      // album (et son suivi automatique démarrer s'il est en préparation).
+      if (albumsState.manageModal) albumsRefreshList();
       albumsToast('Album créé' + (skipped.length
         ? ' • ' + skipped.length + ' média' + (skipped.length > 1 ? 's' : '') + ' ignoré' + (skipped.length > 1 ? 's' : '')
         : '') + '.', skipped.length ? 'warning' : 'success');
@@ -1229,6 +1424,9 @@ window.AppAlbums = {
   // Gestion.
   fetchList: albumsFetchList,
   refreshList: albumsRefreshList,
+  managePollNow: albumsManagePollNow,
+  managePollStart: albumsStartManagePolling,
+  managePollStop: albumsStopManagePolling,
   loadIntoGrid: albumsLoadIntoGrid,
   addSelection: albumsAddSelection,
   openRename: albumsOpenRename,
@@ -1247,6 +1445,9 @@ window.AppAlbums = {
     POLL_MS: ALBUMS_POLL_MS,
     POLL_MAX: ALBUMS_POLL_MAX,
     POLL_ERRORS_MAX: ALBUMS_POLL_ERRORS_MAX,
+    MANAGE_POLL_MS: ALBUMS_MANAGE_POLL_MS,
+    MANAGE_POLL_MAX: ALBUMS_MANAGE_POLL_MAX,
+    MANAGE_POLL_ERRORS_MAX: ALBUMS_MANAGE_POLL_ERRORS_MAX,
     FOR_MEDIA_CONCURRENCY: ALBUMS_FOR_MEDIA_CONCURRENCY,
     SKIP_REASONS: ALBUMS_SKIP_REASONS,
     STATUS_LABELS: ALBUMS_STATUS_LABELS,

@@ -14,13 +14,18 @@ Structure produite (``<webroot>/<key>/``) ::
 
 Choix de duplication (décision utilisateur) :
   - ``thumb/<n>.jpg`` : on COPIE la vignette 512 déjà en cache local si elle
-    existe, sinon on la génère depuis l'original puis on la copie ;
+    existe, sinon on la génère depuis l'image DÉJÀ décodée (aucun 2e décodage) ;
   - ``full/<n>.jpg``  : RE-ENCODAGE depuis l'original en JPEG **qualité 90** à
     la **taille originale** → les métadonnées/EXIF sont perdus (vie privée OK) ;
   - EXCEPTION PNG TRANSPARENT : si l'image utilise RÉELLEMENT un canal alpha
     (``_image_uses_alpha``), on la conserve en **PNG** (``full/<n>.png``), sans
     aplatir le fond. La vignette reste JPG (le cache 512 existant est déjà aplati
     en JPG — acceptable pour une vignette).
+
+PERFORMANCE (chantier « 20 min pour 34 images ») : chaque item fait AU PLUS
+UN téléchargement et UN décodage (le « full » et la vignette sortent de la même
+image en mémoire) ; les options d'encodage (niveau zlib PNG, JPEG sans
+``optimize``) sont mesurées — voir docs/albums.md.
 
 Confinement : le nom du dossier est la clé publique opaque (alphabet URL-safe,
 validé par ``is_safe_album_key``) ; aucune donnée privée (id média, nom d'origine,
@@ -39,6 +44,7 @@ import re
 import secrets
 import shutil
 import tempfile
+import time
 from datetime import datetime, timezone
 
 from db import get_db
@@ -52,6 +58,20 @@ ALBUM_WEB_DIR_ENV = "AIH_ALBUM_WEB_DIR"
 # Taille de la vignette d'album : on réutilise la plus grande variante du cache
 # de vignettes existant (THUMB_SIZES = 128/256/512).
 ALBUM_THUMB_SIZE = 512
+
+# ── Paramètres d'encodage du « full » (mesurés — voir docs/albums.md) ──
+# PNG transparent : niveau zlib 3. MESURÉ sur images réalistes 4096×4096 :
+# `compress_level=3` ≈ 3,5× plus rapide que `optimize=True` (niveau 9) pour un
+# fichier de taille ÉGALE OU INFÉRIEURE ; `optimize=True` est donc abandonné
+# (son scan complet coûte plusieurs secondes par grosse image).
+ALBUM_PNG_COMPRESS_LEVEL = 3
+# JPEG taille originale : q90 SANS `optimize` (mesuré : +2,8 % de taille pour
+# −23 % de temps d'encodage sur un 6000×4000 ; le gain visuel est nul).
+ALBUM_JPEG_QUALITY = 90
+# Vignette 512 générée : paramètres IDENTIQUES à `routes/media._generate_thumbnail`
+# (q82 + optimize) pour que la copie du cache et la vignette générée soient
+# indiscernables (contrat du test test_thumb_copied_from_existing_cache).
+ALBUM_THUMB_JPEG_QUALITY = 82
 
 # Largeur du numéro d'item dans les noms de fichiers (``0001``, ``0002``, …).
 ITEM_NAME_WIDTH = 4
@@ -184,52 +204,53 @@ def _image_uses_alpha(im):
 
 
 # ── Construction des fichiers « full » et « thumb » ───────────────────
+#
+# UN SEUL décodage par image : `generate_album_item` ouvre/décode la source une
+# fois puis produit le « full » ET la vignette depuis cette même image en
+# mémoire (le cache 512 local, quand il existe, est copié sans décodage).
 
 
-def _build_full(src_path, base_no_ext):
-    """Re-encode l'original en JPEG q90 taille originale (ou PNG si alpha réel).
+def _save_full_from_image(im, base_no_ext, uses_alpha):
+    """Sérialise le « full » depuis une image DÉJÀ décodée (EXIF déjà appliqué).
 
-    Retourne ``(ext, width, height)``. Le ré-encodage JPEG **perd** les
-    métadonnées/EXIF (on n'en réinjecte aucune) → vie privée préservée.
+    Retourne ``(ext, width, height)``. Le ré-encodage **perd** les
+    métadonnées/EXIF (aucune n'est réinjectée) → vie privée préservée.
     """
-    from PIL import Image, ImageOps
-
-    with Image.open(src_path) as im:
-        im.load()
-        im = ImageOps.exif_transpose(im)
-        if _image_uses_alpha(im):
-            img = im.convert("RGBA")
-            out = base_no_ext + ".png"
-            _save_image_atomic(img, out, "PNG", optimize=True)
-            return ".png", img.size[0], img.size[1]
-        img = im.convert("RGB")
-        out = base_no_ext + ".jpg"
-        _save_image_atomic(img, out, "JPEG", quality=90, optimize=True)
-        return ".jpg", img.size[0], img.size[1]
+    if uses_alpha:
+        img = im.convert("RGBA")
+        out = base_no_ext + ".png"
+        _save_image_atomic(img, out, "PNG", compress_level=ALBUM_PNG_COMPRESS_LEVEL)
+        return ".png", img.size[0], img.size[1]
+    img = im.convert("RGB")
+    out = base_no_ext + ".jpg"
+    _save_image_atomic(img, out, "JPEG", quality=ALBUM_JPEG_QUALITY)
+    return ".jpg", img.size[0], img.size[1]
 
 
-def _generate_album_thumb(media_mod, media_row, src_path, thumb_out):
-    """Copie la vignette 512 du cache si présente, sinon la génère puis la copie.
+def _save_album_thumb_from_image(im, thumb_out):
+    """Vignette 512 depuis l'image DÉJÀ décodée (aplatie en JPG).
 
-    Retourne ``True`` si un fichier valide a été publié, ``False`` sinon.
+    Reproduit exactement `routes/media._generate_thumbnail` (box ``512``,
+    conversion RGB, JPEG q82 + optimize) pour rester cohérent avec le cache.
+    """
+    thumb = im.copy()
+    thumb.thumbnail((ALBUM_THUMB_SIZE, ALBUM_THUMB_SIZE))
+    if thumb.mode != "RGB":
+        thumb = thumb.convert("RGB")
+    _save_image_atomic(thumb, thumb_out, "JPEG", quality=ALBUM_THUMB_JPEG_QUALITY, optimize=True)
+    return os.path.isfile(thumb_out) and os.path.getsize(thumb_out) > 0
+
+
+def _copy_cached_album_thumb(media_mod, media_row, thumb_out):
+    """Copie la vignette 512 du cache LOCAL si présente (aucun décodage).
+
+    Retourne ``True`` si la copie a été publiée, ``False`` sinon.
     """
     cache_path = media_mod._thumbnail_cache_path(media_row, ALBUM_THUMB_SIZE)
     if os.path.isfile(cache_path) and os.path.getsize(cache_path) > 0:
         _copy_file_atomic(cache_path, thumb_out)
         return True
-
-    os.makedirs(os.path.dirname(thumb_out), exist_ok=True)
-    tmp = f"{thumb_out}.tmp-{secrets.token_hex(6)}"
-    try:
-        if not media_mod._generate_thumbnail("image", src_path, tmp, ALBUM_THUMB_SIZE):
-            return False
-        if not (os.path.isfile(tmp) and os.path.getsize(tmp) > 0):
-            return False
-        os.replace(tmp, thumb_out)
-        return True
-    finally:
-        with contextlib.suppress(OSError):
-            os.remove(tmp)
+    return False
 
 
 # ── Génération d'UN item (rapport ok / raison) ────────────────────────
@@ -239,13 +260,19 @@ def _report(status, error="", ext="", width=None, height=None):
     return {"status": status, "error": error, "ext": ext, "width": width, "height": height}
 
 
-def generate_album_item(media_row, item_no, album_path, expected_user_id):
+def generate_album_item(media_row, item_no, album_path, expected_user_id, timings=None):
     """Génère les fichiers d'UN item d'album et retourne son rapport.
 
     ``media_row`` est une ligne ``media_files`` (ou ``None``). Le rapport est un
     dict ``{status, error, ext, width, height}`` — ``status`` vaut ``ok`` ou
     ``failed`` ; ``error`` porte la raison STABLE (voir les constantes
     ``REASON_*``). N'élève jamais : tout échec devient un rapport.
+
+    UN SEUL téléchargement + UN SEUL décodage par image : le « full » et la
+    vignette sont produits depuis la même image décodée (vignette copiée du
+    cache local quand elle existe, sans décodage). ``timings`` (dict optionnel)
+    est rempli avec les durées par phase : ``download``, ``decode``, ``full``,
+    ``thumb`` — utilisé par le worker pour instrumenter le débit réel.
     """
     if media_row is None:
         return _report("failed", REASON_NOT_FOUND)
@@ -264,32 +291,57 @@ def generate_album_item(media_row, item_no, album_path, expected_user_id):
     if not media_mod._pillow_available():
         return _report("failed", REASON_NO_TOOLS)
 
+    from PIL import Image, ImageOps
+
     storage = get_storage()
     tmp_dir = tempfile.mkdtemp(prefix="aih_album_")
     src_tmp = os.path.join(tmp_dir, "src" + (media_row["ext"] or ""))
     full_path = None
+    marks = {}
+    t_prev = time.perf_counter()
+
+    def _mark(phase):
+        nonlocal t_prev
+        now = time.perf_counter()
+        marks[phase] = marks.get(phase, 0.0) + (now - t_prev)
+        t_prev = now
+
     try:
         if not storage.download(media_row["final_path"], src_tmp):
             return _report("failed", REASON_SOURCE_UNAVAILABLE)
+        _mark("download")
 
         base = os.path.join(album_path, FULL_SUBDIR, f"{int(item_no):0{ITEM_NAME_WIDTH}d}")
-        try:
-            ext, width, height = _build_full(src_tmp, base)
-            full_path = base + ext
-        except Exception as e:
-            logging.warning("[album] re-encodage full échoué (media=%s) : %s", media_row["id"], e)
-            return _report("failed", REASON_GENERATION_FAILED)
-
         thumb_out = os.path.join(album_path, THUMB_SUBDIR, item_filename(item_no, ".jpg"))
         try:
-            if not _generate_album_thumb(media_mod, media_row, src_tmp, thumb_out):
-                raise RuntimeError("génération vignette impossible")
+            with Image.open(src_tmp) as im:
+                im.load()
+                im = ImageOps.exif_transpose(im)
+                _mark("decode")
+                try:
+                    ext, width, height = _save_full_from_image(im, base, _image_uses_alpha(im))
+                    full_path = base + ext
+                except Exception as e:
+                    logging.warning("[album] re-encodage full échoué (media=%s) : %s", media_row["id"], e)
+                    return _report("failed", REASON_GENERATION_FAILED)
+                _mark("full")
+                try:
+                    if not _copy_cached_album_thumb(media_mod, media_row, thumb_out) \
+                            and not _save_album_thumb_from_image(im, thumb_out):
+                        raise RuntimeError("génération vignette impossible")
+                except Exception as e:
+                    logging.warning("[album] vignette échouée (media=%s) : %s", media_row["id"], e)
+                    with contextlib.suppress(OSError):
+                        os.remove(full_path)
+                    return _report("failed", REASON_GENERATION_FAILED)
+                _mark("thumb")
         except Exception as e:
-            logging.warning("[album] vignette échouée (media=%s) : %s", media_row["id"], e)
-            with contextlib.suppress(OSError):
-                os.remove(full_path)
+            # Source illisible (corrompue…) : un seul rapport, jamais d'exception.
+            logging.warning("[album] décodage échoué (media=%s) : %s", media_row["id"], e)
             return _report("failed", REASON_GENERATION_FAILED)
 
+        if timings is not None:
+            timings.update(marks)
         return _report("ok", "", ext, width, height)
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)

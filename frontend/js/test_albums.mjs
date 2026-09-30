@@ -205,6 +205,7 @@ function findAlbum(id) { return albums.find((a) => a.id === id) || null; }
 const calls = [];
 let deferredItemsResp = null; // { albumId, d } → POST /items suspendu
 let albumDetailFailureFor = null; // id → GET détail rejeté (erreur réseau)
+let albumListFailure = false; // true → GET /api/albums (liste) rejeté (erreur réseau)
 function makeRes(status, body) {
   return { ok: status >= 200 && status < 300, status, json: async () => body, text: async () => JSON.stringify(body) };
 }
@@ -293,6 +294,7 @@ globalThis.fetch = (url, opts = {}) => {
       albums.unshift(al);
       return Promise.resolve(makeRes(201, { album: serializeAlbum(al), skipped: skipped }));
     }
+    if (albumListFailure) return Promise.reject(new Error("réseau indisponible"));
     return Promise.resolve(makeRes(200, { items: albums.map((a) => serializeAlbum(a)), total: albums.length }));
   }
   // 6. Médias : liste paginée + métadonnées.
@@ -737,6 +739,8 @@ AppAlbums.state.pollMs = 100000; // ticks MANUELS pour des assertions détermini
 
 /* ═══ 6. Modale de gestion : liste + actions ══════════════════════════════ */
 console.log("6. Modale de gestion (liste, actions, confirmations)");
+// Ticks de liste MANUELS (déterministes) — le suivi automatique est testé en 9.
+AppAlbums.state.managePollMs = 100000;
 // Fixture : 3 albums (prêt / en préparation / révoqué).
 const albumReady = makeAlbum({
   id: 101, title: "Vacances", description: "Été", status: "ready",
@@ -1063,6 +1067,145 @@ console.log("8. Non-régression");
   } else {
     console.log("  (holaf-lib introuvable → preuve d'identité ignorée)");
   }
+}
+
+/* ═══ 9. Polling automatique de la modale de GESTION ══════════════════════ */
+console.log("9. Gestion : rafraîchissement automatique pendant la préparation");
+AppAlbums.state.managePollMs = 100000; // ticks de liste MANUELS (déterministes)
+{
+  // (a) building → progression « x/y » visible, puis ARRÊT automatique.
+  const b = makeAlbum({ id: 401, title: "En cours", status: "building", items: [albumItem(1, "pending"), albumItem(3, "pending")] });
+  b.progress = { total: 2, done: 0 };
+  const r = makeAlbum({ id: 402, title: "Fini", status: "ready", items: [albumItem(2, "ok")] });
+  r.progress = { total: 1, done: 1 };
+  albums = [b, r];
+  AppAlbums.openManage();
+  await settle();
+  eq(AppAlbums.state.managePoll.active, true, "suivi actif dès qu'un album est en préparation");
+  ok(!!AppAlbums.state.managePoll.timer, "timer de gestion armé");
+  ok(/Préparation en cours… 0\/2/.test(byId("gallery-albums-manage-status").textContent),
+    "état + progression agrégée « 0/2 » affichés");
+  ok(/0\/2 prêts/.test(modalRoot("gallery-album-manage-modal").textContent), "ligne de l'album : progression 0/2");
+
+  const listsBefore = listCalls().length;
+  b.progress.done = 1;
+  await AppAlbums.managePollNow();
+  ok(listCalls().length > listsBefore, "un tick émet GET /api/albums (rafraîchissement automatique)");
+  ok(/Préparation en cours… 1\/2/.test(byId("gallery-albums-manage-status").textContent), "tick : progression « 1/2 »");
+  eq(AppAlbums.state.managePoll.active, true, "toujours actif tant qu'un album prépare");
+
+  b.progress.done = 2;
+  b.status = "ready";
+  b.items = [albumItem(1, "ok"), albumItem(3, "ok")];
+  await AppAlbums.managePollNow();
+  ok(/2 albums/.test(byId("gallery-albums-manage-status").textContent), "tick final : « 2 albums »");
+  eq(AppAlbums.state.managePoll.active, false, "ARRÊT dès qu'aucun album n'est en préparation");
+  eq(AppAlbums.state.managePoll.timer, null, "timer annulé à l'arrêt");
+  const listAfterStop = listCalls().length;
+  await sleep(25);
+  eq(listCalls().length, listAfterStop, "[négatif] aucune requête de liste après l'arrêt");
+  AppAlbums.state.manageModal.close();
+  await settle();
+}
+{
+  // (b) Fermeture de la modale → arrêt immédiat (aucun timer fantôme).
+  const b = makeAlbum({ id: 403, title: "Ferme", status: "building", items: [albumItem(4, "pending")] });
+  b.progress = { total: 1, done: 0 };
+  albums = [b];
+  AppAlbums.openManage();
+  await settle();
+  eq(AppAlbums.state.managePoll.active, true, "suivi actif à l'ouverture");
+  AppAlbums.state.manageModal.close();
+  await settle();
+  eq(AppAlbums.state.managePoll.active, false, "fermeture → suivi arrêté");
+  eq(AppAlbums.state.managePoll.timer, null, "fermeture → timer annulé");
+  const before = listCalls().length;
+  await sleep(25);
+  eq(listCalls().length, before, "[négatif] fermée → plus aucun tick");
+}
+{
+  // (c) Idempotence : relancer le suivi ne crée JAMAIS un 2e timer.
+  const b = makeAlbum({ id: 404, title: "Idem", status: "building", items: [albumItem(6, "pending")] });
+  b.progress = { total: 1, done: 0 };
+  albums = [b];
+  AppAlbums.openManage();
+  await settle();
+  const timer1 = AppAlbums.state.managePoll.timer;
+  AppAlbums.managePollStart();
+  AppAlbums.managePollStart();
+  eq(AppAlbums.state.managePoll.timer, timer1, "[négatif] pas d'empilement de timers");
+  eq(AppAlbums.state.managePoll.attempts, 0, "aucun tick consommé par les relances");
+  AppAlbums.state.manageModal.close();
+  await settle();
+}
+{
+  // (d) Erreurs réseau bornées : on n'arrête qu'après managePollErrorsMax.
+  AppAlbums.state.managePollErrorsMax = 2;
+  const b = makeAlbum({ id: 405, title: "Réseau", status: "building", items: [albumItem(7, "pending")] });
+  b.progress = { total: 1, done: 0 };
+  albums = [b];
+  AppAlbums.openManage();
+  await settle();
+  albumListFailure = true;
+  await AppAlbums.managePollNow();
+  eq(AppAlbums.state.managePoll.active, true, "1re erreur réseau : le suivi survit");
+  await AppAlbums.managePollNow();
+  eq(AppAlbums.state.managePoll.active, false, "2e erreur réseau : suivi arrêté (borne)");
+  ok(/Suivi interrompu/.test(byId("gallery-albums-manage-status").textContent), "message d'interruption affiché");
+  albumListFailure = false;
+  AppAlbums.state.managePollErrorsMax = 5;
+  AppAlbums.state.manageModal.close();
+  await settle();
+}
+{
+  // (e) Le tick ne vole pas le focus et ne casse pas les modales ouvertes.
+  const b = makeAlbum({ id: 406, title: "Focus", status: "building", items: [albumItem(8, "pending")] });
+  b.progress = { total: 1, done: 0 };
+  const r = makeAlbum({ id: 407, title: "Prêt", status: "ready", items: [albumItem(1, "ok")] });
+  r.progress = { total: 1, done: 1 };
+  albums = [b, r];
+  AppAlbums.openManage();
+  await settle();
+
+  // (e1) Focus dans la LISTE : rendu au bouton équivalent après reconstruction.
+  albumRowBtn(407, "load").focus();
+  b.progress.done = 1;
+  await AppAlbums.managePollNow();
+  eq(window.document.activeElement, albumRowBtn(407, "load"), "focus préservé dans la liste après re-rendu");
+
+  // (e2) Modale de renommage ouverte : le tick la laisse vivre et ne lui vole
+  // pas le focus (même quand la liste change et est reconstruite).
+  AppAlbums.openRename(findAlbum(406));
+  await settle();
+  const renameModal = modalRoot("gallery-album-rename-modal");
+  ok(!!renameModal, "modale de renommage ouverte");
+  ok(renameModal.contains(window.document.activeElement), "focus dans la modale de renommage");
+  b.items.push(albumItem(9, "pending"));
+  b.progress.total = 2;
+  await AppAlbums.managePollNow();
+  eq(modalRoot("gallery-album-rename-modal"), renameModal, "[négatif] le tick ne remplace PAS la modale ouverte");
+  ok(renameModal.contains(window.document.activeElement), "le tick ne vole PAS le focus de la modale");
+  modalBtn("gallery-album-rename-modal", "Annuler").click();
+  await settle();
+  AppAlbums.state.manageModal.close();
+  await settle();
+}
+{
+  // (f) Création pendant que la GESTION est ouverte → la liste repart en suivi.
+  albums = [makeAlbum({ id: 408, title: "Terminé", status: "ready", items: [albumItem(1, "ok")] })];
+  AppAlbums.openManage();
+  await settle();
+  eq(AppAlbums.state.managePoll.active, false, "aucun album en préparation → pas de suivi");
+  await AppAlbums.create([1], "Nouveau", "");
+  await settle();
+  eq(AppAlbums.state.managePoll.active, true, "création suivie par la modale de gestion ouverte");
+  if (AppAlbums.state.resultModal) {
+    AppAlbums.state.resultModal.close();
+    await settle();
+  }
+  AppAlbums.state.manageModal.close();
+  await settle();
+  eq(AppAlbums.state.managePoll.active, false, "tout est fermé → suivi arrêté");
 }
 
 /* ── Récapitulatif ──────────────────────────────────────────────────────── */

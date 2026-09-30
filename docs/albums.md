@@ -192,6 +192,9 @@ machine**. Pour qu'un Caddy situé ailleurs puisse l'atteindre :
 | `AIH_ALBUM_WEB_DIR` | `<BASE_DIR>/.cache/albums` | Webroot des albums — **identique pour le privé et le public** | laisser le défaut (ou disque persistant) |
 | `AIH_ALBUM_PUBLIC_BASE_URL` | *(vide)* | Base des `public_url` renvoyées par l'API privée ; vide → `public_url: null` (le front affiche la clé) | `https://albums.<domaine>` |
 | `AIH_ALBUM_GUARD` | `off` | Garde-fou soft du service public : `off` \| `log` \| `on` (voir § 6) | `log` pour observer, `on` pour couper l'abus |
+| `AIH_ALBUM_WORKERS` | `2` | Items de préparation d'album traités en parallèle (borné 1..8) — recouvre téléchargement et encodage (voir § 11) | `2`–`4` selon CPU/RAM |
+| `SFTP_DOWNLOAD_CONNECTIONS` | `2` | Canaux SFTP de TÉLÉCHARGEMENT simultanés sur la même connexion SSH (borné 1..8) ; `1` = sérialisé (voir § 11) | `2`–`4` si le serveur SFTP le permet |
+| `SFTP_TIMEOUT` | `30` | Timeout socket/connexion SFTP (secondes) | laisser le défaut |
 | `AIH_ALBUM_MAX_SYNC` | — | **Prévue mais NON lue par le code actuel (aucun effet)** | ne pas s'en servir |
 | `AIH_ALBUM_MAX_ITEMS` | — | **Prévue mais NON lue par le code actuel (aucun effet)** | ne pas s'en servir |
 
@@ -436,3 +439,70 @@ ou défauts) puis appliqués à l'ouverture de la visionneuse (une visionneuse
 fermée est détruite au changement pour reprendre les nouveaux réglages ; le
 bouton diaporama surcharge aussi la session en cours). Le service public
 reste **en lecture seule** : aucun de ces réglages ne quitte le navigateur.
+
+---
+
+## 11. Préparation d'un album : performance (mesurée)
+
+La modale privée « Albums publics » **se rafraîchit toute seule** (toutes les
+3 s) tant qu'au moins un album est en préparation : barre d'état
+« Préparation en cours… x/y », badge « En préparation » et « x/y prêts » par
+ligne. Le suivi s'arrête dès qu'aucun album n'est `building`, à la fermeture de
+la modale ou après des erreurs réseau répétées ; le DOM n'est reconstruit que
+si la liste change (focus préservé) et aucun timer ne s'empile.
+
+### Où passait le temps (mesures hors dépôt, `harness.py`, vignette 512 absente)
+
+| Scénario (34 images projetées) | Avant | Après | Gain |
+|---|---|---|---|
+| JPEG 4096 (12,7 Mo) sur lien 1,2 Mo/s | 11,4 s/item → 6,5 min | 5,6 s/item → **3,2 min** | **2,0×** |
+| PNG alpha 4096 (50 Mo), CPU | 10,2 s/item → 5,8 min | 3,2 s/item → **1,8 min** | **3,2×** |
+| PNG 2048 (10,5 Mo) sur lien 2 Mo/s | 5,6 s/item → 3,2 min | 2,7 s/item → **1,6 min** | **2,0×** |
+| PNG alpha 4096 (50 Mo) sur lien 1,2 Mo/s (≈ échelle du lot réel) | 50,8 s/item → 28,8 min | 23,5 s/item → **~12 min** | **2,2–2,4×** |
+| JPEG 4096 (12,7 Mo) sur lien 1,2 Mo/s, 6 items, `AIH_ALBUM_WORKERS=4` | 68,6 s | **22,5 s** | **3,0×** |
+
+Ce qui a changé (le vrai goulot variait selon le lot : **téléchargement**
+si le lien est lent, **ré-encodage** si les images sont de gros PNG) :
+
+- **UN seul téléchargement et UN seul décodage par image** : le « full » et la
+  vignette sortent de la même image en mémoire (`backend/album_web.py`,
+  `generate_album_item`). Avant, une vignette 512 non cachée redécodait la
+  source entière (2e décodage) ;
+- **png « full » plus rapide** : `compress_level=3` au lieu d'`optimize=True`
+  (niveau 9). Mesuré sur PNG alpha 4096 réaliste : 12,3 s → 3,4 s, fichier
+  24,2 Mo → 23,1 Mo (pas de régression de taille sur les images de test) ;
+- **JPEG q90 sans `optimize`** : 6000×4000 mesuré 0,84 s → 0,65 s pour
+  +2,8 % de taille (10,42 → 10,71 Mo) ;
+- **items en parallèle** (`backend/routes/albums.py`, pipeline borné) : le
+  téléchargement de l'item suivant recouvre l'encodage de l'item courant ;
+- **canaux SFTP de téléchargement dédiés** (`backend/storage.py`) : jusqu'à
+  `SFTP_DOWNLOAD_CONNECTIONS` téléchargements simultanés sur la même connexion
+  SSH (paramiko multiplexe les canaux), et **le canal principal n'est plus
+  immobilisé** par un gros download (vignettes/galerie fluides pendant la
+  préparation). Repli sérialisé automatique si le serveur refuse le canal.
+
+### Lire le goulot réel dans les logs
+
+Chaque item et la préparation complète sont instrumentés (`backend/routes/albums.py`) :
+
+```
+[album] id=12 item=7 ok en 11.2s (download=10.6s decode=0.2s full=0.3s thumb=0.1s)
+[album] préparation id=12 terminée en 33.7s : 6 item(s), workers=2
+       (Σ download=63.5s decode=1.6s full=1.4s thumb=0.6s db=0.0s)
+```
+
+La somme `Σ download` peut DÉPASSER le temps total : c'est normal et c'est la
+preuve du recouvrement (les downloads sont parallèles). Interprétation :
+
+- `download` domine → le lien/la taille des fichiers : augmenter
+  `AIH_ALBUM_WORKERS` et `SFTP_DOWNLOAD_CONNECTIONS` (2→4) si le serveur et le
+  réseau le permettent ;
+- `full` domine → format des sources : les PNG alpha restent coûteux à
+  ré-encoder en PNG à taille originale (choix produit) ;
+- `Σ download` ≈ total → le parallélisme n'est pas effectif (serveur SFTP qui
+  refuse les canaux ? voir le log « canal de téléchargement indisponible »).
+
+Référence : un lot réel qui prenait **20 min pour 34 images** (≈ 35 s/item)
+correspond à un temps de téléchargement dominant (gros fichiers sur lien lent)
+et/ou à des PNG très volumineux ; les logs par item donnent la répartition
+exacte après déploiement.

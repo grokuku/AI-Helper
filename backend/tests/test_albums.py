@@ -706,3 +706,117 @@ def test_album_public_url_built_from_env(client, make_token, album_env, monkeypa
     assert patched["public_url"] == album["public_url"]
     revoked = client.post(f"/api/albums/{album['id']}/revoke", headers=headers).get_json()
     assert revoked["public_url"] == album["public_url"]
+
+
+# ── 19. Performance : 1 téléchargement + 1 décodage par image ─────────
+
+
+def test_generate_item_single_download_and_no_thumbnail_redecode(client, make_token, album_env, monkeypatch):
+    """UN download et AUCUN 2e décodage : la vignette sort de l'image décodée.
+
+    Contrôle NÉGATIF : si `_generate_thumbnail` était rappelé (2e décodage de
+    la source), le compteur passerait à 1 et le test ROUGIRAIT.
+    """
+    import album_web
+    from routes.helpers import get_db
+
+    headers = _headers(make_token, "perf-user")
+    mid = _upload(client, headers, _png_bytes(640, 480), filename="perf")
+    conn = get_db()
+    row = conn.execute("SELECT * FROM media_files WHERE id = ?", (mid,)).fetchone()
+    conn.close()
+
+    downloads = {"n": 0}
+    real_download = album_env["storage"].download
+
+    def counting_download(remote, local):
+        downloads["n"] += 1
+        return real_download(remote, local)
+
+    monkeypatch.setattr(album_env["storage"], "download", counting_download)
+
+    thumbs = {"n": 0}
+
+    def forbidden_thumb(*_args, **_kwargs):
+        thumbs["n"] += 1
+        return False
+
+    monkeypatch.setattr(media_module, "_generate_thumbnail", forbidden_thumb)
+
+    album_path = str(album_env["albums"] / ("A" * 43))
+    timings = {}
+    report = album_web.generate_album_item(row, 1, album_path, row["user_id"], timings=timings)
+
+    assert report["status"] == "ok", report
+    assert downloads["n"] == 1, "l'item fait UN seul téléchargement"
+    assert thumbs["n"] == 0, "la vignette ne redécode PAS la source (image déjà en mémoire)"
+    assert (album_env["albums"] / ("A" * 43) / "thumb" / "0001.jpg").is_file()
+    assert (album_env["albums"] / ("A" * 43) / "full" / f"0001{report['ext']}").is_file()
+    for phase in ("download", "decode", "full", "thumb"):
+        assert phase in timings and timings[phase] >= 0, (phase, timings)
+
+
+def test_album_items_processed_in_parallel(client, make_token, album_env, monkeypatch):
+    """Deux items sont EN VOL simultanément (pipeline), pas l'un après l'autre.
+
+    Contrôle NÉGATIF : un worker resté séquentiel ferait expirer la barrière
+    (``BrokenBarrierError``) et les deux items échoueraient → test ROUGE.
+    """
+    import routes.albums as albums_module
+
+    headers = _headers(make_token, "parallel-user")
+    a = _upload(client, headers, _png_bytes(), filename="pa")
+    b = _upload(client, headers, _png_bytes(), filename="pb")
+
+    monkeypatch.setattr(albums_module, "ALBUM_ITEM_WORKERS", 2)
+    state = {"inflight": 0, "max": 0}
+    guard = threading.Lock()
+    barrier = threading.Barrier(2)
+    real_generate = albums_module.generate_album_item
+
+    def parallel_generate(media, item_no, base, owner, timings=None):
+        with guard:
+            state["inflight"] += 1
+            state["max"] = max(state["max"], state["inflight"])
+        barrier.wait(timeout=5)  # ne passe que si 2 items sont en vol
+        with guard:
+            state["inflight"] -= 1
+        return real_generate(media, item_no, base, owner, timings=timings if timings is not None else {})
+
+    monkeypatch.setattr(albums_module, "generate_album_item", parallel_generate)
+    album = _create_album(client, headers, [a, b])["album"]
+    detail = _wait_album(client, headers, album["id"])
+    assert detail["status"] == "ready"
+    assert state["max"] == 2, f"items séquentiels (max en vol = {state['max']})"
+    assert detail["counts"]["ok"] == 2
+
+
+def test_parallel_item_failure_is_isolated(client, make_token, album_env, monkeypatch):
+    """Un item en échec n'empêche pas les autres (rapport par item, album ready)."""
+    import routes.albums as albums_module
+
+    headers = _headers(make_token, "fail-user")
+    a = _upload(client, headers, _png_bytes(), filename="fa")
+    b = _upload(client, headers, _png_bytes(), filename="fb")
+
+    monkeypatch.setattr(albums_module, "ALBUM_ITEM_WORKERS", 2)
+    real_generate = albums_module.generate_album_item
+
+    def flaky(media, item_no, base, owner, timings=None):
+        if item_no == 1:
+            return {"status": "failed", "error": "generation_failed", "ext": "", "width": None, "height": None}
+        return real_generate(media, item_no, base, owner, timings=timings if timings is not None else {})
+
+    monkeypatch.setattr(albums_module, "generate_album_item", flaky)
+    album = _create_album(client, headers, [a, b])["album"]
+    detail = _wait_album(client, headers, album["id"])
+    assert detail["status"] == "ready"
+    assert detail["counts"] == {"total": 2, "ok": 1, "failed": 1, "pending": 0}
+
+
+def test_album_perf_env_defaults_are_bounded():
+    """Les bornes de parallélisme/d'encodage sont saines par défaut."""
+    import routes.albums as albums_module
+
+    assert 1 <= albums_module.ALBUM_ITEM_WORKERS <= 8
+    assert 1 <= storage_module.SFTP_DOWNLOAD_CONNECTIONS <= 8

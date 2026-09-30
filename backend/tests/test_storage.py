@@ -1,6 +1,8 @@
 """Tests for the SFTPStorage backend (paramiko mocked — no real network)."""
 
 import io
+import threading
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -429,3 +431,158 @@ class TestStorageFactory:
         reload_storage()
         storage = get_storage()
         assert storage.get_backend_name().startswith("sftp://")
+
+
+# ── Pool de canaux de téléchargement (parallélisme du worker d'album) ─
+
+
+class TestSFTPDownloadChannelPool:
+    """Les téléchargements utilisent des canaux DÉDIÉS (pool) : plusieurs
+    downloads avancent en parallèle et le canal principal reste réservé aux
+    autres opérations (uploads/stat/delete), sérialisées par `_lock`."""
+
+    def _make_storage(self, mock_paramiko, monkeypatch, cap, channels):
+        import storage as storage_module
+
+        monkeypatch.setattr(storage_module, "SFTP_DOWNLOAD_CONNECTIONS", cap)
+        mock_paramiko["ssh"].open_sftp.side_effect = list(channels)
+        return storage_module.SFTPStorage(
+            host="sftp.example", port=22, user="tester", password="pw", base_path="/aih"
+        )
+
+    def test_downloads_run_in_parallel_on_dedicated_channels(self, mock_paramiko, monkeypatch, tmp_path):
+        """[NEGATIVE] Le pool retiré, deux downloads seraient sérialisés
+        (max concurrent = 1) au lieu de 2."""
+        main = MagicMock(name="main")
+        pool1 = MagicMock(name="pool1")
+        pool2 = MagicMock(name="pool2")
+        s = self._make_storage(mock_paramiko, monkeypatch, 2, [main, pool1, pool2])
+
+        active = {"n": 0, "max": 0}
+        guard = threading.Lock()
+
+        def slow_get(*_args, **_kwargs):
+            with guard:
+                active["n"] += 1
+                active["max"] = max(active["max"], active["n"])
+            time.sleep(0.1)
+            with guard:
+                active["n"] -= 1
+
+        pool1.get.side_effect = slow_get
+        pool2.get.side_effect = slow_get
+
+        results = []
+
+        def run(i):
+            results.append(s.download(f"r{i}.bin", str(tmp_path / f"d{i}.bin")))
+
+        threads = [threading.Thread(target=run, args=(i,)) for i in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        assert active["max"] == 2, "deux téléchargements doivent être simultanés"
+        assert results == [True, True]
+        assert pool1.get.call_count + pool2.get.call_count == 2
+        # Le canal principal n'est servi par AUCUN download.
+        main.get.assert_not_called()
+
+    def test_download_falls_back_to_main_when_pool_creation_fails(self, mock_paramiko, monkeypatch, tmp_path):
+        """Création du canal dédié impossible → repli sérialisé, jamais d'échec."""
+        main = MagicMock(name="main")
+        s = self._make_storage(mock_paramiko, monkeypatch, 2, [main, OSError("pas de canal en plus")])
+
+        assert s.download("x.bin", str(tmp_path / "x.bin")) is True
+        main.get.assert_called_once()
+
+    def test_download_retries_serialized_when_channel_breaks(self, mock_paramiko, monkeypatch, tmp_path):
+        """Canal dédié cassé (transport mort…) → 1 nouvel essai sur le canal
+        principal (qui reconnectera au besoin), pas d'item perdu."""
+        main = MagicMock(name="main")
+        pool1 = MagicMock(name="pool1")
+        pool1.get.side_effect = OSError("canal mort")
+        s = self._make_storage(mock_paramiko, monkeypatch, 2, [main, pool1])
+
+        assert s.download("y.bin", str(tmp_path / "y.bin")) is True
+        assert pool1.get.call_count == 1
+        main.get.assert_called_once()
+        pool1.close.assert_called()  # canal cassé fermé (pas remis au pool)
+
+    def test_download_pool_cap_one_serializes(self, mock_paramiko, monkeypatch, tmp_path):
+        """SFTP_DOWNLOAD_CONNECTIONS=1 → un seul téléchargement à la fois."""
+        main = MagicMock(name="main")
+        pool1 = MagicMock(name="pool1")
+        s = self._make_storage(mock_paramiko, monkeypatch, 1, [main, pool1])
+
+        active = {"n": 0, "max": 0}
+        guard = threading.Lock()
+
+        def slow_get(*_args, **_kwargs):
+            with guard:
+                active["n"] += 1
+                active["max"] = max(active["max"], active["n"])
+            time.sleep(0.05)
+            with guard:
+                active["n"] -= 1
+
+        pool1.get.side_effect = slow_get
+
+        def run(i):
+            s.download(f"z{i}.bin", str(tmp_path / f"z{i}.bin"))
+
+        threads = [threading.Thread(target=run, args=(i,)) for i in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        assert active["max"] == 1, "plafond 1 → téléchargements sérialisés"
+        assert pool1.get.call_count == 2
+
+    def test_close_closes_pool_channels(self, mock_paramiko, monkeypatch, tmp_path):
+        """close() ferme aussi les canaux du pool (aucune session qui fuit)."""
+        main = MagicMock(name="main")
+        pool1 = MagicMock(name="pool1")
+        s = self._make_storage(mock_paramiko, monkeypatch, 2, [main, pool1])
+
+        assert s.download("w.bin", str(tmp_path / "w.bin")) is True
+        assert s._download_free == [pool1]
+        s.close()
+        pool1.close.assert_called()
+        assert s._download_free == []
+        assert s._download_created == 0
+
+    def test_download_does_not_block_main_channel_operations(self, mock_paramiko, monkeypatch, tmp_path):
+        """[NEGATIVE] Sans le pool, le download tiendrait `_lock` pendant tout
+        le transfert : l'upload devrait attendre sa fin (test ROUGE)."""
+        main = MagicMock(name="main")
+        pool1 = MagicMock(name="pool1")
+        s = self._make_storage(mock_paramiko, monkeypatch, 2, [main, pool1])
+
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow_get(*_args, **_kwargs):
+            started.set()
+            release.wait(5)
+
+        pool1.get.side_effect = slow_get
+
+        downloader = threading.Thread(target=s.download, args=("big.bin", str(tmp_path / "big.bin")))
+        downloader.start()
+        assert started.wait(5), "le download n'a pas démarré"
+
+        t0 = time.perf_counter()
+        uploader = threading.Thread(target=s.upload, args=(str(tmp_path / "u.bin"), "u.bin"))
+        uploader.start()
+        uploader.join(timeout=2)
+        elapsed = time.perf_counter() - t0
+
+        release.set()
+        downloader.join(timeout=5)
+
+        assert not uploader.is_alive(), "l'upload est resté bloqué par le téléchargement"
+        assert elapsed < 1.0, f"upload bloqué {elapsed:.2f}s par le download"
+        main.put.assert_called_once()
