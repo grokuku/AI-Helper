@@ -28,6 +28,43 @@ TEMP_DIR = tempfile.gettempdir() + "/aih_uploads"
 os.makedirs(TEMP_DIR, exist_ok=True)
 
 
+# ── Helpers de résolution d'existence (check simple + check par lot) ─────
+
+def _latest_existing_upload(conn, storage, where, params):
+    """Dernière ligne ``file_uploads`` complète dont le fichier existe VRAIMENT.
+
+    Le tri est volontairement ``created_at DESC, rowid DESC`` : après un
+    ÉCRASEMENT explicite (nouvel upload des mêmes octets), la déduplication
+    doit renvoyer le fichier le PLUS RÉCENT — sinon un ancien upload identique
+    pourrait être resélectionné et l'écrasement n'aurait aucun effet observable.
+
+    Les lignes « fantômes » (status='complete' mais fichier absent du stockage)
+    sont traitées comme dans ``/files/check`` : marquées ``'error'`` pour ne plus
+    matcher, et on continue sur la candidate suivante (jamais un faux positif).
+
+    Retourne ``(row|None, [upload_ids_fantomes])``.
+    """
+    rows = conn.execute(
+        "SELECT upload_id, filename, size, final_path, created_at FROM file_uploads "
+        f"WHERE {where} AND status = 'complete' "
+        "ORDER BY created_at DESC, rowid DESC",
+        params
+    ).fetchall()
+    missing = []
+    for row in rows:
+        if row['final_path'] and storage.exists(row['final_path']):
+            return row, missing
+        missing.append(row['upload_id'])
+    return None, missing
+
+
+def _mark_missing_as_error(conn, missing_ids):
+    """Marque des uploads fantômes en ``'error'`` (même politique que /files/check)."""
+    for upload_id in missing_ids:
+        logging.warning(f"[files] Dedup match {upload_id} mais fichier absent — marqué error")
+        conn.execute("UPDATE file_uploads SET status = 'error' WHERE upload_id = ?", (upload_id,))
+
+
 @app.route('/api/files/check', methods=['POST'])
 def check_file_exists():
     """Vérifie si un fichier a deja ete uploade (deduplication par fingerprint).
@@ -50,28 +87,112 @@ def check_file_exists():
 
     conn = get_db()
     try:
-        row = conn.execute(
-            "SELECT upload_id, final_path, filename FROM file_uploads "
-            "WHERE size = ? AND fingerprint_head = ? AND fingerprint_tail = ? "
-            "AND status = 'complete' LIMIT 1",
-            (size, head, tail)
-        ).fetchone()
+        storage = get_storage()
+        row, missing = _latest_existing_upload(
+            conn, storage,
+            "size = ? AND fingerprint_head = ? AND fingerprint_tail = ?",
+            (size, head, tail),
+        )
         if row:
-            # Verifier que le fichier existe reellement sur le stockage
-            storage = get_storage()
-            if storage.exists(row['final_path']):
-                return jsonify({
-                    'exists': True,
-                    'upload_id': row['upload_id'],
-                    'file_path': row['final_path'],
-                    'filename': row['filename'],
-                })
-            else:
-                logging.warning(f"[files] Dedup match {row['upload_id']} mais fichier absent: {row['final_path']}")
-                # Marquer comme error pour ne plus matcher
-                conn.execute("UPDATE file_uploads SET status = 'error' WHERE upload_id = ?", (row['upload_id'],))
-                conn.commit()
+            return jsonify({
+                'exists': True,
+                'upload_id': row['upload_id'],
+                'file_path': row['final_path'],
+                'filename': row['filename'],
+            })
+        _mark_missing_as_error(conn, missing)
+        conn.commit()
         return jsonify({'exists': False})
+    finally:
+        conn.close()
+
+
+@app.route('/api/files/check-batch', methods=['POST'])
+def check_files_batch():
+    """Vérifie l'existence de PLUSIEURS fichiers en UNE requête (pré-upload).
+
+    Utilisée par l'onglet 📤 Partager du pack ComfyUI-AI-Helper AVANT l'envoi :
+    l'utilisateur voit quels modèles sont déjà sur le serveur et choisit ceux à
+    écraser (l'upload explicite passe alors par /files/init sans passage par la
+    déduplication).
+
+    Requête :
+        {"items": [{"filename": str, "size": int, "head": str, "tail": str}, ...]}
+        (head/tail = sha256 hex du premier/dernier Mo — mêmes valeurs que
+         /files/check ; size/head/tail absents → seule la correspondance par
+         NOM peut être évaluée)
+
+    Réponse 200 :
+        {"items": [{"filename": str,
+                     "status": "identical"|"different"|"absent",
+                     "remote": {"upload_id", "filename", "size",
+                                "file_path", "created_at"} | null}, ...]}
+      - "identical" : mêmes size+head+tail trouvés ET fichier réellement
+        présent sur le stockage (déduplication possible, aucun octet à envoyer) ;
+      - "different" : un upload COMPLET du même nom existe mais le contenu
+        diffère (taille ou empreinte) — un envoi écraserait la version actuelle ;
+      - "absent"    : rien de complet ne correspond.
+
+    Aucun identifiant interne (user_id) n'est exposé. Maximum 200 items.
+    """
+    guard = _login_required()
+    if guard:
+        return guard
+
+    data = request.get_json(silent=True) or {}
+    items = data.get('items')
+    if not isinstance(items, list) or not items:
+        return jsonify({'error': 'items (liste non vide) requis'}), 400
+    if len(items) > 200:
+        return jsonify({'error': 'Maximum 200 items par requête'}), 400
+
+    conn = get_db()
+    try:
+        storage = get_storage()
+        results = []
+        for raw in items:
+            if not isinstance(raw, dict):
+                return jsonify({'error': 'chaque item doit être un objet'}), 400
+            # Même normalisation que /files/init : basename UNIQUEMENT (le nom
+            # stocké en base est un basename — cf. init_upload).
+            filename = os.path.basename(str(raw.get('filename') or '').replace('\\', '/'))
+            try:
+                size = int(raw.get('size') or 0)
+            except (TypeError, ValueError):
+                size = 0
+            head = str(raw.get('head') or '').strip()
+            tail = str(raw.get('tail') or '').strip()
+
+            entry = {'filename': filename, 'status': 'absent', 'remote': None}
+            if filename:
+                row = None
+                if size > 0 and head and tail:
+                    row, missing = _latest_existing_upload(
+                        conn, storage,
+                        "size = ? AND fingerprint_head = ? AND fingerprint_tail = ?",
+                        (size, head, tail),
+                    )
+                    _mark_missing_as_error(conn, missing)
+                if row is None:
+                    row, missing = _latest_existing_upload(
+                        conn, storage, "filename = ?", (filename,)
+                    )
+                    _mark_missing_as_error(conn, missing)
+                    if row is not None:
+                        entry['status'] = 'different'
+                if row is not None:
+                    if entry['status'] != 'different':
+                        entry['status'] = 'identical'
+                    entry['remote'] = {
+                        'upload_id': row['upload_id'],
+                        'filename': row['filename'],
+                        'size': row['size'],
+                        'file_path': row['final_path'] or '',
+                        'created_at': row['created_at'] or '',
+                    }
+            results.append(entry)
+        conn.commit()
+        return jsonify({'items': results})
     finally:
         conn.close()
 
