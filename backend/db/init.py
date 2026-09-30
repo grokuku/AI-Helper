@@ -182,6 +182,34 @@ def _create_tables(conn):
         )
     """)
 
+    # ── Table API tokens NOMMÉS (plusieurs clés par utilisateur) ──
+    # Remplace le modèle historique « une seule clé par utilisateur » (colonnes
+    # ``users.api_token`` / ``users.api_token_hash``). Un utilisateur peut créer
+    # plusieurs clés NOMMÉES, une par machine ComfyUI, sans invalider les autres.
+    #   - ``token_hash`` : SHA-256 de la clé (UNIQUE) — la clé en clair n'est
+    #     JAMAIS stockée ni relue ;
+    #   - ``prefix``     : tout début de la clé, seule information exposée par
+    #     la liste (permet de reconnaître une clé sans la divulguer) ;
+    #   - ``last_used_*``: dernière utilisation tracée, écriture THROTTLÉE ;
+    #   - ``revoked_at`` : NULL = clé active ; révocation INDIVIDUELLE (on ne
+    #     supprime jamais la ligne, on l'horodate).
+    # AUCUNE expiration : une clé reste valide jusqu'à révocation explicite.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS api_tokens (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            token_hash TEXT NOT NULL UNIQUE,
+            prefix TEXT NOT NULL DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_used_at TIMESTAMP,
+            last_used_ip TEXT,
+            last_used_user_agent TEXT,
+            revoked_at TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+    """)
+
 
 # ── Migrations ────────────────────────────────────────────────────────
 
@@ -405,6 +433,70 @@ def _migrate_prompt_examples(conn):
         conn.execute("ALTER TABLE _prompt_examples_new RENAME TO prompt_examples")
 
 
+# Nom GÉNÉRIQUE donné à la clé API historique lors de sa migration. Choix
+# délibéré : un nom neutre (« Clé d'origine ») ne présume d'aucun usage et
+# évite de casser les configurations ComfyUI déjà en place — la clé garde
+# EXACTEMENT le même token et continue de s'authentifier.
+DEFAULT_API_TOKEN_NAME = "Clé d'origine"
+
+
+def _migrate_api_tokens(conn):
+    """Importe UNE FOIS la clé API historique comme clé nommée ``api_tokens``.
+
+    Avant l'introduction des clés multiples, chaque utilisateur avait AU PLUS
+    une clé, stockée dans ``users.api_token_hash`` (ou, plus ancien, en clair
+    dans ``users.api_token``). Cette migration reprend cette clé TELLE QUELLE
+    et l'enregistre comme une ligne ``api_tokens`` nommée ``DEFAULT_API_TOKEN_NAME``
+    (« Clé d'origine »), de façon IDEMPOTENTE : la clé n'est réimportée que si
+    aucun ``api_tokens.token_hash`` identique n'existe déjà (actif OU révoqué —
+    une clé révoquée ne « ressuscite » donc jamais au redémarrage).
+
+    La source historique (``users.api_token*``) n'est PAS supprimée : elle
+    reste un repli pour l'authentification (rétrocompatibilité totale, aucune
+    configuration en place n'est cassée).
+
+    Args:
+        conn (sqlite3.Connection): La connexion SQLite active.
+    """
+    import hashlib
+
+    # La table api_tokens est créée par ``_create_tables`` ; garde défensive.
+    table_cols = [r[1] for r in conn.execute("PRAGMA table_info(api_tokens)").fetchall()]
+    if not table_cols:
+        return
+
+    users_cols = [r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
+    if "api_token_hash" not in users_cols and "api_token" not in users_cols:
+        return
+
+    # Sélection défensive des colonnes réellement présentes.
+    hash_expr = "api_token_hash" if "api_token_hash" in users_cols else "NULL"
+    plain_expr = "api_token" if "api_token" in users_cols else "NULL"
+    rows = conn.execute(
+        f"SELECT id, {hash_expr} AS th, {plain_expr} AS pt FROM users"
+    ).fetchall()
+
+    for user_id, token_hash, token_plain in rows:
+        th = token_hash
+        prefix = ""
+        # Clé historique en clair → on la hashe (la clé en clair n'est jamais
+        # conservée dans api_tokens) et on peut en déduire le préfixe.
+        if not th and token_plain:
+            th = hashlib.sha256(str(token_plain).encode("utf-8")).hexdigest()
+            prefix = str(token_plain)[:12]
+        if not th:
+            continue
+        already = conn.execute(
+            "SELECT 1 FROM api_tokens WHERE token_hash = ?", (th,)
+        ).fetchone()
+        if already:
+            continue
+        conn.execute(
+            "INSERT INTO api_tokens (user_id, name, token_hash, prefix) VALUES (?, ?, ?, ?)",
+            (user_id, DEFAULT_API_TOKEN_NAME, th, prefix),
+        )
+
+
 def _migrate_whitelist(conn):
     """Migration : crée la table discord_whitelist et auto-popule avec les users existants.
 
@@ -530,6 +622,7 @@ def _run_migrations(conn):
     _migrate_prompt_examples(conn)
     _migrate_saved_filters(conn)
     _migrate_whitelist(conn)
+    _migrate_api_tokens(conn)
 
 
 # ── Post-migration table & index creation ─────────────────────────────
@@ -903,6 +996,9 @@ def _create_indexes(conn):
     conn.execute("CREATE INDEX IF NOT EXISTS idx_media_tags_user_tag ON media_tags(user_id, tag)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_media_tags_media ON media_tags(media_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_whitelist_uid ON discord_whitelist(discord_uid)")
+    # Clés API nommées : (user_id) alimente la liste/le comptage des clés actives
+    # ; ``token_hash`` est déjà indexé par sa contrainte UNIQUE (lookup d'auth).
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_api_tokens_user ON api_tokens(user_id)")
     # Albums : (user_id) alimente la liste privée ; (media_id) alimente la
     # propagation de la purge (« figure dans N albums ») ; (album_id) la
     # reconstruction du manifest.

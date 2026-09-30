@@ -5,6 +5,7 @@ and the privacy filter used by keyword queries.
 """
 
 import contextlib
+import hashlib
 import logging
 import os
 import time
@@ -37,17 +38,22 @@ def _get_current_user_id() -> str | None:
 
 
 def _authenticate_via_token() -> str | None:
-    """Authentifie la requête via un Bearer token (JWT ou API legacy).
+    """Authentifie la requête via un Bearer token (JWT ou clé API ``aih_...``).
 
-    Accepte deux types de tokens :
-        - JWT token (via ``verify_jwt``)
-        - API token legacy (``aih_...``), stocké HASHÉ (SHA-256) en BDD.
-          Les anciens tokens stockés en clair restent valides : ils sont
-          migrés vers le hash à la 1re utilisation (sans invalidation).
+    Ordre de résolution :
+        1. JWT (via ``verify_jwt``).
+        2. Clé API NOMMÉE : lookup par SHA-256 dans ``api_tokens``. Les clés
+           révoquées (``revoked_at`` non NULL) sont REFUSÉES et ne retombent
+           JAMAIS sur le repli historique (sinon une clé révoquée
+           « ressusciterait »). **AUCUNE expiration** sur ces clés.
+        3. Repli historique : ``users.api_token_hash`` (clé hashée créée par
+           l'ancien endpoint ``/api/auth/token``) — conserve sa règle
+           d'expiration pour ne pas casser les clients/tests existants.
+        4. Repli historique en clair : ``users.api_token`` → migration
+           paresseuse vers le hash (sans invalidation).
 
-    Expiration : les tokens créés depuis le hashage expirent après
-    ``AIH_TOKEN_MAX_AGE_DAYS`` jours (défaut 365, 0 = jamais). Les tokens
-    legacy (sans date de création) n'expirent pas (migration transparente).
+    La dernière utilisation d'une clé nommée (date, IP, User-Agent) est tracée
+    de façon THROTTLÉE (cf. ``_touch_token_usage``).
 
     Returns:
         str | None: L'ID utilisateur si le token est valide, sinon ``None``.
@@ -62,40 +68,111 @@ def _authenticate_via_token() -> str | None:
     if payload and payload.get('type') == 'access':
         return payload['sub']
 
-    # 2) API token (aih_...)
+    # 2) API tokens
     try:
-        import hashlib
-        conn = get_db()
-
-        # 2a) Hash SHA-256 (format actuel)
         token_hash = hashlib.sha256(token.encode('utf-8')).hexdigest()
-        row = conn.execute(
-            "SELECT id, api_token_created_at FROM users WHERE api_token_hash = ?",
-            (token_hash,),
-        ).fetchone()
-        if row:
-            conn.close()
-            if _api_token_expired(row['api_token_created_at']):
-                return None
-            return row['id']
+        conn = get_db()
+        try:
+            # 2a) Clés nommées (modèle actuel) — AUCUNE condition d'expiration.
+            try:
+                row = conn.execute(
+                    "SELECT id, user_id, revoked_at FROM api_tokens WHERE token_hash = ?",
+                    (token_hash,),
+                ).fetchone()
+            except Exception:
+                row = None
+            if row:
+                # Clé révoquée → refus ferme, SANS repli sur l'historique.
+                if row["revoked_at"]:
+                    return None
+                ip = (request.remote_addr or "")[:128]
+                ua = (request.headers.get("User-Agent", "") or "")[:512]
+                if _touch_token_usage(conn, row["id"], ip, ua):
+                    conn.commit()
+                return row["user_id"]
 
-        # 2b) Legacy : token en clair → migration paresseuse vers le hash
-        row = conn.execute(
-            "SELECT id FROM users WHERE api_token = ?", (token,)
-        ).fetchone()
-        if row:
-            conn.execute(
-                "UPDATE users SET api_token_hash = ?, api_token_created_at = datetime('now'), "
-                "api_token = NULL WHERE id = ?",
-                (token_hash, row['id']),
-            )
-            conn.commit()
+            # 2b) Repli : clé hashée historique (users.api_token_hash)
+            row = conn.execute(
+                "SELECT id, api_token_created_at FROM users WHERE api_token_hash = ?",
+                (token_hash,),
+            ).fetchone()
+            if row:
+                if _api_token_expired(row['api_token_created_at']):
+                    return None
+                return row['id']
+
+            # 2c) Repli : clé historique en clair → migration paresseuse
+            row = conn.execute(
+                "SELECT id FROM users WHERE api_token = ?", (token,)
+            ).fetchone()
+            if row:
+                conn.execute(
+                    "UPDATE users SET api_token_hash = ?, api_token_created_at = datetime('now'), "
+                    "api_token = NULL WHERE id = ?",
+                    (token_hash, row['id']),
+                )
+                conn.commit()
+                return row['id']
+            return None
+        finally:
             conn.close()
-            return row['id']
-        conn.close()
-        return None
     except Exception:
         return None
+
+
+# ── Traçage throttlé de l'utilisation des clés nommées ────────────────
+#
+# ``last_used_at`` / IP / User-Agent sont écrits en BDD au plus une fois
+# toutes les ``AIH_TOKEN_USAGE_THROTTLE_S`` secondes (défaut 300 = 5 min) pour
+# ne pas dégrader les performances : un client ComfyUI peut émettre des
+# dizaines de requêtes par minute. La 1re utilisation d'une clé écrit toujours.
+_TOKEN_USAGE_LAST_WRITE: dict[int, float] = {}
+_DEFAULT_TOKEN_USAGE_THROTTLE_S = 300
+
+
+def _token_usage_throttle_s() -> int:
+    """Intervalle minimal (s) entre deux écritures de ``last_used`` pour une clé.
+
+    ``AIH_TOKEN_USAGE_THROTTLE_S`` permet de l'ajuster (0 = écrire à chaque
+    requête, utile en test). Valeur invalide → défaut (300 s).
+    """
+    try:
+        return max(
+            0,
+            int(os.environ.get(
+                "AIH_TOKEN_USAGE_THROTTLE_S", str(_DEFAULT_TOKEN_USAGE_THROTTLE_S)
+            )),
+        )
+    except (TypeError, ValueError):
+        return _DEFAULT_TOKEN_USAGE_THROTTLE_S
+
+
+def _touch_token_usage(conn, token_id: int, ip: str, user_agent: str,
+                       now: float | None = None) -> bool:
+    """Trace la dernière utilisation d'une clé, de façon THROTTLÉE.
+
+    Args:
+        conn: La connexion SQLite active (ouverture gérée par l'appelant).
+        token_id (int): L'ID de la ligne ``api_tokens``.
+        ip (str): IP du client (``request.remote_addr``).
+        user_agent (str): User-Agent du client (tronqué).
+        now (float | None): Horodatage epoch injectable (tests), sinon courant.
+
+    Returns:
+        bool: ``True`` si la BDD a été mise à jour (l'appelant doit alors
+            ``commit``), ``False`` si l'écriture a été sautée (trop récente).
+    """
+    now = time.time() if now is None else now
+    last = _TOKEN_USAGE_LAST_WRITE.get(token_id, 0.0)
+    if now - last < _token_usage_throttle_s():
+        return False
+    conn.execute(
+        "UPDATE api_tokens SET last_used_at = datetime('now'), "
+        "last_used_ip = ?, last_used_user_agent = ? WHERE id = ?",
+        (ip, user_agent, token_id),
+    )
+    _TOKEN_USAGE_LAST_WRITE[token_id] = now
+    return True
 
 
 def _api_token_expired(created_at) -> bool:

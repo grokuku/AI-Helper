@@ -166,6 +166,7 @@ def admin_delete_user(user_id):
     conn = get_db()
     conn.execute('DELETE FROM keyword_embeddings WHERE keyword_id IN (SELECT id FROM keywords WHERE user_id = ?)', (user_id,))
     conn.execute('DELETE FROM keywords WHERE user_id = ?', (user_id,))
+    conn.execute('DELETE FROM api_tokens WHERE user_id = ?', (user_id,))
     conn.execute('DELETE FROM users WHERE id = ?', (user_id,))
     conn.commit()
     conn.close()
