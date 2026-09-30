@@ -907,6 +907,48 @@ def test_list_subfolders_invalid_400_and_backward_compatible(client, make_token,
     assert client.get("/api/media?subfolders=", headers=headers).get_json()["total"] == 0
 
 
+def test_list_subfolders_dated_capture_consistent_with_folders(client, make_token, media_storage):
+    """Capture utilisateur : dossiers DATÉS cochés → dossiers/compteurs ET liste.
+
+    Le panneau dossiers du pack affichait ``2026-09-27 (28)``, ``2026-09-28
+    (130)``, ``2026-09-30 (60)`` (GET /api/media/folders) pendant que la liste
+    revenait vide côté client. Côté serveur, les DEUX endpoints doivent être
+    COHÉRENTS pour la même sélection : ce test rejoue la requête EXACTE du
+    provider distant (subfolders répétés, page=1, limit=200, Type=Tout donc
+    aucun ``kind``, dates/recherche vides donc aucun ``from/to/q``).
+
+    Contrôle NÉGATIF : restreindre la sélection à UN dossier doit rendre
+    exactement le compte annoncé par /api/media/folders pour ce dossier.
+    """
+    headers = _headers(make_token, "dated-capture")
+    per_folder = (("2026-09-27", 2), ("2026-09-28", 3), ("2026-09-30", 1))
+    for folder, n_items in per_folder:
+        for i in range(n_items):
+            _upload(client, headers, f"{folder}-{i}".encode(),
+                    filename=f"shot-{i}", subfolder=folder)
+
+    folders = client.get("/api/media/folders", headers=headers).get_json()
+    assert folders["folders"] == [
+        {"subfolder": "2026-09-27", "count": 2},
+        {"subfolder": "2026-09-28", "count": 3},
+        {"subfolder": "2026-09-30", "count": 1},
+    ]
+    assert folders["total"] == 6
+
+    selected = ["2026-09-27", "2026-09-28", "2026-09-30"]
+    qs = "page=1&limit=200" + "".join(f"&subfolders={f}" for f in selected)
+    body = client.get(f"/api/media?{qs}", headers=headers).get_json()
+    assert body["total"] == folders["total"], "comptes dossiers ≠ liste filtrée"
+    assert len(body["items"]) == 6
+    assert {i["subfolder"] for i in body["items"]} == set(selected)
+    assert body["page"] == 1 and body["limit"] == 200
+
+    for folder, n_items in per_folder:
+        sub = client.get(f"/api/media?subfolders={folder}", headers=headers).get_json()
+        assert sub["total"] == n_items, f"{folder} : compte du dossier ≠ liste"
+        assert {i["subfolder"] for i in sub["items"]} == {folder}
+
+
 # ── 5quater. Pagination : bornes de ``limit`` (durcissement) ──────────
 #
 # Le clamp de ``?limit=`` est un CLAMP SILENCIEUX : une valeur hors bornes est
