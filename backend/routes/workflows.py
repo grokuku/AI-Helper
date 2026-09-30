@@ -26,16 +26,21 @@ def _decompress(blob: bytes) -> str:
     return gzip.decompress(blob).decode('utf-8')
 
 
-def _workflow_to_dict(row) -> dict:
-    """Convertit une ligne BDD en dict public (sans le BLOB)."""
+def _workflow_to_dict(row, current_user_id=None) -> dict:
+    """Convertit une ligne BDD en dict public (sans le BLOB).
+
+    ``is_mine`` est calculé CÔTÉ SERVEUR à partir de l'utilisateur authentifié :
+    le front n'a jamais besoin de comparer d'identités. Aucun identifiant
+    interne (``user_id``) n'est exposé — pas d'énumération possible.
+    """
     return {
         'id': row['id'],
-        'user_id': row['user_id'],
         'name': row['name'],
         'description': row['description'],
         'version': row['version'],
         'downloads': row['downloads'],
         'likes': row['likes'],
+        'is_mine': bool(current_user_id is not None and row['user_id'] == current_user_id),
         'tags': (row['tags'] or '').split(',') if row['tags'] else [],
         'required_nodes': json.loads(row['required_nodes'] or '[]'),
         'required_models': json.loads(row['required_models'] or '[]'),
@@ -130,10 +135,15 @@ def create_or_update_workflow():
 
 @app.route('/api/workflows', methods=['GET'])
 def list_workflows():
-    """Liste les workflows publics (métadonnées sans le JSON)."""
+    """Liste les workflows publics (métadonnées sans le JSON).
+
+    Chaque item porte ``is_mine`` (booléen calculé côté serveur à partir de
+    l'utilisateur authentifié) ; AUCUN ``user_id`` n'est exposé.
+    """
     guard = _login_required()
     if guard:
         return guard
+    current_user_id = _get_current_user_id()
 
     q = request.args.get('q', '').strip().lower()
     tags_filter = request.args.get('tags', '').strip().lower()
@@ -202,6 +212,7 @@ def list_workflows():
                 'downloads': r['downloads'],
                 'likes': r['likes'],
                 'author': author['display_name'] or author['username'] if author else '?',
+                'is_mine': bool(current_user_id is not None and r['user_id'] == current_user_id),
                 'tags': (r['tags'] or '').split(',') if r['tags'] else [],
                 'required_nodes': json.loads(r['required_nodes'] or '[]'),
                 'required_models': json.loads(r['required_models'] or '[]'),
@@ -225,10 +236,14 @@ def list_workflows():
 
 @app.route('/api/workflows/<int:workflow_id>', methods=['GET'])
 def get_workflow(workflow_id):
-    """Détail d'un workflow (sans le JSON brut)."""
+    """Détail d'un workflow (sans le JSON brut).
+
+    ``is_mine`` est calculé côté serveur ; aucun ``user_id`` n'est renvoyé.
+    """
     guard = _login_required()
     if guard:
         return guard
+    current_user_id = _get_current_user_id()
 
     conn = get_db()
     try:
@@ -242,10 +257,10 @@ def get_workflow(workflow_id):
         if not row:
             return jsonify({'error': 'Workflow introuvable'}), 404
 
-        d = _workflow_to_dict(row)
+        d = _workflow_to_dict(row, current_user_id)
         author = conn.execute(
             "SELECT username, display_name FROM users WHERE id = ?",
-            (d['user_id'],)
+            (row['user_id'],)
         ).fetchone()
         d['author'] = author['display_name'] or author['username'] if author else '?'
         return jsonify(d)
