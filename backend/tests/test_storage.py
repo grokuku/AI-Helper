@@ -6,7 +6,7 @@ import time
 from unittest.mock import MagicMock, patch
 
 import pytest
-from storage import SFTPStorage, get_storage, reload_storage
+from storage import LocalStorage, SFTPStorage, get_storage, reload_storage
 
 
 @pytest.fixture
@@ -586,3 +586,114 @@ class TestSFTPDownloadChannelPool:
         assert not uploader.is_alive(), "l'upload est resté bloqué par le téléchargement"
         assert elapsed < 1.0, f"upload bloqué {elapsed:.2f}s par le download"
         main.put.assert_called_once()
+
+
+class _ReadHandle:
+    """Handle SFTP de lecture simulé (payload fixe, trace la fermeture)."""
+
+    def __init__(self, payload):
+        self.payload = payload
+        self.pos = 0
+        self.closed = False
+
+    def read(self, n):
+        buf = self.payload[self.pos:self.pos + n]
+        self.pos += len(buf)
+        return buf
+
+    def close(self):
+        self.closed = True
+
+
+class TestOpenStream:
+    """``open_stream`` : flux direct storage → client (pas de temp complet).
+
+    C'est le contrat qui permet au download HTTP de servir le premier octet
+    immédiatement et de ne PAS doubler le transfert (stockage→temp puis
+    temp→client). Le canal dédié au pool doit être rendu à la fermeture, jeté
+    s'il est cassé, et jamais fuiter.
+    """
+
+    def _make_storage(self, mock_paramiko, monkeypatch, cap, channels):
+        import storage as storage_module
+
+        monkeypatch.setattr(storage_module, "SFTP_DOWNLOAD_CONNECTIONS", cap)
+        mock_paramiko["ssh"].open_sftp.side_effect = list(channels)
+        return storage_module.SFTPStorage(
+            host="sftp.example", port=22, user="tester", password="pw", base_path="/aih"
+        )
+
+    def test_open_stream_reads_on_dedicated_channel_and_releases(self, mock_paramiko, monkeypatch):
+        """Lecture par morceaux + canal RENDU au pool une seule fois."""
+        main = MagicMock(name="main")
+        pool1 = MagicMock(name="pool1")
+        handle = _ReadHandle(b"abcdefgh")
+        pool1.open.return_value = handle
+        s = self._make_storage(mock_paramiko, monkeypatch, 2, [main, pool1])
+
+        stream = s.open_stream("models/a.bin")
+        assert stream is not None
+        assert pool1.open.call_args[0] == ("/aih/models/a.bin", "rb")
+        assert stream.read(4) == b"abcd"
+        assert stream.read(4) == b"efgh"
+        assert stream.read(4) == b""
+        assert s._download_free == [], "canal encore en service pendant le flux"
+
+        stream.close()
+        assert handle.closed is True
+        assert s._download_free == [pool1], "fermeture → canal rendu au pool"
+        stream.close()  # idempotent
+        assert s._download_free == [pool1], "aucun double release"
+        main.open.assert_not_called(), "le canal principal reste libre (uploads/stat)"
+
+    def test_open_stream_none_sans_canal_disponible(self, mock_paramiko, monkeypatch):
+        """Plafond atteint/aucun canal → None (l'appelant retombe sur le temp)."""
+        main = MagicMock(name="main")
+        s = self._make_storage(mock_paramiko, monkeypatch, 2, [main])
+        monkeypatch.setattr(s, "_borrow_download_channel", lambda: None)
+        assert s.open_stream("models/a.bin") is None
+
+    def test_open_stream_echec_ouverture_retente_puis_none(self, mock_paramiko, monkeypatch):
+        """Canal mort au moment d'ouvrir : jeté, un seul nouvel essai, puis repli."""
+        main = MagicMock(name="main")
+        pool1 = MagicMock(name="pool1")
+        pool2 = MagicMock(name="pool2")
+        pool1.open.side_effect = OSError("canal mort")
+        pool2.open.side_effect = OSError("toujours mort")
+        s = self._make_storage(mock_paramiko, monkeypatch, 2, [main, pool1, pool2])
+
+        assert s.open_stream("models/a.bin") is None
+        assert pool1.close.called, "canal en échec fermé (pas remis au pool)"
+        assert pool2.close.called
+        assert s._download_free == []
+        assert s._download_created == 0, "compteur du pool décrémenté (pas de fuite)"
+
+    def test_open_stream_erreur_lecture_jette_le_canal(self, mock_paramiko, monkeypatch):
+        """Erreur en plein transfert → canal JETÉ, l'erreur remonte au client."""
+        main = MagicMock(name="main")
+        pool1 = MagicMock(name="pool1")
+        handler = MagicMock(name="handle")
+        handler.read.side_effect = OSError("coupure en plein flux")
+        pool1.open.return_value = handler
+        s = self._make_storage(mock_paramiko, monkeypatch, 2, [main, pool1])
+
+        stream = s.open_stream("models/a.bin")
+        with pytest.raises(OSError):
+            stream.read(1024)
+        assert pool1.close.called, "canal cassé fermé (jeté du pool)"
+        assert s._download_free == []
+        stream.close()  # après erreur : ne double-libère pas
+        assert s._download_free == []
+
+    def test_open_stream_local_lit_sans_copie(self, tmp_path):
+        """Local : flux direct sur le fichier (aucune copie préalable) + absent → None."""
+        base = tmp_path / "store"
+        base.mkdir()
+        (base / "a.bin").write_bytes(b"hello")
+        s = LocalStorage(str(base))
+
+        stream = s.open_stream("a.bin")
+        assert stream is not None
+        assert stream.read(2) == b"he"
+        stream.close()
+        assert s.open_stream("absent.bin") is None

@@ -18,14 +18,24 @@ import logging
 import os
 import secrets
 import tempfile
+import time
+import unicodedata
+from urllib.parse import quote as _url_quote
 
 from context import *
+from flask import Response
 from storage import get_storage
+from werkzeug.http import dump_options_header
 
 CHUNK_SIZE = 25 * 1024 * 1024  # 25 MB par chunk
 MAX_FILE_SIZE = 50 * 1024 * 1024 * 1024  # 50 GB max
 TEMP_DIR = tempfile.gettempdir() + "/aih_uploads"
 os.makedirs(TEMP_DIR, exist_ok=True)
+
+# Taille des morceaux du streaming download (chemin NOMINAL). 1 Mo : borne le
+# temps avant le PREMIER octet reçu par le client (une lecture SFTP de 25 Mo
+# bloquerait plusieurs secondes à 8 Mo/s) tout en gardant un débit lisse.
+STREAM_CHUNK_SIZE = 1024 * 1024
 
 # ── Nettoyage des uploads ABANDONNÉS ─────────────────────────────────
 # Un upload laissé en 'uploading' (client fermé, ComfyUI tué, réseau coupé)
@@ -555,9 +565,36 @@ def get_fingerprint(upload_id):
         conn.close()
 
 
+def _attachment_disposition(filename):
+    """Content-Disposition d'attachement (même encodage RFC 5987 que send_file)."""
+    name = os.path.basename((filename or 'download').replace('\\', '/')) or 'download'
+    try:
+        name.encode('ascii')
+        names = {'filename': name}
+    except UnicodeEncodeError:
+        simple = unicodedata.normalize('NFKD', name).encode('ascii', 'ignore').decode('ascii')
+        names = {'filename': simple,
+                 'filename*': "UTF-8''" + _url_quote(name, safe="!#$&+-.^_`|~")}
+    return dump_options_header('attachment', names)
+
+
 @app.route('/api/files/<upload_id>/download', methods=['GET'])
 def download_file(upload_id):
-    """Download un fichier depuis le storage → streaming HTTP vers le client."""
+    """Download un fichier depuis le storage → streaming HTTP vers le client.
+
+    Chemin NOMINAL (``storage.open_stream``) : les octets sont lus par
+    morceaux (``STREAM_CHUNK_SIZE``) et écrits DIRECTEMENT dans la réponse.
+    Conséquences mesurées : aucun fichier temporaire complet côté backend (ni
+    double occupation disque, ni écriture de secours), un seul transfert
+    (stockage → client), le PREMIER octet part dès la première lecture, et le
+    débit est celui du maillon unique (au lieu de phase1 + phase2 séquentielles).
+
+    Repli SÛR (stockage sans streaming, ex. canal SFTP dédié indisponible) :
+    ancien chemin ``storage.download`` → temp → ``send_file``. Le temp est
+    supprimé par un générateur qui enveloppe la réponse : ``call_on_close`` ne
+    se déclenche JAMAIS sur une réponse ``direct_passthrough`` (send_file), ce
+    qui laissait le temp COMPLET sur le disque après chaque téléchargement.
+    """
     guard = _login_required()
     if guard:
         return guard
@@ -565,7 +602,7 @@ def download_file(upload_id):
     conn = get_db()
     try:
         row = conn.execute(
-            "SELECT final_path, filename, status, type FROM file_uploads WHERE upload_id = ?",
+            "SELECT final_path, filename, status, type, size FROM file_uploads WHERE upload_id = ?",
             (upload_id,)
         ).fetchone()
         if not row:
@@ -577,16 +614,57 @@ def download_file(upload_id):
     finally:
         conn.close()
 
-    # Download depuis le storage vers un temp file
     storage = get_storage()
-    local_tmp = os.path.join(TEMP_DIR, f"dl_{upload_id}_{row['filename']}")
+    filename = row['filename']
+    size = row['size'] or 0
+    t0 = time.monotonic()
 
+    # ── Chemin NOMINAL : flux direct storage → réponse HTTP ──────────────
+    stream = None
+    try:
+        stream = storage.open_stream(row['final_path'])
+    except Exception as e:  # pragma: no cover — défensif (open_stream ne lève pas)
+        logging.warning(f"[files] open_stream a échoué pour {upload_id} : {e}")
+        stream = None
+
+    if stream is not None:
+        def _iter_stream():
+            sent = 0
+            first_at = None
+            try:
+                while True:
+                    chunk = stream.read(STREAM_CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    if first_at is None:
+                        first_at = time.monotonic()
+                    sent += len(chunk)
+                    yield chunk
+                logging.info(
+                    f"[files] download {upload_id} STREAMÉ : {sent} octets, "
+                    f"1er octet {1000 * ((first_at or t0) - t0):.0f} ms, "
+                    f"total {time.monotonic() - t0:.2f} s (aucun temp)"
+                )
+            finally:
+                with contextlib.suppress(Exception):
+                    stream.close()
+
+        response = Response(_iter_stream(), mimetype='application/octet-stream')
+        response.headers['Content-Disposition'] = _attachment_disposition(filename)
+        if size > 0:
+            response.headers['Content-Length'] = str(size)
+        return response
+
+    # ── Repli : temp complet depuis le storage puis send_file ────────────
+    local_tmp = os.path.join(
+        TEMP_DIR,
+        f"dl_{upload_id}_{os.path.basename((filename or '').replace(chr(92), '/'))}",
+    )
     if not storage.download(row['final_path'], local_tmp):
         return jsonify({'error': 'Échec du téléchargement depuis le stockage'}), 500
 
-    # Stream vers le client, puis supprimer le fichier temporaire une fois la
-    # réponse envoyée (ou en cas d'erreur de send_file) pour éviter
-    # l'accumulation disque.
+    phase1_s = time.monotonic() - t0
+
     def _cleanup_local_tmp():
         with contextlib.suppress(Exception):
             os.remove(local_tmp)
@@ -595,14 +673,36 @@ def download_file(upload_id):
         response = send_file(
             local_tmp,
             as_attachment=True,
-            download_name=row['filename'],
+            download_name=filename,
             mimetype='application/octet-stream',
         )
     except Exception:
         _cleanup_local_tmp()
         raise
 
-    response.call_on_close(_cleanup_local_tmp)
+    # Nettoyage FIABLE du temp : send_file renvoie une réponse
+    # ``direct_passthrough`` pour laquelle Flask n'appelle PAS ``call_on_close``
+    # (pas de ClosingIterator) → le temp restait indéfiniment sur le disque
+    # (constaté au harnais : fichier dl_* complet conservé après la réponse). Un
+    # générateur qui enveloppe le corps garantit la suppression à la fin du
+    # transfert OU à la déconnexion client (GeneratorExit → finally).
+    original_body = response.response
+
+    def _iter_and_cleanup():
+        sent = 0
+        try:
+            for chunk in original_body:
+                sent += len(chunk)
+                yield chunk
+            logging.info(
+                f"[files] download {upload_id} via TEMP : {sent} octets, "
+                f"phase stockage→temp {phase1_s:.2f} s, "
+                f"total {time.monotonic() - t0:.2f} s"
+            )
+        finally:
+            _cleanup_local_tmp()
+
+    response.response = _iter_and_cleanup()
     return response
 
 

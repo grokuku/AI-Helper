@@ -62,6 +62,20 @@ class StorageBackend:
         """Download un fichier depuis le stockage vers un chemin local."""
         raise NotImplementedError
 
+    def open_stream(self, remote_path: str):
+        """Ouvre un flux de LECTURE séquentiel sur ``remote_path`` (sans
+        matérialiser le fichier complet).
+
+        Retourne un objet avec ``read(n) -> bytes`` (b'' en fin de fichier) et
+        ``close()``, ou ``None`` si ce backend ne sait pas streamer. L'appelant
+        DOIT fermer le flux (``finally`` / ``contextlib``) : pour SFTP, la
+        fermeture rend le canal dédié au pool.
+
+        Par défaut : pas de streaming → l'appelant retombe sur ``download``
+        (fichier temporaire complet, comportement historique).
+        """
+        return None
+
     def delete(self, remote_path: str) -> bool:
         """Supprime un fichier du stockage."""
         raise NotImplementedError
@@ -177,6 +191,14 @@ class LocalStorage(StorageBackend):
         except Exception as e:
             logging.exception(f"[LocalStorage] download failed: {e}")
             return False
+
+    def open_stream(self, remote_path: str):
+        """Flux de lecture direct sur le fichier local (pas de copie préalable)."""
+        try:
+            return open(str(self._full_path(remote_path)), 'rb')
+        except OSError as e:
+            logging.warning(f"[LocalStorage] open_stream failed: {e}")
+            return None
 
     def delete(self, remote_path: str) -> bool:
         try:
@@ -493,6 +515,38 @@ class SFTPStorage(StorageBackend):
                 logging.exception(f"[SFTP] download failed: {e}")
                 return False
 
+    def open_stream(self, remote_path: str):
+        """Flux de lecture direct sur le SFTP via un canal DÉDIÉ du pool.
+
+        Aucun fichier temporaire complet : l'appelant consomme les octets à la
+        demande (le débit client est le débit SFTP, premier octet immédiat).
+        Retourne ``None`` si aucun canal dédié n'est disponible (plafond atteint)
+        ou si l'ouverture échoue : l'appelant retombe alors sur ``download``
+        (chemin temp complet, toujours sûr). Jamais d'exception propagée pour
+        ces cas de repli.
+        """
+        full = self._full_path(remote_path)
+        for attempt in (0, 1):
+            try:
+                channel = self._borrow_download_channel()
+            except Exception:
+                channel = None
+            if channel is None:
+                return None
+            try:
+                handle = channel.open(full, 'rb')
+            except Exception as e:
+                # Canal peut-être mort (transport reconnecté…) : jeté puis un
+                # seul nouvel essai, comme ``download``. Ensuite repli temp.
+                self._release_download_channel(channel, broken=True)
+                if attempt == 0:
+                    logging.warning(f"[SFTP] open_stream échoué, nouvel essai : {e}")
+                    continue
+                logging.warning(f"[SFTP] open_stream impossible pour {remote_path} : {e}")
+                return None
+            return _SFTPReadStream(self, channel, handle)
+        return None
+
     def download(self, remote_path: str, local_path: str) -> bool:
         """Télécharge un fichier distant vers ``local_path``.
 
@@ -573,6 +627,41 @@ class SFTPStorage(StorageBackend):
             finally:
                 self._sftp = None
                 self._ssh = None
+
+
+class _SFTPReadStream:
+    """Flux de lecture séquentiel sur un fichier SFTP (canal dédié au pool).
+
+    Implémente le contrat ``read(n)``/``close()`` attendu par
+    :meth:`SFTPStorage.open_stream`. La fermeture est IDEMPOTENTE et rend le
+    canal au pool (ou le jette s'il est cassé) : jamais de canal fuité, même si
+    le client HTTP se déconnecte en plein transfert (GeneratorExit → close).
+    """
+
+    def __init__(self, storage, channel, handle):
+        self._storage = storage
+        self._channel = channel
+        self._handle = handle
+        self._released = False
+
+    def read(self, n: int) -> bytes:
+        try:
+            return self._handle.read(n)
+        except Exception:
+            self._release(broken=True)
+            raise
+
+    def close(self):
+        self._release(broken=False)
+
+    def _release(self, broken: bool):
+        if self._released:
+            return
+        self._released = True
+        with contextlib.suppress(Exception):
+            self._handle.close()
+        with contextlib.suppress(Exception):
+            self._storage._release_download_channel(self._channel, broken=broken)
 
 
 # ── Factory ──────────────────────────────────────────────────────────
