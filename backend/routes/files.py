@@ -27,6 +27,59 @@ MAX_FILE_SIZE = 50 * 1024 * 1024 * 1024  # 50 GB max
 TEMP_DIR = tempfile.gettempdir() + "/aih_uploads"
 os.makedirs(TEMP_DIR, exist_ok=True)
 
+# ── Nettoyage des uploads ABANDONNÉS ─────────────────────────────────
+# Un upload laissé en 'uploading' (client fermé, ComfyUI tué, réseau coupé)
+# conserve son fichier temporaire COMPLET (jusqu'à 50 Go) dans /tmp
+# INDÉFINIMENT, et sa ligne reste 'uploading'. Aucun ordonnanceur ne purge ces
+# orphelins → /tmp peut se remplir jusqu'à saturation. On nettoie de façon
+# OPPORTUNISTE à chaque /files/init (auto-guérison, sans ordonnanceur).
+# Seuil large (24 h par défaut) : un très gros transfert légitime (50 Go sur un
+# lien lent) reste en 'uploading' des heures sans jamais être purgé en cours.
+STALE_UPLOAD_HOURS = float(os.environ.get("AIH_STALE_UPLOAD_HOURS", "24"))
+
+
+def _purge_stale_uploads(conn):
+    """Supprime les fichiers temporaires des uploads abandonnés.
+
+    Cible les lignes ``status='uploading'`` dont ``created_at`` dépasse
+    ``STALE_UPLOAD_HOURS`` : temp supprimé (UNIQUEMENT s'il est bien sous
+    ``TEMP_DIR`` — confinement) puis ligne marquée ``'error'``.
+
+    Retourne le nombre de lignes purgées. Best-effort : ne doit JAMAIS faire
+    échouer un nouvel upload (exception silencieuse).
+    """
+    try:
+        rows = conn.execute(
+            "SELECT upload_id, temp_path FROM file_uploads "
+            "WHERE status = 'uploading' AND created_at IS NOT NULL "
+            "AND created_at < datetime('now', ?)",
+            (f"-{STALE_UPLOAD_HOURS} hours",),
+        ).fetchall()
+    except Exception as e:  # pragma: no cover — défensif
+        logging.warning(f"[files] purge stale: select failed: {e}")
+        return 0
+    if not rows:
+        return 0
+    temp_root = os.path.realpath(TEMP_DIR)
+    purged = 0
+    for row in rows:
+        temp_path = row['temp_path'] or ''
+        if temp_path:
+            real = os.path.realpath(temp_path)
+            # Ne supprimer QUE sous TEMP_DIR (jamais un chemin arbitraire venu
+            # de la base).
+            if real == temp_root or real.startswith(temp_root + os.sep):
+                with contextlib.suppress(Exception):
+                    os.remove(real)
+        conn.execute(
+            "UPDATE file_uploads SET status = 'error' WHERE upload_id = ?",
+            (row['upload_id'],),
+        )
+        purged += 1
+    if purged:
+        logging.info(f"[files] Purge de {purged} upload(s) abandonné(s) (> {STALE_UPLOAD_HOURS:.0f} h)")
+    return purged
+
 
 # ── Helpers de résolution d'existence (check simple + check par lot) ─────
 
@@ -235,6 +288,9 @@ def init_upload():
 
     conn = get_db()
     try:
+        # Nettoyage OPPORTUNISTE des uploads abandonnés (temp orphelins) :
+        # évite que /tmp se remplisse de gros fichiers partiels.
+        _purge_stale_uploads(conn)
         conn.execute("""
             INSERT INTO file_uploads (upload_id, user_id, filename, size, type,
                                        chunk_size, total_chunks, temp_path, final_path)
@@ -376,7 +432,15 @@ def complete_upload():
                 os.remove(temp_path)
 
             if not success:
-                conn.execute("UPDATE file_uploads SET status = 'error' WHERE upload_id = ?", (upload_id,))
+                # Échec RÉEL de la recopie vers le stockage : la ligne est
+                # marquée 'error' (elle ne matchera plus la déduplication) et
+                # le temp est déjà nettoyé ci-dessus → l'utilisateur peut
+                # RELANCER l'upload proprement, sans chunks orphelins.
+                logging.error(
+                    f"[files] Storage upload FAILED pour {upload_id} "
+                    f"({row['filename']}, {row['size']} octets) → temp supprimé, statut 'error'"
+                )
+                conn.execute("UPDATE file_uploads SET status = 'error', temp_path = '' WHERE upload_id = ?", (upload_id,))
                 conn.commit()
                 return jsonify({'error': 'Échec de l\'upload vers le stockage'}), 500
         else:
