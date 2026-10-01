@@ -18,6 +18,7 @@ import logging
 import os
 import secrets
 import tempfile
+import threading
 import time
 import unicodedata
 from urllib.parse import quote as _url_quote
@@ -32,10 +33,27 @@ MAX_FILE_SIZE = 50 * 1024 * 1024 * 1024  # 50 GB max
 TEMP_DIR = tempfile.gettempdir() + "/aih_uploads"
 os.makedirs(TEMP_DIR, exist_ok=True)
 
-# Taille des morceaux du streaming download (chemin NOMINAL). 1 Mo : borne le
-# temps avant le PREMIER octet reçu par le client (une lecture SFTP de 25 Mo
-# bloquerait plusieurs secondes à 8 Mo/s) tout en gardant un débit lisse.
-STREAM_CHUNK_SIZE = 1024 * 1024
+# Taille des morceaux du streaming download (chemin NOMINAL). 4 Mo : chaque
+# ``read`` SFTP est DÉJÀ découpé en requêtes de 32 Ko pipelineées par prefetch
+# (storage._SFTPReadStream), donc un morceau plus gros ne coûte plus de
+# latence ; il réduit les allers-retours Flask/werkzeug et la charge CPU par
+# morceau. Le premier octet reste rapide (prefetch : ~1 RTT + débit du lien
+# pour 4 Mo) alors qu'avant, 4 Mo non pipelineés = 128 RTT. Mesuré (harnais
+# hors dépôt, latence simulée) : 1 Mo→4 Mo = moins d'appels de générateur,
+# même débit, premier morceau backend inchangé.
+STREAM_CHUNK_SIZE = 4 * 1024 * 1024
+
+# Délai d'INACTIVITÉ du flux de download (secondes sans le moindre morceau).
+# Le canal SFTP a déjà ``SFTP_TIMEOUT`` (30 s) comme timeout socket ; ce délai
+# est le FILET DE DERNIER RECOURS quand la lecture ne rend rien malgré lui
+# (canal/transport mort, stockage local figé) : le flux est fermé et le
+# transfert échoue explicitement au lieu d'attendre indéfiniment. Doit rester
+# SUPÉRIEUR à ``SFTP_TIMEOUT`` pour laisser le timeout socket agir d'abord.
+# Surchargeable via ``AIH_STREAM_IDLE_TIMEOUT`` (secondes).
+try:
+    STREAM_IDLE_TIMEOUT = max(5.0, float(os.environ.get("AIH_STREAM_IDLE_TIMEOUT", "45")))
+except (TypeError, ValueError):
+    STREAM_IDLE_TIMEOUT = 45.0
 
 # ── Nettoyage des uploads ABANDONNÉS ─────────────────────────────────
 # Un upload laissé en 'uploading' (client fermé, ComfyUI tué, réseau coupé)
@@ -565,6 +583,73 @@ def get_fingerprint(upload_id):
         conn.close()
 
 
+class StreamStalledError(RuntimeError):
+    """Flux de download abandonné : aucun morceau reçu dans le délai imparti."""
+
+
+def _storage_name(storage):
+    """Nom lisible du stockage pour les messages (jamais d'exception)."""
+    try:
+        return storage.get_backend_name()
+    except Exception:
+        return "stockage inconnu"
+
+
+class _StreamIdleWatchdog:
+    """Ferme un flux qui ne rend AUCUN morceau pendant ``timeout`` secondes.
+
+    Un thread daemon surveille ``last_activity`` (remis à zéro à chaque
+    morceau) ; au dépassement il ferme le flux (ce qui débloque une lecture
+    en cours) et marque ``stalled``. La boucle de streaming consulte
+    ``stalled`` et échoue avec :class:`StreamStalledError` au lieu de laisser
+    le client attendre des minutes sans comprendre.
+
+    ``stop()`` est idempotent et sans attente : appelable depuis le ``finally``
+    du générateur, y compris après une fermeture par le watchdog.
+    """
+
+    def __init__(self, stream, timeout):
+        self._stream = stream
+        self._timeout = max(0.1, float(timeout))
+        # Sondage plus fin que le délai en test (délais courts → tests rapides).
+        self._interval = max(0.02, min(1.0, self._timeout / 4.0))
+        self._last = time.monotonic()
+        self._stop = threading.Event()
+        self._stalled = threading.Event()
+        self._thread = None
+
+    def start(self):
+        self._thread = threading.Thread(
+            target=self._run, name="aih-stream-watchdog", daemon=True
+        )
+        self._thread.start()
+        return self
+
+    def touch(self):
+        """Signale un morceau (progression réelle du flux)."""
+        self._last = time.monotonic()
+
+    @property
+    def stalled(self):
+        return self._stalled.is_set()
+
+    def _run(self):
+        while not self._stop.wait(self._interval):
+            if time.monotonic() - self._last >= self._timeout:
+                self._stalled.set()
+                # Fermer le flux débloque la lecture en cours (SFTP : le canal
+                # est rendu/fermé ; local : la lecture rend la main).
+                with contextlib.suppress(Exception):
+                    self._stream.close()
+                return
+
+    def stop(self):
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+            self._thread = None
+
+
 def _attachment_disposition(filename):
     """Content-Disposition d'attachement (même encodage RFC 5987 que send_file)."""
     name = os.path.basename((filename or 'download').replace('\\', '/')) or 'download'
@@ -620,22 +705,84 @@ def download_file(upload_id):
     t0 = time.monotonic()
 
     # ── Chemin NOMINAL : flux direct storage → réponse HTTP ──────────────
+    # ``size`` (connue de la BDD) est transmise au stockage : le backend SFTP
+    # en borne sa fenêtre de prefetch (jamais « jusqu'à la fin » d'un fichier
+    # de taille inconnue, ce qui bufferiserait 13 Go en RAM).
     stream = None
     try:
-        stream = storage.open_stream(row['final_path'])
+        stream = storage.open_stream(row['final_path'], size=size)
     except Exception as e:  # pragma: no cover — défensif (open_stream ne lève pas)
         logging.warning(f"[files] open_stream a échoué pour {upload_id} : {e}")
         stream = None
 
     if stream is not None:
+        # Watchdog armé AVANT la 1re lecture : si le stockage ne rend rien,
+        # l'échec est borné et le flux est fermé.
+        watchdog = _StreamIdleWatchdog(stream, STREAM_IDLE_TIMEOUT).start()
+
+        def _stalled_reason(sent):
+            return (
+                f"download {upload_id} : aucun morceau reçu pendant "
+                f"{STREAM_IDLE_TIMEOUT:.0f} s — {_storage_name(storage)} muet "
+                f"(transfert abandonné après {sent} octets envoyés). "
+                f"Vérifier le stockage/les canaux SFTP côté backend, puis réessayer."
+            )
+
+        def _stream_abort_response(reason):
+            """Erreur PROPRE (JSON 500) quand RIEN n'a été envoyé au client.
+
+            Sans cela, l'exception avant le 1er morceau laissait le serveur
+            produire une page d'erreur générique — le pack affichait un
+            « HTTP 500 » illisible au lieu de la cause. Le flux est fermé ici.
+            """
+            watchdog.stop()
+            with contextlib.suppress(Exception):
+                stream.close()
+            logging.error(f"[files] {reason}")
+            return jsonify({'error': reason}), 500
+
+        # Premier morceau lu AVANT de répondre : le client n'attend jamais la
+        # fin du fichier pour son 1er octet ET un stockage muet produit une
+        # erreur JSON explicite au lieu d'une réponse tronquée silencieuse.
+        try:
+            first_chunk = stream.read(STREAM_CHUNK_SIZE)
+        except Exception as e:
+            if watchdog.stalled:
+                return _stream_abort_response(_stalled_reason(0))
+            return _stream_abort_response(f"Lecture du stockage impossible : {e}")
+        if watchdog.stalled:
+            return _stream_abort_response(_stalled_reason(0))
+        watchdog.touch()
+
         def _iter_stream():
             sent = 0
             first_at = None
+
+            def _stalled_error():
+                return StreamStalledError(_stalled_reason(sent))
+
             try:
+                if first_chunk:
+                    first_at = time.monotonic()
+                    sent += len(first_chunk)
+                    yield first_chunk
                 while True:
-                    chunk = stream.read(STREAM_CHUNK_SIZE)
+                    try:
+                        chunk = stream.read(STREAM_CHUNK_SIZE)
+                    except Exception:
+                        # La fermeture par le watchdog peut faire échouer la
+                        # lecture en cours : on retraduit en échec EXPLICITE.
+                        if watchdog.stalled:
+                            raise _stalled_error() from None
+                        raise
+                    if watchdog.stalled:
+                        # Le délai d'inactivité a été dépassé : le flux a été
+                        # fermé. On échoue EXPLICITEMENT (le client ne peut pas
+                        # confondre avec une fin de fichier).
+                        raise _stalled_error()
                     if not chunk:
                         break
+                    watchdog.touch()
                     if first_at is None:
                         first_at = time.monotonic()
                     sent += len(chunk)
@@ -645,7 +792,11 @@ def download_file(upload_id):
                     f"1er octet {1000 * ((first_at or t0) - t0):.0f} ms, "
                     f"total {time.monotonic() - t0:.2f} s (aucun temp)"
                 )
+            except StreamStalledError as e:
+                logging.error(f"[files] {e}")
+                raise
             finally:
+                watchdog.stop()
                 with contextlib.suppress(Exception):
                     stream.close()
 
@@ -656,6 +807,16 @@ def download_file(upload_id):
         return response
 
     # ── Repli : temp complet depuis le storage puis send_file ────────────
+    # Visible dans les logs : pendant TOUTE la copie, le client ne reçoit AUCUN
+    # octet (c'est le symptôme « Préparation côté serveur… » qui dure). Si ce
+    # WARNING apparaît pour un gros fichier, le streaming direct était
+    # indisponible (canal SFTP du pool occupé/indisponible) → vérifier le pool.
+    logging.warning(
+        f"[files] download {upload_id} : flux direct indisponible "
+        f"(open_stream → None) — repli PRÉCHARGEMENT de {size} octets depuis "
+        f"{_storage_name(storage)} : le client ne recevra rien avant la "
+        f"copie complète"
+    )
     local_tmp = os.path.join(
         TEMP_DIR,
         f"dl_{upload_id}_{os.path.basename((filename or '').replace(chr(92), '/'))}",

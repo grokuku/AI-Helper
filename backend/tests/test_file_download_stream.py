@@ -38,6 +38,10 @@ from routes.helpers import get_db
 _USER_ID = "dl-stream-user"
 PAYLOAD = bytes(range(256)) * 4096  # 1 Mo exactement
 STREAM_CHUNK = files_mod.STREAM_CHUNK_SIZE
+# Payload de PLUSIEURS morceaux du streaming (le premier morceau lu avant la
+# réponse ne doit jamais être tout le fichier, sinon le test « streaming » ne
+# prouve plus rien). Dérivé de la constante : reste valable si elle change.
+MULTI = PAYLOAD * max(3, 3 * STREAM_CHUNK // len(PAYLOAD))
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -109,9 +113,11 @@ class _FakeStorage:
         self.download_called = False
         self.download_calls = 0
         self.open_stream_called = False
+        self.open_stream_size = None
 
-    def open_stream(self, remote_path):
+    def open_stream(self, remote_path, size=None):
         self.open_stream_called = True
+        self.open_stream_size = size
         return self.stream
 
     def download(self, remote_path, local_path):
@@ -167,8 +173,8 @@ def test_stream_premier_octet_avant_fin_de_lecture(client, make_token, monkeypat
     ``not eof_at_first_chunk`` ET ``download_called is False`` rougissent.
     """
     headers = _headers(make_token)
-    _seed_upload("dl-stream-1", "modele.safetensors", len(PAYLOAD))
-    probe = _ProbeStream(PAYLOAD, slice_size=256 * 1024)
+    _seed_upload("dl-stream-1", "modele.safetensors", len(MULTI))
+    probe = _ProbeStream(MULTI, slice_size=256 * 1024)
     fake = _FakeStorage(stream=probe)
     monkeypatch.setattr(files_mod, "get_storage", lambda: fake)
 
@@ -186,12 +192,12 @@ def test_stream_premier_octet_avant_fin_de_lecture(client, make_token, monkeypat
             }
         chunks.append(chunk)
 
-    assert b"".join(chunks) == PAYLOAD, "octets servis == fichier source"
+    assert b"".join(chunks) == MULTI, "octets servis == fichier source"
     assert state_at_first_chunk is not None, "aucun morceau reçu"
     assert state_at_first_chunk["eof"] is False, (
         "le stockage était DÉJÀ entièrement lu au premier morceau client : "
         "ce n'est pas un streaming (préchargement complet)")
-    assert state_at_first_chunk["bytes_read_from_storage"] < len(PAYLOAD), (
+    assert state_at_first_chunk["bytes_read_from_storage"] < len(MULTI), (
         "tout le fichier avait été lu du stockage avant le premier octet client")
     assert state_at_first_chunk["dl_temp_files"] == [], (
         "un fichier temp dl_* existait pendant le streaming (double disque)")
@@ -210,9 +216,11 @@ def test_stream_lectures_bornees_au_chunk_size(client, make_token, monkeypatch):
     Mutation M2 (lire tout le fichier en un seul ``read()``) : la lecture
     dépasserait ``STREAM_CHUNK_SIZE`` → rouge. Sans cette borne, le premier
     octet client attendrait la lecture SFTP complète (des minutes à 13,5 Go).
+    Vérifie aussi que la taille DB est transmise au stockage : c'est elle qui
+    BORNE la fenêtre de prefetch SFTP (jamais « jusqu'à la fin »).
     """
     headers = _headers(make_token)
-    payload = PAYLOAD * 3  # 3 Mo → 3 morceaux de 1 Mo
+    payload = MULTI  # 3 morceaux de STREAM_CHUNK_SIZE
     _seed_upload("dl-stream-2", "gros.safetensors", len(payload))
     probe = _ProbeStream(payload, slice_size=4 * 1024 * 1024)  # le flux sait tout rendre
     fake = _FakeStorage(stream=probe)
@@ -228,7 +236,9 @@ def test_stream_lectures_bornees_au_chunk_size(client, make_token, monkeypatch):
         f"({STREAM_CHUNK}) : le premier octet serait repoussé à la fin")
     assert len(probe.reads) >= 3, (
         f"{len(probe.reads)} lecture(s) pour {len(payload)} octets : le fichier "
-        "doit être lu par morceaux (1 Mo)")
+        f"doit être lu par morceaux (STREAM_CHUNK_SIZE={STREAM_CHUNK})")
+    assert fake.open_stream_size == len(payload), (
+        "la taille DB doit être transmise à open_stream (borne du prefetch SFTP)")
 
 
 # ── 3. Déconnexion client → flux fermé (pas de canal fuité) ──────────

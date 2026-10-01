@@ -69,6 +69,7 @@ from routes.export import *
 from routes.files import *
 from routes.filters import *
 from routes.generate import *
+from routes.health import *
 from routes.helpers import *
 
 # Initialisation unique de la BDD (schemas + migrations) au demarrage

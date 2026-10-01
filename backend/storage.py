@@ -18,6 +18,10 @@ Env vars:
   SFTP_BASE_PATH  — base directory on the SFTP server (default /aih)
   SFTP_TIMEOUT    — socket/connect timeout in seconds (default 30)
   SFTP_DOWNLOAD_CONNECTIONS — canaux SFTP parallèles pour download (défaut 2)
+  AIH_SFTP_PREFETCH_WINDOW_MB — fenêtre du pipeline de lecture (prefetch)
+                    en Mo (défaut 64, bornes 1-256) : sans pipeline, paramiko
+                    paie un aller-retour par paquet de 32 Ko (~32 RTT/Mo,
+                    débit plafonné sous 1 Mo/s) ; la fenêtre borne la RAM.
 """
 
 import contextlib
@@ -49,6 +53,34 @@ try:
 except (TypeError, ValueError):
     SFTP_DOWNLOAD_CONNECTIONS = 2
 
+# ── Pipeline de lecture SFTP (prefetch) ──────────────────────────────
+# paramiko lit TOUJOURS par requêtes de 32768 octets (SFTPFile.MAX_REQUEST_SIZE)
+# et, sans pipeline, chaque requête est un aller-retour SYNCHRONE
+# (SFTPFile._read → SFTPClient._request) : ~32 tours réseau par Mo. Mesuré
+# (harnais hors dépôt, vrai serveur paramiko) : 32,06 requêtes de 32 Ko par Mo,
+# 0,84 Mo/s à RTT nul — 42 ms PAR REQUÊTE même en loopback (Nagle + ACK
+# différé côté serveur), 0,36 Mo/s à 80 ms de RTT. SFTPFile.prefetch() envoie
+# les requêtes en AVANCE (asynchrones, recouvrement réseau/consommation) :
+# l'aller-retour n'est plus payé par paquet.
+#
+# Fenêtre BORNÉE : les données prefetchées sont bufferisées en RAM tant
+# qu'elles ne sont pas lues — prefetch(13 Go) épuiserait la mémoire du backend
+# si le client est plus lent que le stockage. On ne pipeline qu'une fenêtre à
+# la fois, ré-armée UNIQUEMENT quand elle a été entièrement consommée (aucune
+# requête en double, donc aucune donnée orpheline dans le buffer paramiko).
+# Coût du ré-armement : un aller-retour par fenêtre (~64 Mo), négligeable.
+# Surchargeable via ``AIH_SFTP_PREFETCH_WINDOW_MB``.
+#
+# PAS de plafond ``max_concurrent_requests`` : le thread paramiko envoie alors
+# TOUTE la fenêtre puis se TERMINE, même si le flux est abandonné en plein
+# transfert (annulation, déconnexion client). Avec un plafond, les réponses en
+# erreur ne libèrent pas ``_prefetch_extents`` et le thread tourne à 100 Hz
+# POUR TOUJOURS après un abandon (mesuré hors dépôt : +5 threads, 6,7 % CPU).
+try:
+    SFTP_PREFETCH_WINDOW = max(1, min(256, int(os.environ.get("AIH_SFTP_PREFETCH_WINDOW_MB", "64")))) * 1024 * 1024
+except (TypeError, ValueError):
+    SFTP_PREFETCH_WINDOW = 64 * 1024 * 1024
+
 # ── Interface ────────────────────────────────────────────────────────
 
 class StorageBackend:
@@ -62,7 +94,7 @@ class StorageBackend:
         """Download un fichier depuis le stockage vers un chemin local."""
         raise NotImplementedError
 
-    def open_stream(self, remote_path: str):
+    def open_stream(self, remote_path: str, size: int = None):
         """Ouvre un flux de LECTURE séquentiel sur ``remote_path`` (sans
         matérialiser le fichier complet).
 
@@ -70,6 +102,9 @@ class StorageBackend:
         ``close()``, ou ``None`` si ce backend ne sait pas streamer. L'appelant
         DOIT fermer le flux (``finally`` / ``contextlib``) : pour SFTP, la
         fermeture rend le canal dédié au pool.
+
+        ``size`` (taille attendue, connue de la BDD) permet au backend SFTP de
+        BORNER sa fenêtre de prefetch ; ignorée par les autres backends.
 
         Par défaut : pas de streaming → l'appelant retombe sur ``download``
         (fichier temporaire complet, comportement historique).
@@ -192,7 +227,7 @@ class LocalStorage(StorageBackend):
             logging.exception(f"[LocalStorage] download failed: {e}")
             return False
 
-    def open_stream(self, remote_path: str):
+    def open_stream(self, remote_path: str, size: int = None):
         """Flux de lecture direct sur le fichier local (pas de copie préalable)."""
         try:
             return open(str(self._full_path(remote_path)), 'rb')
@@ -515,11 +550,15 @@ class SFTPStorage(StorageBackend):
                 logging.exception(f"[SFTP] download failed: {e}")
                 return False
 
-    def open_stream(self, remote_path: str):
+    def open_stream(self, remote_path: str, size: int = None):
         """Flux de lecture direct sur le SFTP via un canal DÉDIÉ du pool.
 
         Aucun fichier temporaire complet : l'appelant consomme les octets à la
         demande (le débit client est le débit SFTP, premier octet immédiat).
+        La lecture est PIPELINÉE par fenêtres de prefetch bornées (voir
+        :class:`_SFTPReadStream`) : sans cela, paramiko payait un aller-retour
+        réseau par paquet de 32 Ko (~32 RTT/Mo, plafond mesuré < 1 Mo/s).
+        ``size`` (taille connue) borne la fenêtre ; sans elle, un FSTAT la donne.
         Retourne ``None`` si aucun canal dédié n'est disponible (plafond atteint)
         ou si l'ouverture échoue : l'appelant retombe alors sur ``download``
         (chemin temp complet, toujours sûr). Jamais d'exception propagée pour
@@ -544,7 +583,7 @@ class SFTPStorage(StorageBackend):
                     continue
                 logging.warning(f"[SFTP] open_stream impossible pour {remote_path} : {e}")
                 return None
-            return _SFTPReadStream(self, channel, handle)
+            return _SFTPReadStream(self, channel, handle, size)
         return None
 
     def download(self, remote_path: str, local_path: str) -> bool:
@@ -636,32 +675,119 @@ class _SFTPReadStream:
     :meth:`SFTPStorage.open_stream`. La fermeture est IDEMPOTENTE et rend le
     canal au pool (ou le jette s'il est cassé) : jamais de canal fuité, même si
     le client HTTP se déconnecte en plein transfert (GeneratorExit → close).
+
+    PIPELINE DE LECTURE (prefetch) — le correctif de débit :
+      - sans prefetch, ``SFTPFile.read(n)`` découpe la demande en requêtes de
+        32768 octets (``MAX_REQUEST_SIZE``) traitées une par une, chacune
+        payant un aller-retour réseau (~32 RTT par Mo) : plafond mesuré
+        0,84 Mo/s à RTT nul (42 ms/requête à cause de Nagle/ACK différé côté
+        serveur) et 0,36 Mo/s à 80 ms de RTT ;
+      - avec prefetch, les requêtes partent en AVANCE et les réponses se
+        recouvrent avec la consommation ; le débit devient celui du maillon
+        réel (mesuré : 12-14 Mo/s sur le même harnais, 15-20× plus rapide).
+
+    GARANTIES conservées :
+      - mémoire bornée : une seule fenêtre (``SFTP_PREFETCH_WINDOW``) est
+        bufferisée par le prefetch, jamais le fichier entier (13 Go) ;
+      - aucune donnée orpheline : une fenêtre n'est ré-armée que lorsqu'elle a
+        été ENTIÈREMENT consommée — armer plus tôt recouvrirait la précédente
+        et les doublons reçus après consommation ne seraient jamais lus ;
+      - aucun thread orphelin : ``prefetch`` sans plafond de requêtes envoie
+        toute la fenêtre puis se termine, même si le flux est abandonné ;
+      - repli sûr : si ``prefetch``/``stat`` échoue (serveur exotique), les
+        lectures classiques prennent le relais sans faire échouer le download ;
+      - erreur de lecture → canal jeté (jamais réutilisé cassé).
     """
 
-    def __init__(self, storage, channel, handle):
+    def __init__(self, storage, channel, handle, size=None):
         self._storage = storage
         self._channel = channel
         self._handle = handle
         self._released = False
+        try:
+            self._size = int(size) if size else None
+        except (TypeError, ValueError):
+            self._size = None
+        self._consumed = 0
+        self._prefetch_until = 0
+        self._prefetch_off = False
+        self._arm_prefetch()
+
+    def _arm_prefetch(self):
+        """Arme la prochaine fenêtre de prefetch (bornée à ``SFTP_PREFETCH_WINDOW``)."""
+        if self._prefetch_off:
+            return
+        if self._size is None:
+            # Taille absente de la BDD : un FSTAT (1 aller-retour) borne la
+            # fenêtre — on ne prefetche jamais « jusqu'à la fin » d'un fichier
+            # de taille inconnue (13 Go en RAM sinon).
+            try:
+                self._size = int(self._handle.stat().st_size)
+            except Exception:
+                self._prefetch_off = True
+                return
+        if not self._size or self._consumed >= self._size:
+            return
+        until = min(self._size, self._consumed + SFTP_PREFETCH_WINDOW)
+        try:
+            self._handle.prefetch(until)
+        except Exception as e:
+            # Serveur/canal sans prefetch : lectures classiques (lentes mais
+            # CORRECTES) — ne jamais faire échouer un download pour ça.
+            logging.warning(f"[SFTP] prefetch indisponible, lectures classiques : {e}")
+            self._prefetch_off = True
+            return
+        self._prefetch_until = until
+
+    def _maybe_refill(self):
+        """Ré-arme une fenêtre SEULEMENT quand la précédente est consommée.
+
+        Armer plus tôt relancerait un second prefetch qui RECOUVRE le premier :
+        les réponses en double arrivées après consommation resteraient dans le
+        buffer paramiko sans jamais être lues (fuite mémoire proportionnelle à
+        la taille du fichier). La fenêtre finie, un seul aller-retour sépare
+        les fenêtres (négligeable : 1 RTT par ``SFTP_PREFETCH_WINDOW``).
+        """
+        if self._prefetch_off or self._size is None:
+            return
+        if self._consumed < self._prefetch_until:
+            return
+        self._arm_prefetch()
 
     def read(self, n: int) -> bytes:
+        self._maybe_refill()
         try:
-            return self._handle.read(n)
+            data = self._handle.read(n)
         except Exception:
             self._release(broken=True)
             raise
+        self._consumed += len(data)
+        return data
 
     def close(self):
         self._release(broken=False)
 
     def _release(self, broken: bool):
+        """Rend (ou jette) le canal. Un flux NON consommé jusqu'au bout est un
+        ABANDON (annulation, déconnexion client, erreur) : des requêtes prefetch
+        peuvent être en vol, et ``handle.close()`` attendrait que le serveur ait
+        répondu à tout le reste de la fenêtre (des Mo jusqu'au timeout du
+        canal). On jette alors le CANAL entier : le serveur abandonne
+        immédiatement, le thread prefetch s'arrête (sendall lève) et le pool
+        recréera un canal au prochain download.
+        """
         if self._released:
             return
         self._released = True
+        incomplete = self._size is not None and self._consumed < self._size
+        if not broken and not incomplete:
+            # Fin de fichier consommée : plus rien en vol → close immédiat et
+            # canal RÉUTILISABLE (pas de canal jeté pour un download terminé).
+            with contextlib.suppress(Exception):
+                self._handle.close()
         with contextlib.suppress(Exception):
-            self._handle.close()
-        with contextlib.suppress(Exception):
-            self._storage._release_download_channel(self._channel, broken=broken)
+            self._storage._release_download_channel(
+                self._channel, broken=broken or incomplete)
 
 
 # ── Factory ──────────────────────────────────────────────────────────
