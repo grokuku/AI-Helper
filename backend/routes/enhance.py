@@ -2,6 +2,7 @@
 
 import contextlib
 import logging
+import queue
 import re
 
 from context import *
@@ -2055,53 +2056,35 @@ def _do_validation_pass(current_output, original_input, style_text, width, heigh
 
 # ── LLM utilitaire pour keywords (bulk import / generation) ─────────────
 
-@app.route('/api/keywords/llm-process', methods=['POST'])
-def keywords_llm_process():
-    """
-    Appel LLM simple pour les operations sur les mots-cles (+ relais tool-calling).
-    Corps : {preset_id, instruction, input_text?, tools?, tool_choice?, messages?}
-    - instruction : le prompt / instruction utilisateur
-    - input_text (optionnel) : texte a reformater (bulk import conversion)
-    - tools (optionnel, liste) : schemas d'outils JSON-Schema, transmis tels quels
-      au provider (liste vide => rien d'injecte, comportement historique)
-    - tool_choice (optionnel) : 'auto' | 'none' | {...} — transmis tel quel si
-      tools est fourni (ignore sinon : les providers OpenAI-compatibles refusent
-      un tool_choice orphelin)
-    - messages (optionnel, liste) : messages OpenAI pre-construits ({role, content,
-      tool_calls, tool_call_id...}) — REMPLACENT la construction classique
-      system+user (boucle multi-tours de tool-calling, messages role:'tool').
-      Si la liste ne commence pas par un message 'system', le systeme par defaut
-      est prefixe pour preserver le contexte d'identite. Liste vide => non fournie.
-    Retourne : {output, usage, max_context, context_source[, tool_calls]}
-      - tool_calls : [{id, type, function:{name, arguments}}] (forme provider
-        VERBATIM) quand le modele repond par des appels d'outils (output est alors
-        null pour un tour d'outil pur). Le client reinjecte ce champ tel quel
-        dans le message assistant du tour suivant.
-    """
-    guard = _login_required()
-    if guard:
-        return guard
-    user_id = _get_current_user_id()
+# ── Préparation PARTAGÉE par la route JSON et la route streaming ──────
+# Une seule validation, un seul montage de la conversation : les deux routes
+# répondent EXACTEMENT les mêmes erreurs 400/404 pour un corps invalide.
+def _prepare_keywords_llm_call(data, user_id):
+    """Valide le corps de /api/keywords/llm-process (JSON ET /stream) et
+    construit l'appel LLM.
 
-    data = request.get_json() or {}
+    Retourne ``(prepared, None)`` en cas de succès, sinon ``(None,
+    (response, status))`` — la même paire (jsonify, code) que la route
+    historique renvoie telle quelle.
+    """
     preset_id = data.get('preset_id')
     instruction = (data.get('instruction') or '').strip()
     input_text = (data.get('input_text') or '').strip()
 
     if not preset_id:
-        return jsonify({'error': 'preset_id requis'}), 400
+        return None, (jsonify({'error': 'preset_id requis'}), 400)
     tools = data.get('tools')
     tool_choice = data.get('tool_choice')
     client_messages = data.get('messages')
     if tools is not None and not isinstance(tools, list):
-        return jsonify({'error': 'tools doit etre une liste'}), 400
+        return None, (jsonify({'error': 'tools doit etre une liste'}), 400)
     if client_messages is not None and (
         not isinstance(client_messages, list) or not all(isinstance(m, dict) for m in client_messages)
     ):
-        return jsonify({'error': 'messages doit etre une liste de messages {role, content}'}), 400
+        return None, (jsonify({'error': 'messages doit etre une liste de messages {role, content}'}), 400)
     # messages fournie => instruction optionnelle (la conversation est deja construite)
     if not instruction and not client_messages:
-        return jsonify({'error': 'instruction requise'}), 400
+        return None, (jsonify({'error': 'instruction requise'}), 400)
 
     conn = get_db()
     cur = conn.cursor()
@@ -2113,7 +2096,7 @@ def keywords_llm_process():
     conn.close()
 
     if not preset:
-        return jsonify({'error': 'Preset introuvable'}), 404
+        return None, (jsonify({'error': 'Preset introuvable'}), 404)
 
     api_key = decrypt_api_key(preset['api_key_encrypted'])
     base_url = preset['base_url'].rstrip('/')
@@ -2150,13 +2133,231 @@ def keywords_llm_process():
         llm_request['tools'] = tools
         if tool_choice is not None:
             llm_request['tool_choice'] = tool_choice
-    llm_config = {
+
+    return {
+        'preset': preset,
         'base_url': base_url,
+        'model': model,
         'api_key': api_key,
-    }
+        'llm_request': llm_request,
+        'llm_config': {'base_url': base_url, 'api_key': api_key},
+    }, None
+
+
+def _keywords_context_window(preset, base_url, api_key, model):
+    """Fenêtre de contexte effective — précédence validée :
+      1. manual : context_length posé sur le preset (jamais réinterrogé) ;
+      2. auto   : sonde API mise en cache (_get_model_context, TTL 3600) ;
+      3. family : table de familles (minimum conservateur documenté) ;
+      4. unknown: inconnu EXPLICITE (None) — jamais de valeur inventée.
+    """
+    manual_ctx = _row_get(preset, 'context_length', None)
+    if manual_ctx is not None:
+        return int(manual_ctx), (_row_get(preset, 'context_source', None) or 'manual')
+    probed = _get_model_context(base_url, api_key, model)
+    if probed and probed > 0:
+        return int(probed), 'auto'
+    family_value, family_key = guess_family_context(model)
+    if family_value:
+        return int(family_value), 'family'
+    return None, 'unknown'
+
+
+# ── Watchdog d'INACTIVITÉ du chat Blobby (streaming) ──────────────────────
+# PAS un plafond de durée TOTALE : le flux SSE du LLM envoie des octets en
+# continu ; le seuil est RÉARMÉ à chaque morceau. Seul un SILENCE > seuil coupe.
+#   AIH_LLM_IDLE_TIMEOUT     : secondes sans aucun octet du LLM (défaut 120).
+#   AIH_LLM_STREAM_KEEPALIVE : intervalle des keepalives NDJSON (défaut 5 s).
+class _LLMIdleTimeoutError(Exception):
+    """Le flux LLM est resté SILENCIEUX plus longtemps que le seuil d'inactivité."""
+
+    def __init__(self, idle_timeout):
+        self.idle_timeout = idle_timeout
+        super().__init__(f"le modèle ne renvoie plus rien depuis {int(idle_timeout)} s")
+
+
+def _llm_idle_timeout():
+    """Seuil d'inactivité (s) de l'appel LLM sortant. Jamais une durée totale."""
+    try:
+        return max(1, int(os.environ.get('AIH_LLM_IDLE_TIMEOUT', '120')))
+    except (TypeError, ValueError):
+        return 120
+
+
+def _llm_stream_keepalive():
+    """Intervalle (s) des keepalives NDJSON vers le client pendant l'appel LLM."""
+    try:
+        return max(0.5, float(os.environ.get('AIH_LLM_STREAM_KEEPALIVE', '5')))
+    except (TypeError, ValueError):
+        return 5.0
+
+
+def _is_timeout_error(exc):
+    """Vrai pour un timeout de LECTURE (requests/urllib3/socket), quelle que
+    soit la couche qui l'a empaqueté (requests.ConnectionError englobe parfois
+    un ReadTimeoutError de urllib3 lors de la lecture d'un flux)."""
+    import requests
+    if isinstance(exc, requests.exceptions.Timeout):
+        return True
+    if 'timeout' in type(exc).__name__.lower():
+        return True
+    text = str(exc).lower()
+    return 'timed out' in text or 'read timeout' in text
+
+
+def _call_llm_stream_internal(llm_request, llm_config, on_delta=None, idle_timeout=None):
+    """Appel LLM en STREAMING (SSE OpenAI-compatible) avec watchdog d'INACTIVITÉ.
+
+    Différence clé avec ``_call_llm_internal`` : le corps est lu au fur et à
+    mesure (``stream=True``) et le timeout de lecture de ``requests`` est un
+    INACTIVITÉ PAR LECTURE — un appel long mais ACTIF (des octets arrivent
+    régulièrement) n'est jamais coupé, seul un silence > ``idle_timeout`` l'est.
+    ``on_delta(piece)`` est rappelé pour chaque fragment de contenu (affichage
+    progressif côté client).
+
+    Repli SÛR : si le provider ignore ``stream`` (Content-Type non SSE), on
+    retombe sur ``_call_llm_internal`` (JSON classique) — jamais de crash.
+
+    Lève ``_LLMIdleTimeoutError`` quand le flux reste muet plus de ``idle_timeout`` s.
+    Retourne le dict provider OpenAI ({choices:[{message:{content, tool_calls}}]}).
+    """
+    import requests
+    if idle_timeout is None:
+        idle_timeout = _llm_idle_timeout()
+    base_url = llm_config['base_url']
+    api_key = llm_config.get('api_key', '')
+    headers = ({'Content-Type': 'application/json', 'Authorization': f'Bearer {api_key}'}
+               if api_key else {'Content-Type': 'application/json'})
+    url = f'{base_url}/chat/completions'
+    payload = dict(llm_request)
+    payload['stream'] = True
+    logging.warning(
+        f"[enhance] LLM STREAM CALL url={url!r} model={llm_request.get('model')!r} "
+        f"messages_count={len(llm_request.get('messages', []))} idle_timeout={idle_timeout}s"
+    )
+    # timeout=(connect, read) : le READ est PAR LECTURE → inactivité, jamais la
+    # durée totale. Un flux SSE actif réarme le watchdog à chaque octet.
+    resp = requests.post(url, headers=headers, json=payload,
+                         timeout=(10, idle_timeout), stream=True)
+    try:
+        if not resp.ok:
+            error_body = ''
+            with contextlib.suppress(Exception):
+                error_body = resp.text
+            raise requests.HTTPError(
+                f"{resp.status_code} — response body: {error_body[:500]}", response=resp)
+        ctype = (resp.headers.get('Content-Type') or '').lower()
+        if 'event-stream' not in ctype:
+            # Provider sans SSE : repli JSON (le read timeout y borne l'attente).
+            logging.warning(f"[enhance] LLM STREAM: Content-Type={ctype!r} → repli non-streaming")
+            with contextlib.suppress(Exception):
+                resp.close()
+            return _call_llm_internal(llm_request, llm_config)
+
+        content_parts = []
+        tool_acc = {}
+        usage = {}
+        try:
+            for raw_line in resp.iter_lines(decode_unicode=True):
+                if raw_line is None:
+                    continue
+                line = raw_line.strip()
+                if not line or line.startswith(':'):
+                    continue
+                data_str = line[5:].strip() if line.startswith('data:') else line
+                if data_str == '[DONE]':
+                    break
+                try:
+                    chunk = json.loads(data_str)
+                except Exception:
+                    continue
+                if not isinstance(chunk, dict):
+                    continue
+                if chunk.get('usage'):
+                    usage = chunk['usage']
+                choices = chunk.get('choices') or []
+                if not choices:
+                    continue
+                delta = choices[0].get('delta') or {}
+                piece = delta.get('content')
+                if piece:
+                    content_parts.append(piece)
+                    if on_delta is not None:
+                        # Un consommateur défaillant ne casse pas le flux.
+                        with contextlib.suppress(Exception):
+                            on_delta(piece)
+                for tc in (delta.get('tool_calls') or []):
+                    if not isinstance(tc, dict):
+                        continue
+                    idx = tc.get('index', 0)
+                    slot = tool_acc.setdefault(
+                        idx, {'id': None, 'type': 'function',
+                              'function': {'name': '', 'arguments': ''}})
+                    if tc.get('id'):
+                        slot['id'] = tc['id']
+                    if tc.get('type'):
+                        slot['type'] = tc['type']
+                    fn = tc.get('function') or {}
+                    if fn.get('name'):
+                        slot['function']['name'] += fn['name']
+                    if fn.get('arguments'):
+                        slot['function']['arguments'] += fn['arguments']
+        except Exception as e:
+            if _is_timeout_error(e):
+                raise _LLMIdleTimeoutError(idle_timeout) from e
+            raise
+    finally:
+        with contextlib.suppress(Exception):
+            resp.close()
+
+    content = ''.join(content_parts)
+    message = {'role': 'assistant', 'content': content or None}
+    if tool_acc:
+        message['tool_calls'] = [tool_acc[k] for k in sorted(tool_acc)]
+    result = {'choices': [{'message': message}]}
+    if usage:
+        result['usage'] = usage
+    if message.get('tool_calls'):
+        result['tool_calls'] = _relay_tool_calls(message)
+    return result
+
+
+@app.route('/api/keywords/llm-process', methods=['POST'])
+def keywords_llm_process():
+    """
+    Appel LLM simple pour les operations sur les mots-cles (+ relais tool-calling).
+    Corps : {preset_id, instruction, input_text?, tools?, tool_choice?, messages?}
+    - instruction : le prompt / instruction utilisateur
+    - input_text (optionnel) : texte a reformater (bulk import conversion)
+    - tools (optionnel, liste) : schemas d'outils JSON-Schema, transmis tels quels
+      au provider (liste vide => rien d'injecte, comportement historique)
+    - tool_choice (optionnel) : 'auto' | 'none' | {...} — transmis tel quel si
+      tools est fourni (ignore sinon : les providers OpenAI-compatibles refusent
+      un tool_choice orphelin)
+    - messages (optionnel, liste) : messages OpenAI pre-construits ({role, content,
+      tool_calls, tool_call_id...}) — REMPLACENT la construction classique
+      system+user (boucle multi-tours de tool-calling, messages role:'tool').
+      Si la liste ne commence pas par un message 'system', le systeme par defaut
+      est prefixe pour preserver le contexte d'identite. Liste vide => non fournie.
+    Retourne : {output, usage, max_context, context_source[, tool_calls]}
+      - tool_calls : [{id, type, function:{name, arguments}}] (forme provider
+        VERBATIM) quand le modele repond par des appels d'outils (output est alors
+        null pour un tour d'outil pur). Le client reinjecte ce champ tel quel
+        dans le message assistant du tour suivant.
+    """
+    guard = _login_required()
+    if guard:
+        return guard
+    user_id = _get_current_user_id()
+
+    data = request.get_json() or {}
+    prepared, error = _prepare_keywords_llm_call(data, user_id)
+    if error:
+        return error
+    base_url = prepared['base_url']
 
     try:
-        llm_response = _call_llm_internal(llm_request, llm_config)
+        llm_response = _call_llm_internal(prepared['llm_request'], prepared['llm_config'])
     except Exception as e:
         msg = str(e)
         import logging
@@ -2174,29 +2375,8 @@ def keywords_llm_process():
     tool_calls = _relay_tool_calls(message)
     usage = llm_response.get('usage', {})
 
-    # Fenêtre de contexte effective — précédence validée :
-    #   1. manual : context_length posé sur le preset (jamais réinterrogé) ;
-    #   2. auto   : sonde API mise en cache (_get_model_context, TTL 3600) ;
-    #   3. family : table de familles (minimum conservateur documenté) ;
-    #   4. unknown: inconnu EXPLICITE (None) — le repli forcé `4096` de
-    #      l'ancien code est supprimé, plus jamais de valeur inventée.
-    manual_ctx = _row_get(preset, 'context_length', None)
-    if manual_ctx is not None:
-        max_context = int(manual_ctx)
-        context_source = _row_get(preset, 'context_source', None) or 'manual'
-    else:
-        probed = _get_model_context(base_url, api_key, model)
-        if probed and probed > 0:
-            max_context = int(probed)
-            context_source = 'auto'
-        else:
-            family_value, family_key = guess_family_context(model)
-            if family_value:
-                max_context = int(family_value)
-                context_source = 'family'
-            else:
-                max_context = None
-                context_source = 'unknown'
+    max_context, context_source = _keywords_context_window(
+        prepared['preset'], prepared['base_url'], prepared['api_key'], prepared['model'])
 
     if tool_calls:
         # Relais tool-calling : le client exécute les outils puis renvoie la
@@ -2207,3 +2387,101 @@ def keywords_llm_process():
                         'context_source': context_source})
     return jsonify({'output': output, 'usage': usage,
                     'max_context': max_context, 'context_source': context_source})
+
+
+@app.route('/api/keywords/llm-process/stream', methods=['POST'])
+def keywords_llm_process_stream():
+    """
+    Variante STREAMING (NDJSON) de /api/keywords/llm-process pour le chat Blobby.
+
+    Même corps + mêmes erreurs de validation que la route JSON ; le LLM est
+    appelé en SSE et ses fragments de contenu sont relayés AU FUR ET À MESURE
+    sous forme de lignes JSON :
+        {"status":"start","idle_timeout":N}
+        {"status":"delta","text":"..."}        (fragment de contenu)
+        {"status":"keepalive"}                  (aucun octet LLM depuis ~5 s)
+        {"status":"done", output, usage, max_context, context_source[, tool_calls]}
+        {"status":"error", "error":"...", "code":"llm_idle_timeout"|"rate_limited"|...}
+
+    Objectif : remplacer tout plafond de DURÉE TOTALE par un watchdog
+    d'INACTIVITÉ. Un tour long mais actif aboutit ; un vrai silence produit une
+    erreur explicite « le modèle ne renvoie plus rien depuis N s ».
+    """
+    guard = _login_required()
+    if guard:
+        return guard
+    user_id = _get_current_user_id()
+
+    data = request.get_json() or {}
+    prepared, error = _prepare_keywords_llm_call(data, user_id)
+    if error:
+        return error
+
+    idle_timeout = _llm_idle_timeout()
+    events = queue.Queue()
+    state = {'error': None, 'code': None, 'payload': None}
+
+    def worker():
+        try:
+            llm_response = _call_llm_stream_internal(
+                prepared['llm_request'], prepared['llm_config'],
+                on_delta=lambda piece: events.put(('delta', piece)),
+                idle_timeout=idle_timeout,
+            )
+            message = llm_response['choices'][0]['message']
+            output = (message.get('content') or '').strip()
+            tool_calls = _relay_tool_calls(message)
+            usage = llm_response.get('usage', {})
+            max_context, context_source = _keywords_context_window(
+                prepared['preset'], prepared['base_url'], prepared['api_key'], prepared['model'])
+            payload = {'output': output, 'usage': usage,
+                       'max_context': max_context, 'context_source': context_source}
+            if tool_calls:
+                payload['output'] = output or None
+                payload['tool_calls'] = tool_calls
+            state['payload'] = payload
+        except _LLMIdleTimeoutError as e:
+            logging.warning(f"[keywords/llm-process/stream] LLM SILENCE: {e}")
+            state['error'] = str(e)
+            state['code'] = 'llm_idle_timeout'
+        except Exception as e:
+            msg = str(e)
+            logging.warning(f"[keywords/llm-process/stream] LLM EXCEPTION: {msg!r}")
+            if '429' in msg:
+                state['error'] = 'Rate limite atteint sur le serveur LLM. Attends un peu et reessaye.'
+                state['code'] = 'rate_limited'
+            elif 'connect' in msg.lower() or 'refused' in msg.lower():
+                state['error'] = f'Serveur LLM inaccessible : verifie l\'URL ({prepared["base_url"]})'
+                state['code'] = 'llm_unreachable'
+            else:
+                state['error'] = f'Erreur LLM: {msg}'
+                state['code'] = 'llm_error'
+        finally:
+            events.put(('__end__', None))
+
+    Thread(target=worker, daemon=True).start()
+    keepalive = _llm_stream_keepalive()
+
+    def generate():
+        # Premier chunk immédiat : le client obtient vite des en-têtes/octets.
+        yield json.dumps({'status': 'start', 'idle_timeout': idle_timeout}) + '\n'
+        while True:
+            try:
+                kind, payload = events.get(timeout=keepalive)
+            except queue.Empty:
+                yield json.dumps({'status': 'keepalive'}) + '\n'
+                continue
+            if kind == 'delta':
+                yield json.dumps({'status': 'delta', 'text': payload}) + '\n'
+            elif kind == '__end__':
+                break
+        if state['error']:
+            yield json.dumps({'status': 'error', 'error': state['error'],
+                              'code': state['code']}) + '\n'
+        else:
+            payload = dict(state['payload'] or {})
+            payload['status'] = 'done'
+            yield json.dumps(payload) + '\n'
+
+    return Response(generate(), mimetype='application/x-ndjson',
+                    headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
