@@ -289,6 +289,73 @@ mediaItems[0].thumb_available = true;
 AppGallery.state.grid.render(true);
 await settle();
 
+// VIDÉO sans vignette produisible (extraction impossible côté serveur) : l'état
+// affiché est le VISUEL VIDÉO explicite (▶), JAMAIS le triangle d'alerte (⚠)
+// ni l'indisponibilité générique (🚫) — une vidéo sans vignette n'est PAS un
+// « média corrompu ». La durée est affichée si les métadonnées la connaissent.
+{
+  const videoIdx = 5; // id 6 = vidéo (cf. makeItem)
+  mediaItems[videoIdx].duration_ms = 12500;
+  mediaItems[videoIdx].thumb_available = false;
+  AppGallery.state.grid.render(true);
+  await settle();
+  const vc = cellEl(videoIdx);
+  const vph = vc.querySelector(".gallery-cell-ph");
+  eq(vph.textContent, "▶", "vidéo sans vignette → glyphe vidéo ▶");
+  ok(vph.classList.contains("gallery-cell-ph--video"),
+    "vidéo sans vignette → classe « vidéo » dédiée");
+  ok(!vph.classList.contains("gallery-cell-ph--error"),
+    "[négatif] vidéo → JAMAIS le triangle d'alerte ⚠");
+  ok(!vph.classList.contains("gallery-cell-ph--unavailable"),
+    "[négatif] vidéo → pas l'indisponibilité générique 🚫");
+  ok(!vph.classList.contains("gallery-cell-ph--pending"),
+    "vidéo sans vignette → placeholder d'attente retiré");
+  ok(/^Vidéo/.test(vph.title) && /12\.5/.test(vph.title),
+    "vidéo → title explicite avec durée connue (" + vph.title + ")");
+  eq(vc.querySelector(".gallery-cell-img").getAttribute("src"), null,
+    "vidéo sans vignette → aucune requête de vignette lancée");
+
+  // Rétablissement : la vignette est de nouveau demandée.
+  mediaItems[videoIdx].thumb_available = true;
+  AppGallery.state.grid.render(true);
+  await settle();
+  eq(cellEl(videoIdx).querySelector(".gallery-cell-img").getAttribute("src"),
+    "/api/media/6/thumbnail?size=256", "vidéo restaurée → vignette re-demandée");
+}
+
+// VIDÉO dont la vignette ÉCHOUE au chargement (source illisible, délai, HTTP
+// non-2xx côté serveur) : repli sur le visuel VIDÉO ▶, PAS le triangle ⚠.
+// Contrôle négatif : une IMAGE en échec garde bien l'état ⚠ (média corrompu).
+{
+  const videoIdx = 5;
+  const vc = cellEl(videoIdx);
+  const vim = vc.querySelector(".gallery-cell-img");
+  const vph = vc.querySelector(".gallery-cell-ph");
+  vim.dispatchEvent(new window.Event("error"));
+  ok(vph.classList.contains("gallery-cell-ph--video"),
+    "échec de vignette VIDÉO → visuel vidéo ▶ (jamais ⚠)");
+  eq(vph.textContent, "▶", "échec vidéo → glyphe ▶");
+  ok(!vph.classList.contains("gallery-cell-ph--error"),
+    "[négatif] échec vidéo → jamais le triangle ⚠");
+  ok(!vph.classList.contains("gallery-cell-ph--unavailable"),
+    "[négatif] échec vidéo → pas l'indisponibilité 🚫");
+  // 2e échec (retry déjà consommé) → toujours ▶, aucune boucle ni alerte.
+  vim.dispatchEvent(new window.Event("error"));
+  ok(cellEl(videoIdx).querySelector(".gallery-cell-ph").classList.contains("gallery-cell-ph--video"),
+    "[négatif] 2e échec vidéo → toujours ▶ (aucune boucle)");
+
+  // Contrôle négatif : une IMAGE en échec affiche bien ⚠ (comportement inchangé).
+  const ic = cellEl(1);
+  const iim = ic.querySelector(".gallery-cell-img");
+  const iph = ic.querySelector(".gallery-cell-ph");
+  iim.dispatchEvent(new window.Event("error"));
+  ok(iph.classList.contains("gallery-cell-ph--error"),
+    "[négatif] échec IMAGE → état ⚠ conservé (média corrompu distinct)");
+  eq(iph.textContent, "⚠", "[négatif] échec IMAGE → glyphe ⚠");
+  AppGallery.state.grid.render(true);
+  await settle();
+}
+
 // Borne d'attente : un chargement qui ne se conclut JAMAIS (ni load ni error,
 // ex. requête réseau figée / stockage bloqué) bascule en état d'ERREUR
 // explicite — plus de cellule vide indéfiniment.
@@ -605,6 +672,12 @@ ok(window.document.getElementById("gallery-error").textContent.indexOf("Erreur")
 
 /* ═══ 8bis. Auto-rafraîchissement (poll léger) ════════════════════════════ */
 console.log("8bis. Auto-rafraîchissement (poll)");
+// Déterminisme : la suite est longue (~10 s) et le poll automatique
+// (setTimeout récurrent de 10 s) peut tirer un tick INTERMÉDIAIRE pendant cette
+// section, faussant le comptage de requêtes. On arrête le timer automatique
+// ici : les assertions ci-dessous pilotent le poll MANUELLEMENT (pollNow) et le
+// test du timer réel vit dans test_gallery_poll.mjs.
+AppGallery.pollStop();
 ok(typeof AppGallery.pollNow === "function", "AppGallery.pollNow exposé");
 eq(AppGallery.constants.POLL_MS, 10000, "intervalle de poll = 10 s");
 eq(AppGallery.constants.POLL_LIMIT, 30, "limite de la requête de tête = 30");

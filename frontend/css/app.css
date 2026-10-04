@@ -545,10 +545,12 @@
     }
     .gallery-cell-ph.is-hidden { display: none; }
     /* États VISIBLES et DISTINCTS d'une vignette (jamais une cellule vide) :
-       chargement (⏳ neutre), échec (⚠ rouge), indisponible (🚫 ambre). */
+       chargement (⏳ neutre), échec d'image (⚠ rouge), indisponible d'image
+       (🚫 ambre), vidéo sans vignette (▶ accentué, jamais d'alerte). */
     .gallery-cell-ph--pending { color: var(--text-secondary); opacity: 0.75; }
     .gallery-cell-ph--error { color: #e11d48; }
     .gallery-cell-ph--unavailable { color: #d97706; }
+    .gallery-cell-ph--video { color: var(--text-primary); opacity: 0.9; font-size: 2rem; }
     /* Badge de TYPE (🖼️/▶/🎵) : déplacé en BAS à gauche — le créneau haut
        gauche est désormais réservé à la case à cocher de sélection. */
     .gallery-cell-badge {

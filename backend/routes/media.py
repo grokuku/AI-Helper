@@ -702,7 +702,10 @@ def _media_json(row, tag_rows=None):
     environnement : image=Pillow|ffmpeg, vidéo=ffmpeg, audio=non) et les TAGS :
     ``tags`` (liste de chaînes) + ``tags_detail`` (``{tag, source}`` — prépare
     la distinction manuel/IA). ``tag_rows`` (optionnel) permet à la liste
-    paginée de fournir un lot déjà chargé (pas de N+1).
+    paginée de fournir un lot déjà chargé (pas de N+1). On expose aussi
+    ``duration_ms`` (ffprobe ; ``None`` si l'outil est absent) : il alimente le
+    visuel « vidéo » de repli (▶ + durée) quand la vignette n'est pas
+    produisible, sans requête supplémentaire.
     """
     media_id = row["id"]
     if tag_rows is None:
@@ -722,6 +725,9 @@ def _media_json(row, tag_rows=None):
         "has_prompt": bool(row["has_prompt"]),
         "has_workflow": bool(row["has_workflow"]),
         "kind": row["kind"],
+        # Durée (ms) si ffprobe l'a renseignée (vidéo/audio), sinon None :
+        # sert au visuel « vidéo » de repli (▶ + durée) côté UI.
+        "duration_ms": row["duration_ms"],
         # Favori / « à exposer » : drapeau unique booléen (future galerie
         # publique). Toujours exposé, dans la liste comme dans /metadata.
         "favorite": bool(row["favorite"]),
@@ -932,7 +938,21 @@ def _thumbnail_etag(row, size):
 
 
 def _ffmpeg_thumbnail(src_path, out_path, size):
-    """Génère une vignette JPEG via ffmpeg (frame/scaled). ``False`` si absent."""
+    """Génère une vignette JPEG via ffmpeg (frame/scaled). ``False`` si absent.
+
+    Format de sortie EXPLICITE (``-c:v mjpeg -f image2``) : sinon ffmpeg choisit
+    le muxer d'après l'EXTENSION du fichier de sortie — or ``out_path`` est un
+    temporaire dont le suffixe n'est PAS une extension image (``…jpg.tmp-xxxx``),
+    ce qui faisait échouer TOUTE extraction vidéo (« Unable to choose an output
+    format … use a standard extension »). Le codec et le muxer sont donc forcés,
+    indépendamment du nom de fichier. En cas d'échec, le stderr ffmpeg est
+    journalisé (diagnostic immédiat).
+
+    Pas d'incrément du préfixe ``thumb:v1`` de l'ETag : l'ancienne génération
+    vidéo ne produisait RIEN (échec systématique) — aucun ``304`` ne peut donc
+    resservir une vignette vidéo obsolète, et le chemin image (Pillow) est
+    inchangé (sortie identique).
+    """
     exe = _ffmpeg_path()
     if not exe:
         return False
@@ -941,10 +961,19 @@ def _ffmpeg_thumbnail(src_path, out_path, size):
             [exe, "-y", "-loglevel", "error", "-ss", "0", "-i", src_path,
              "-frames:v", "1",
              "-vf", f"scale={size}:{size}:force_original_aspect_ratio=decrease",
+             "-c:v", "mjpeg", "-f", "image2",
              "-q:v", "3", out_path],
             capture_output=True, timeout=FFMPEG_TIMEOUT,
         )
-        return proc.returncode == 0 and os.path.isfile(out_path) and os.path.getsize(out_path) > 0
+        ok = (proc.returncode == 0 and os.path.isfile(out_path)
+              and os.path.getsize(out_path) > 0)
+        if not ok:
+            stderr = (proc.stderr or b"").decode("utf-8", "replace").strip()
+            logging.warning(
+                "[media] extraction ffmpeg échouée (rc=%s) pour %s : %s",
+                proc.returncode, src_path, stderr[-500:] or "(aucun stderr)",
+            )
+        return ok
     except Exception as e:
         logging.warning(f"[media] ffmpeg thumbnail failed for {src_path}: {e}")
         return False
@@ -972,6 +1001,21 @@ def _generate_thumbnail(kind, src_path, out_path, size):
     return _ffmpeg_thumbnail(src_path, out_path, size)
 
 
+def _is_valid_jpeg(path):
+    """Le fichier commence-t-il par les octets magiques JPEG (SOI ``FF D8 FF``) ?
+
+    Sert à l'AUTO-GUÉRISON du cache : une entrée de taille > 0 mais NON-JPEG
+    est une vignette corrompue, ou un ancien marqueur d'échec mémorisé par une
+    version antérieure. Elle ne doit JAMAIS être servie comme vignette ; on
+    l'écarte pour forcer une régénération propre. Coût : lecture de 3 octets.
+    """
+    try:
+        with open(path, "rb") as fh:
+            return fh.read(3) == b"\xff\xd8\xff"
+    except OSError:
+        return False
+
+
 def _ensure_thumbnail_file(row, size, thumb_path):
     """Prépare la vignette LOCALE (cache local → génération depuis le storage).
 
@@ -995,10 +1039,20 @@ def _ensure_thumbnail_file(row, size, thumb_path):
     Aucune donnée sensible n'est journalisée (id + type + disponibilité des
     outils uniquement).
     """
-    # 1) Cache LOCAL déjà présent → servir directement (ZÉRO accès storage).
+    # 1) Cache LOCAL déjà présent et VALIDE → servir directement (ZÉRO accès
+    #    storage). Un fichier de taille > 0 mais NON-JPEG est une entrée
+    #    corrompue ou un ancien marqueur d'échec mémorisé : on l'écarte et on
+    #    régénère (auto-guérison, sans intervention manuelle).
     try:
         if os.path.isfile(thumb_path) and os.path.getsize(thumb_path) > 0:
-            return thumb_path, None
+            if _is_valid_jpeg(thumb_path):
+                return thumb_path, None
+            logging.warning(
+                "[media] vignette de cache invalide (non-JPEG) — régénération : %s",
+                thumb_path,
+            )
+            with contextlib.suppress(OSError):
+                os.remove(thumb_path)
     except OSError:
         pass
 
@@ -1006,7 +1060,11 @@ def _ensure_thumbnail_file(row, size, thumb_path):
     #    + sonde d'écriture : distingue « cache inutilisable » d'un simple échec
     #    de génération, pour un ``reason`` exact et une erreur loguée explicite.
     cache_dir = os.path.dirname(thumb_path)
-    tmp_out = f"{thumb_path}.tmp-{secrets.token_hex(6)}"
+    # Suffixe ``.jpg`` explicite : ffmpeg choisit sinon le muxer d'après
+    # l'extension — un nom temporaire sans extension image le faisait échouer
+    # (« Unable to choose an output format »). Défense en profondeur (le codec
+    # est PAR AILLEURS forcé dans ``_ffmpeg_thumbnail``).
+    tmp_out = f"{thumb_path}.tmp-{secrets.token_hex(6)}.jpg"
     try:
         os.makedirs(cache_dir, exist_ok=True)
         with open(tmp_out, "wb"):

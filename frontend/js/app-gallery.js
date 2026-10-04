@@ -164,12 +164,17 @@ var GALLERY_THUMB_CONCURRENCY = 6;
 // l'instant : les valeurs actuelles mesurent 0 placeholder en scroll rapide.
 
 // Glyphes des états de vignette : VISIBLES et DISTINCTS les uns des autres.
-//   ⏳ = en attente de chargement ; ⚠ = échec de chargement ;
-//   🚫 = aucune vignette produisible (décision backend).
-// Le glyphe de TYPE (🖼️/▶/🎵) reste réservé au badge et à l'audio.
+//   ⏳ = en attente de chargement ; ⚠ = échec de chargement (image) ;
+//   🚫 = aucune vignette produisible (décision backend, image).
+//   ▶ = visuel VIDÉO explicite : ni erreur, ni indisponibilité générique.
+// Le glyphe de TYPE (🖼️/🎬/🎵) reste réservé au badge et à l'audio.
 var GALLERY_PH_PENDING = '⏳';
 var GALLERY_PH_ERROR = '⚠';
 var GALLERY_PH_UNAVAILABLE = '🚫';
+// Visuel de repli pour une VIDÉO sans vignette (extraction impossible côté
+// serveur : source illisible, format, délai) : un état « vidéo » CLAIR plutôt
+// qu'un triangle d'alerte.
+var GALLERY_PH_VIDEO = '▶';
 
 // Valeurs de tri exposées par le backend (GET /api/media?sort=).
 var GALLERY_SORTS = ['created_at_desc', 'created_at_asc', 'name_asc', 'size_desc'];
@@ -1097,8 +1102,12 @@ function galleryThumbProbe(url) {
 
 /* États VISIBLES et DISTINCTS d'une vignette de cellule :
      - ⏳ `--pending`     : chargement en attente (placeholder ACTIF, non vide) ;
-     - ⚠ `--error`       : échec de chargement (HTTP non-2xx, onerror, délai) ;
-     - 🚫 `--unavailable` : aucune vignette produisible (`thumb_available=false`).
+     - ⚠ `--error`       : échec de chargement d'une IMAGE (HTTP non-2xx, onerror, délai) ;
+     - 🚫 `--unavailable` : aucune vignette produisible pour une IMAGE (`thumb_available=false`) ;
+     - ▶ `--video`       : VIDÉO sans vignette (extraction impossible : source
+                           illisible, format, délai) — un visuel « vidéo »
+                           explicite, jamais le triangle d'alerte (non confondu
+                           avec un média corrompu).
    Objectif : ne JAMAIS laisser une cellule muette/vide — un échec doit être
    lisible au premier coup d'œil, sans ouvrir la console. */
 function galleryCellSetPh(el, glyph, stateClass, title) {
@@ -1106,7 +1115,7 @@ function galleryCellSetPh(el, glyph, stateClass, title) {
   if (!ph) return;
   ph.textContent = glyph;
   ph.classList.remove('is-hidden');
-  ph.classList.remove('gallery-cell-ph--error', 'gallery-cell-ph--pending', 'gallery-cell-ph--unavailable');
+  ph.classList.remove('gallery-cell-ph--error', 'gallery-cell-ph--pending', 'gallery-cell-ph--unavailable', 'gallery-cell-ph--video');
   if (stateClass) ph.classList.add(stateClass);
   if (title) ph.title = title; else ph.removeAttribute('title');
 }
@@ -1116,9 +1125,35 @@ function galleryCellShowThumbPending(el) {
     'Chargement de la vignette…');
 }
 
-/* État d'ERREUR : distinct de l'attente et de l'indisponibilité. */
+/* Visuel VIDÉO explicite : ni triangle d'alerte, ni cellule muette.
+
+   Affiche ▶ (+ la durée si elle est connue des métadonnées) avec un libellé
+   clair. Utilisé pour une vidéo dont la vignette n'existe pas ou n'a pas pu
+   être chargée : la cause est propre à la vidéo (extraction impossible côté
+   serveur : source illisible/format/délai) — JAMAIS un « média corrompu ».
+   L'utilisateur voit qu'il s'agit d'une vidéo et peut l'ouvrir normalement. */
+function galleryCellShowVideoPlaceholder(el) {
+  galleryCellClearThumbTimer(el);
+  if (el._gImg) el._gImg.classList.add('gallery-cell-img--hidden');
+  var title = 'Vidéo';
+  var ms = Number(el._gDurationMs);
+  if (isFinite(ms) && ms > 0) title += ' — ' + galleryFormatDuration(ms / 1000);
+  title += ' (aperçu indisponible)';
+  galleryCellSetPh(el, GALLERY_PH_VIDEO, 'gallery-cell-ph--video', title);
+}
+
+/* État d'ERREUR : distinct de l'attente et de l'indisponibilité.
+
+   VIDÉO : un échec de vignette (extraction impossible, source illisible,
+   délai serveur) n'est PAS un « média corrompu » — on affiche le visuel VIDÉO
+   explicite (▶ + durée) au lieu du triangle d'alerte générique. Les IMAGES
+   gardent l'état ⚠ (elles ne sont pas dégradables en visuel de type). */
 function galleryCellShowThumbError(el, url) {
   galleryCellClearThumbTimer(el);
+  if (el && el._gKind === 'video') {
+    galleryCellShowVideoPlaceholder(el);
+    return;
+  }
   if (el._gImg) el._gImg.classList.add('gallery-cell-img--hidden');
   galleryCellSetPh(el, GALLERY_PH_ERROR, 'gallery-cell-ph--error',
     'Échec du chargement de la vignette');
@@ -1126,12 +1161,14 @@ function galleryCellShowThumbError(el, url) {
 }
 
 /* État d'INDISPONIBILITÉ : aucune vignette produisible dans cet environnement
-   (décision backend `thumb_available=false`), distinct d'un échec réseau. */
+   (décision backend `thumb_available=false`), distinct d'un échec réseau.
+   Réservé aux IMAGES : une VIDÉO bascule sur le visuel « vidéo » (▶), l'AUDIO
+   sur son icône de type (gérés en amont dans le renderer). */
 function galleryCellShowThumbUnavailable(el, kind) {
   galleryCellClearThumbTimer(el);
   if (el._gImg) el._gImg.classList.add('gallery-cell-img--hidden');
   var title = 'Aucune vignette disponible pour ce média';
-  if (kind && kind !== 'audio') title += ' (outil backend absent : Pillow/ffmpeg ?)';
+  if (kind && kind !== 'audio') title += ' (outil backend absent : Pillow ?)';
   galleryCellSetPh(el, GALLERY_PH_UNAVAILABLE, 'gallery-cell-ph--unavailable', title);
 }
 
@@ -1139,7 +1176,7 @@ function galleryCellShowThumbUnavailable(el, kind) {
 function galleryCellResetPh(el) {
   var ph = el._gPh;
   if (!ph) return;
-  ph.classList.remove('gallery-cell-ph--error', 'gallery-cell-ph--pending', 'gallery-cell-ph--unavailable');
+  ph.classList.remove('gallery-cell-ph--error', 'gallery-cell-ph--pending', 'gallery-cell-ph--unavailable', 'gallery-cell-ph--video');
   ph.removeAttribute('title');
 }
 
@@ -1282,6 +1319,10 @@ function galleryCellRenderer() {
     update: function (el, item, ctx) {
       var token = ++el._gToken;
       el.dataset.mediaId = String(item.id);
+      // Type + durée (ms) mémorisés sur la cellule : le handler d'erreur peut
+      // ainsi choisir le visuel VIDÉO (▶ + durée) sans dépendre de `item`.
+      el._gKind = item.kind || '';
+      el._gDurationMs = item.duration_ms;
       el._gBadge.textContent = galleryKindIcon(item.kind);
       el._gBadge.dataset.kind = item.kind || '';
       // Case à cocher : état reflété (la brique le re-synchronise aussi après
@@ -1313,10 +1354,11 @@ function galleryCellRenderer() {
 
       var img = el._gImg;
 
-      // Pas de vignette produisible (décision backend) : l'audio affiche SON
-      // icône de type (état normal) ; pour image/vidéo c'est une DÉGRADATION
-      // (outil backend absent : Pillow/ffmpeg) → indicateur EXPLICITE distinct
-      // de l'échec de chargement, pour qu'une cellule ne reste jamais muette.
+      // Pas de vignette produisible (décision backend `thumb_available=false`) :
+      //   - audio → icône de TYPE (état normal) ;
+      //   - vidéo → visuel VIDÉO ▶ explicite (JAMAIS un triangle d'alerte) ;
+      //   - image → état « indisponible » 🚫 (outil Pillow absent côté backend).
+      // Dans tous les cas, une cellule ne reste jamais muette.
       if (!item.thumb_available) {
         el._gExpectedUrl = '';
         el._gThumbRetried = false;
@@ -1324,7 +1366,16 @@ function galleryCellRenderer() {
         img.classList.add('gallery-cell-img--hidden');
         img.removeAttribute('src');
         if (item.kind === 'audio') {
+          // Audio : icône de TYPE normale (choix documenté, pas une erreur).
           galleryCellSetPh(el, galleryKindIcon(item.kind), null, null);
+        } else if (item.kind === 'video') {
+          // Vidéo sans vignette produisible → visuel VIDÉO explicite (▶ + durée
+          // si connue), jamais le triangle d'alerte ni un état « indisponible »
+          // générique.
+          galleryCellShowVideoPlaceholder(el);
+          if (galleryThumbDebugEnabled()) {
+            console.warn('[gallery] thumb_available=false (média ' + item.kind + ', id=' + item.id + ')');
+          }
         } else {
           galleryCellShowThumbUnavailable(el, item.kind);
           if (galleryThumbDebugEnabled()) {
@@ -1365,6 +1416,8 @@ function galleryCellRenderer() {
       el._gToken++;
       el._gExpectedUrl = '';
       el._gThumbRetried = false;
+      el._gKind = '';
+      el._gDurationMs = null;
       if (el._gCheck) el._gCheck.checked = false;
       if (el._gFav) { el._gFav.classList.remove('is-fav'); el._gFav.textContent = '☆'; }
       el.classList.remove('gallery-cell--favorite');

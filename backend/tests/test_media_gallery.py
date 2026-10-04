@@ -380,6 +380,222 @@ def test_thumbnail_degradation_without_tools(client, make_token, media_storage, 
     assert not os.path.isfile(media_module._thumbnail_cache_path(_row(mid), 256))
 
 
+def test_video_thumbnail_no_tools_degrades_cleanly(client, make_token, media_storage, monkeypatch):
+    """VIDÉO sans ffmpeg : 404 structuré ``no_tools`` (jamais de crash).
+
+    PREUVE de la cause du visuel vidéo : la vignette d'une VIDÉO est PRODUITE
+    par ffmpeg (``_kind_can_have_thumbnail('video')`` = présence d'ffmpeg). Sans
+    lui, la route répond 404 ``thumbnail_unavailable`` / reason ``no_tools`` et
+    la liste annonce ``thumb_available=False`` — le front affiche alors le
+    VISUEL VIDÉO ▶ (jamais le triangle d'alerte ⚠). La durée reste ``None``
+    (ffprobe absent) sans erreur : dégradation propre.
+
+    Contrôle NÉGATIF par mutation : si le garde d'outil vidéo était retiré
+    (``thumb_available`` forcé à True), les assertions ci-dessous échouent.
+    """
+    monkeypatch.setattr(media_module, "_ffmpeg_path", lambda: None)
+    monkeypatch.setattr(media_module, "_ffprobe_path", lambda: None)
+
+    headers = _headers(make_token, "vid-deg")
+    r = _upload(client, headers, b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 2048,
+                kind="video", ext=".mp4", filename="clip")
+    mid = r.get_json()["id"]
+
+    # La liste annonce l'indisponibilité ET une durée inconnue (clé présente).
+    item = client.get("/api/media?kind=video", headers=headers).get_json()["items"][0]
+    assert item["kind"] == "video"
+    assert item["thumb_available"] is False
+    assert "duration_ms" in item and item["duration_ms"] is None
+
+    resp = client.get(f"/api/media/{mid}/thumbnail", headers=headers)
+    assert resp.status_code == 404
+    body = resp.get_json()
+    assert body["code"] == "thumbnail_unavailable"
+    assert body["reason"] == "no_tools"
+    assert body["kind"] == "video"
+    assert "no-store" in resp.headers.get("Cache-Control", "")
+    # AUCUN cache négatif : rien n'est écrit ; la vignette se régénère dès que
+    # ffmpeg est disponible (l'échec n'est pas figé).
+    assert not os.path.isfile(media_module._thumbnail_cache_path(_row(mid), 256))
+
+
+def test_video_thumbnail_generation_failed_is_uncached(client, make_token, media_storage, monkeypatch):
+    """VIDÉO avec ffmpeg « présent » mais en échec → 404 ``generation_failed``.
+
+    Cas où la liste annonce ``thumb_available=True`` alors que la vignette
+    ÉCHOUE : côté front, un ``onerror`` d'``<img>`` (autrefois un triangle
+    d'alerte ⚠ ; désormais le VISUEL VIDÉO ▶). L'échec n'est PAS mis en cache
+    (``no-store`` + aucun fichier) : il se régénère dès que la cause est levée.
+    """
+    # ffmpeg « présent » (chemin résolu) mais la génération vidéo échoue.
+    monkeypatch.setattr(media_module, "_ffmpeg_path", lambda: "/nonexistent/ffmpeg")
+    monkeypatch.setattr(media_module, "_generate_thumbnail", lambda *a, **k: False)
+
+    headers = _headers(make_token, "vid-genfail")
+    r = _upload(client, headers, b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 2048,
+                kind="video", ext=".mp4", filename="gf")
+    mid = r.get_json()["id"]
+
+    item = client.get("/api/media?kind=video", headers=headers).get_json()["items"][0]
+    assert item["kind"] == "video"
+    assert item["thumb_available"] is True  # ffmpeg « présent »
+
+    resp = client.get(f"/api/media/{mid}/thumbnail", headers=headers)
+    assert resp.status_code == 404
+    assert resp.get_json()["reason"] == "generation_failed"
+    assert resp.get_json()["kind"] == "video"
+    assert "no-store" in resp.headers.get("Cache-Control", "")
+    assert not os.path.isfile(media_module._thumbnail_cache_path(_row(mid), 256))
+
+
+def test_video_thumbnail_regenerated_after_ffmpeg_recovery(client, make_token, media_storage, monkeypatch):
+    """Preuve « ça remarche dès qu'ffmpeg est là » : aucun échec mémorisé.
+
+    Échec (ffmpeg masqué → 404 ``no_tools``) PUIS ffmpeg « revenu » (vignette
+    simulée écrite) → la vignette est servie et PERSISTÉE. Contrôle négatif :
+    juste après l'échec, aucun fichier de cache n'existe (pas de marqueur).
+    """
+    headers = _headers(make_token, "vid-regen")
+    r = _upload(client, headers, b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 2048,
+                kind="video", ext=".mp4", filename="rgv")
+    mid = r.get_json()["id"]
+    thumb_path = media_module._thumbnail_cache_path(_row(mid), 256)
+
+    # 1) ffmpeg masqué → 404, AUCUN cache négatif.
+    monkeypatch.setattr(media_module, "_ffmpeg_path", lambda: None)
+    resp = client.get(f"/api/media/{mid}/thumbnail", headers=headers)
+    assert resp.status_code == 404
+    assert resp.get_json()["reason"] == "no_tools"
+    assert not os.path.isfile(thumb_path)
+
+    # 2) ffmpeg « revenu » : la génération (simulée) produit une vignette.
+    monkeypatch.setattr(media_module, "_ffmpeg_path", lambda: "/usr/bin/ffmpeg")
+
+    def _fake_generate(kind, src, out, size):
+        with open(out, "wb") as fh:
+            fh.write(b"\xff\xd8\xff" + b"jpeg-bytes")
+        return True
+
+    monkeypatch.setattr(media_module, "_generate_thumbnail", _fake_generate)
+    resp2 = client.get(f"/api/media/{mid}/thumbnail", headers=headers)
+    assert resp2.status_code == 200
+    assert resp2.mimetype == "image/jpeg"
+    assert resp2.data[:3] == b"\xff\xd8\xff"
+    assert os.path.isfile(thumb_path)
+
+
+def test_thumbnail_cache_self_heals_invalid_entry(client, make_token, media_storage):
+    """AUTO-GUÉRISON : une entrée de cache NON-JPEG (corrompue ou ancien échec
+    mémorisé) n'est JAMAIS servie — elle est écartée et la vignette régénérée.
+
+    Contrôle NÉGATIF par mutation : si le contrôle ``_is_valid_jpeg`` était
+    retiré du court-circuit de cache, la route servirait le faux contenu (200
+    mais pas un JPEG) → l'assertion sur les octets magiques échoue.
+    """
+    headers = _headers(make_token, "thumb-heal")
+    r = _upload(client, headers, _png_bytes(300, 200), filename="heal")
+    mid = r.get_json()["id"]
+    thumb_path = media_module._thumbnail_cache_path(_row(mid), 256)
+
+    # Entrée de cache POLLUÉE : taille > 0 mais PAS un JPEG.
+    os.makedirs(os.path.dirname(thumb_path), exist_ok=True)
+    with open(thumb_path, "wb") as fh:
+        fh.write(b"NOT-A-JPEG-NEGATIVE-CACHE")
+
+    resp = client.get(f"/api/media/{mid}/thumbnail?size=256", headers=headers)
+    assert resp.status_code == 200
+    assert resp.data[:3] == b"\xff\xd8\xff"  # JPEG RÉEL, pas le faux contenu
+    assert b"NOT-A-JPEG" not in resp.data
+    # Le cache contient désormais une vignette VALIDE (guéri, une fois pour toutes).
+    with open(thumb_path, "rb") as fh:
+        assert fh.read(3) == b"\xff\xd8\xff"
+
+
+def test_is_valid_jpeg_helper(tmp_path):
+    """Unitaire : le contrôle d'octets magiques distingue JPEG, non-JPEG et absent."""
+    good = tmp_path / "good.jpg"
+    bad = tmp_path / "bad.jpg"
+    good.write_bytes(b"\xff\xd8\xff\xe0rest")
+    bad.write_bytes(b"GIF89a")
+    assert media_module._is_valid_jpeg(str(good)) is True
+    assert media_module._is_valid_jpeg(str(bad)) is False
+    assert media_module._is_valid_jpeg(str(tmp_path / "absent.jpg")) is False
+
+
+def test_ffmpeg_thumbnail_forces_output_format(monkeypatch, tmp_path):
+    """RÉGRESSION — CAUSE DU BUG « toutes les vidéos sans vignette ».
+
+    Le fichier de sortie est un temporaire SANS extension image
+    (``…jpg.tmp-xxxx``) : sans ``-f`` (muxer) explicite, ffmpeg REFUSE
+    (« Unable to choose an output format … use a standard extension ») et
+    TOUTE extraction vidéo échoue (images OK via Pillow). On capture la commande
+    réellement exécutée et on exige le muxer ET le codec explicites.
+
+    Contrôle NÉGATIF par mutation : retirer ``-c:v mjpeg -f image2`` de
+    ``_ffmpeg_thumbnail`` fait échouer cette assertion.
+    """
+    captured = {}
+
+    class _FakeProc:
+        returncode = 0
+        stderr = b""
+
+    def _fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        with open(cmd[-1], "wb") as fh:  # simule la production de la vignette
+            fh.write(b"\xff\xd8\xff" + b"x" * 32)
+        return _FakeProc()
+
+    monkeypatch.setattr(media_module, "_ffmpeg_path", lambda: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(media_module.subprocess, "run", _fake_run)
+
+    out = tmp_path / "v_256.jpg.tmp-ab12cd"
+    ok = media_module._ffmpeg_thumbnail(str(tmp_path / "src.mp4"), str(out), 256)
+    assert ok is True
+    cmd = captured["cmd"]
+    assert "-f" in cmd, "ffmpeg DOIT forcer le muxer (sinon échec sur tmp sans extension)"
+    assert cmd[cmd.index("-f") + 1] == "image2"
+    assert "-c:v" in cmd and cmd[cmd.index("-c:v") + 1] == "mjpeg"
+
+
+def test_video_thumbnail_end_to_end_with_real_ffmpeg(client, make_token, media_storage, monkeypatch):
+    """E2E (si ffmpeg RÉEL présent) : une VRAIE vidéo produit une VRAIE vignette.
+
+    Sauté si aucun ffmpeg (CI sans ffmpeg) ; avec ffmpeg (``AIH_FFMPEG``/PATH),
+    on fabrique une vidéo MP4 réelle puis on vérifie que la route renvoie un
+    JPEG valide — la preuve de bout en bout du correctif de format de sortie.
+    """
+    import shutil as _shutil
+    import subprocess as _sp
+    import tempfile as _tempfile
+
+    ff = os.environ.get("AIH_FFMPEG") or _shutil.which("ffmpeg")
+    if not ff:
+        pytest.skip("ffmpeg absent : test E2E vidéo sauté")
+
+    with _tempfile.TemporaryDirectory() as d:
+        src = os.path.join(d, "v.mp4")
+        _sp.run(
+            [ff, "-y", "-loglevel", "error", "-f", "lavfi", "-i",
+             "testsrc=duration=1:size=160x120:rate=10", "-pix_fmt", "yuv420p", src],
+            check=True,
+        )
+        with open(src, "rb") as fh:
+            data = fh.read()
+
+    headers = _headers(make_token, "vid-e2e")
+    r = _upload(client, headers, data, kind="video", ext=".mp4", filename="e2e")
+    mid = r.get_json()["id"]
+
+    item = client.get("/api/media?kind=video", headers=headers).get_json()["items"][0]
+    assert item["thumb_available"] is True  # ffmpeg réel présent
+
+    resp = client.get(f"/api/media/{mid}/thumbnail?size=256", headers=headers)
+    assert resp.status_code == 200, resp.get_data(as_text=True)
+    assert resp.data[:3] == b"\xff\xd8\xff"
+    assert len(resp.data) > 100
+
+
 def test_thumbnail_error_headers_forbid_durable_cache(client, make_token, media_storage, monkeypatch):
     """ANTI-CACHE NÉGATIF : les ERREURS de vignette ne sont PAS cacheables.
 
