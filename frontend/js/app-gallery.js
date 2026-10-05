@@ -58,6 +58,20 @@ var GALLERY_VIEW_MODE_DEFAULT = 'cover';
 // RECYCLÉES par la brique — donc aucun re-rendu ni requête n'est nécessaire.
 var GALLERY_VIEW_MODE_CLASS = 'gallery-grid--contain';
 
+// ÉTAT DE TRAVAIL de l'onglet (filtres + tri + vue + sélection dossiers/tags +
+// favori + position de défilement) — PRÉFÉRENCE LOCALE (localStorage), comme
+// GALLERY_DISPLAY_KEY / GALLERY_VIEW_MODE_KEY. Persisté pour que fermer puis
+// rouvrir l'onglet (ou recharger la page) retrouve le contexte de travail.
+// Un OBJET unique validé à la lecture (valeurs invalides/obsolètes → défauts).
+var GALLERY_STATE_KEY = 'gallery-state';
+// Types acceptés par le filtre « Type » (options du <select>) : '' = Tous.
+var GALLERY_KINDS = ['', 'image', 'video', 'audio'];
+// Bornes de sûreté des listes persistées (anti-payload) et de la position.
+var GALLERY_STATE_LIST_MAX = 200;
+// Délai de débounce avant d'écrire la position de défilement (une écriture
+// après la fin du scroll, jamais une par pixel).
+var GALLERY_SCROLL_PERSIST_MS = 300;
+
 // Tailles de vignettes servies par le backend AI-Helper (THUMB_SIZES).
 var GALLERY_THUMB_SIZES = [128, 256, 512];
 
@@ -175,6 +189,37 @@ var GALLERY_PH_UNAVAILABLE = '🚫';
 // serveur : source illisible, format, délai) : un état « vidéo » CLAIR plutôt
 // qu'un triangle d'alerte.
 var GALLERY_PH_VIDEO = '▶';
+
+/* ── Miniatures ANIMÉES des vidéos (aperçu au survol) ────────────────────
+ *
+ * Stratégie retenue : la vignette STATIQUE reste l'état par défaut (aucun coût),
+ * et une VIDÉO est jouée — muette, en boucle, lecture automatique — UNIQUEMENT
+ * au survol de sa cellule, dans un <video> superposé à la vignette. C'est
+ * EXACTEMENT le principe de la galerie LOCALE du pack ComfyUI
+ * (js/image_viewer/image_viewer_gallery.js#attachVideoHoverListeners, délai
+ * HOVER_DELAY_MS = 100), reproduit ici. Pas de génération/transcodage côté
+ * serveur : on streame l'original via la route existante
+ * `/api/media/<id>/download` (Range supporté par send_file), et le NAVIGATEUR
+ * cache/revalide l'URL (ETag/Last-Modified) — aucun cache JS n'est nécessaire
+ * (le pack local s'appuie de même sur le cache HTTP de son URL `/images/full`).
+ *
+ * Coût maîtrisé :
+ *   - UNE SEULE vidéo animée à la fois (GALLERY_VIDEO_PREVIEW_MAX) — le pointeur
+ *     ne survole qu'une cellule, la borne protège des cas stylet/tactile ;
+ *   - arrêt + retrait du <video> au `mouseleave`, au recyclage de la cellule
+ *     (release) et quand l'onglet passe en arrière-plan (visibilitychange) ;
+ *   - léger délai (GALLERY_VIDEO_PREVIEW_DELAY, identique au local) avant de
+ *     démarrer : un survol furtif ne déclenche aucun téléchargement.
+ * Options ÉCARTÉES : WebP/GIF animé généré par ffmpeg (transcodage systématique
+ * + stockage dérivé), et lecture simultanée de N vidéos (surcharge CPU/décodage
+ * et saccades de la grille). */
+var GALLERY_VIDEO_PREVIEW_MAX = 1;
+// MÊME délai que la galerie LOCALE du pack (image_viewer_gallery.js :
+// HOVER_DELAY_MS = 100) : un survol furtif ne déclenche rien.
+var GALLERY_VIDEO_PREVIEW_DELAY = 100;
+
+// Vidéos d'aperçu EN COURS (borne de simultanéité) + fonction d'arrêt global.
+var galleryVideoPreviewEls = new Set();
 
 // Valeurs de tri exposées par le backend (GET /api/media?sort=).
 var GALLERY_SORTS = ['created_at_desc', 'created_at_asc', 'name_asc', 'size_desc'];
@@ -521,10 +566,16 @@ var galleryState = {
   //               (sert à l'annulation optionnelle des entrées périmées).
   lastVisibleRange: null,
   preload: { queue: [], pending: {}, active: 0, dir: 0, lastStart: null, inflight: {} },
+  // Reprise de la position de défilement (localStorage) : valeur mémorisée +
+  // drapeau « à appliquer au prochain chargement » (une seule fois).
+  pendingScrollTop: 0,
+  restoreScrollPending: false,
 };
 
 var galleryKeyHandler = null;
 var gallerySearchTimer = null;
+// Débounce d'écriture de la position de défilement (cf. galleryPersistScroll).
+var galleryScrollTimer = null;
 
 /* ── Cycle de vie de l'onglet ────────────────────────────────────────────── */
 
@@ -544,6 +595,8 @@ function galleryStop() {
     try { galleryState.lightbox.close(); } catch (e) { /* ignore */ }
   }
   galleryPreloadPause(); // quitter l'onglet ne laisse pas de pré-charge en file
+  // ... ni de vidéo d'aperçu en lecture (décodage inutile).
+  galleryVideoPreviewPauseAll();
   galleryStopPolling();
 }
 
@@ -563,6 +616,10 @@ function galleryStartPolling() {
         // chargements déjà en vol se terminent, le navigateur les ralentit
         // déjà) — le prochain rendu/reprise repartira de lastVisibleRange.
         galleryPreloadPause();
+        // Aucune vidéo d'aperçu ne doit continuer à décoder en arrière-plan, et
+        // on mémorise l'état de travail courant.
+        galleryVideoPreviewPauseAll();
+        galleryPersistState();
         return;
       }
       galleryPollNow();
@@ -1004,6 +1061,8 @@ function galleryInit() {
   // brique ne consomme que les clics sur une cellule, l'hôte peut traiter le
   // fond sans conflit).
   gridEl.addEventListener('click', galleryOnGridClick);
+  // Position de défilement mémorisée (débounce : une écriture après le scroll).
+  gridEl.addEventListener('scroll', galleryPersistScroll, { passive: true });
   galleryBindCollectionEvents();
   galleryBindKeyHandler();
   galleryBindLightboxEvents();
@@ -1014,7 +1073,12 @@ function galleryInit() {
   galleryUpdateTagsButton();
   galleryBindInfoPaneEvents();
 
-  // 8) Premier chargement.
+  // 8) Premier chargement : on restaure d'abord l'état de travail mémorisé
+  // (filtres/tri/vue/dossiers/tags/favori + position de défilement) pour que
+  // la PREMIÈRE requête parte déjà avec le bon contexte et que la vue soit
+  // reconstituée après un rechargement de page.
+  galleryRestoreState();
+  galleryState.collection.setFilters(galleryReadFilterInputs());
   galleryHideStates();
   galleryShowLoading();
   galleryState.collection.ensureRange(0, GALLERY_PAGE_SIZE - 1);
@@ -1048,6 +1112,14 @@ function galleryBindCollectionEvents() {
     // relayout() recalcule le sizer (total) et re-rend la fenêtre SANS vider le
     // pool de cellules (efficace en scroll infini 'append').
     if (galleryState.grid) galleryState.grid.relayout();
+    // Position de défilement mémorisée : appliquée UNE fois, une fois le total
+    // connu (sinon le navigateur clampe scrollTop à 0 faute de hauteur).
+    if (galleryState.restoreScrollPending) {
+      galleryState.restoreScrollPending = false;
+      var ge = galleryById('gallery-grid');
+      if (ge && galleryState.pendingScrollTop > 0) ge.scrollTop = galleryState.pendingScrollTop;
+      galleryState.pendingScrollTop = 0;
+    }
     galleryUpdateCount();
   });
   col.on('total', galleryUpdateCount);
@@ -1207,6 +1279,88 @@ function galleryCellStartThumbTimer(el, item) {
   }
 }
 
+/* ── Miniatures ANIMÉES des vidéos : aperçu au survol ────────────────────── */
+
+/** Arrête et retire un <video> d'aperçu (libère le décodage/la connexion). */
+function galleryVideoPreviewStopVideo(v) {
+  if (!v) return;
+  galleryVideoPreviewEls.delete(v);
+  try { v.pause(); } catch (e) { /* ignore */ }
+  v.removeAttribute('src');
+  if (typeof v.load === 'function') { try { v.load(); } catch (e) { /* ignore */ } }
+  if (v.parentNode) v.parentNode.removeChild(v);
+}
+
+/** Nettoie l'aperçu vidéo d'une cellule (timer + <video>). */
+function galleryCellVideoStop(el) {
+  if (!el) return;
+  if (el._gVideoTimer) { clearTimeout(el._gVideoTimer); el._gVideoTimer = null; }
+  var v = el._gVideo;
+  el._gVideo = null;
+  galleryVideoPreviewStopVideo(v);
+}
+
+/** Démarre l'aperçu vidéo d'une cellule (sous la borne de simultanéité). */
+function galleryCellVideoStart(el) {
+  el._gVideoTimer = null;
+  if (!el || !el.isConnected) return;
+  if (el._gVideo) return;
+  if (el._gKind !== 'video') return;
+  var item = el._gItem;
+  if (!item) return;
+  if (galleryVideoPreviewEls.size >= GALLERY_VIDEO_PREVIEW_MAX) return;
+  var v = document.createElement('video');
+  v.className = 'gallery-cell-video';
+  v.muted = true;
+  v.loop = true;
+  v.autoplay = true;
+  v.playsInline = true;
+  v.setAttribute('playsinline', '');
+  v.draggable = false;
+  var fit = 'cover';
+  try {
+    if (el._gImg && typeof getComputedStyle === 'function') {
+      fit = getComputedStyle(el._gImg).objectFit || 'cover';
+    }
+  } catch (e) { /* ignore */ }
+  // Même ergonomie que la galerie locale : <video> superposé à la vignette,
+  // muet/en boucle/autoplay, `object-fit` hérité de la vignette, z-index 2.
+  v.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;'
+    + 'object-fit:' + fit + ';z-index:2;pointer-events:none;background:#000;';
+  // Un flux illisible (format non décodable par le navigateur) ne doit jamais
+  // laisser un rectangle noir : on retire l'aperçu, la vignette statique reste.
+  v.addEventListener('error', function () { galleryCellVideoStop(el); });
+  v.src = galleryDownloadUrl(item);
+  el.appendChild(v);
+  el._gVideo = v;
+  galleryVideoPreviewEls.add(v);
+}
+
+/** Survol : démarre l'aperçu après un léger délai (anti-clignotement). */
+function galleryCellVideoEnter(e) {
+  var el = e && e.currentTarget;
+  if (!el || el._gKind !== 'video') return;
+  if (el._gVideoTimer) clearTimeout(el._gVideoTimer);
+  el._gVideoTimer = setTimeout(function () { galleryCellVideoStart(el); }, GALLERY_VIDEO_PREVIEW_DELAY);
+  if (el._gVideoTimer && typeof el._gVideoTimer.unref === 'function') el._gVideoTimer.unref();
+}
+
+/** Sortie du survol : arrêt immédiat de l'aperçu. */
+function galleryCellVideoLeave(e) {
+  galleryCellVideoStop(e && e.currentTarget);
+}
+
+/** Arrête TOUTES les vidéos d'aperçu (onglet masqué, sortie de l'onglet). */
+function galleryVideoPreviewPauseAll() {
+  var els = Array.from(galleryVideoPreviewEls);
+  for (var i = 0; i < els.length; i++) {
+    var v = els[i];
+    var parent = v && v.parentNode;
+    if (parent && parent._gVideo === v) parent._gVideo = null;
+    galleryVideoPreviewStopVideo(v);
+  }
+}
+
 function galleryCellRenderer() {
   // Icône ⤓ / 🗑 / ♻ / ✖ : actions rapides au survol, marquées
   // `data-holaf-action` → la brique émet onAction() SANS changer la sélection.
@@ -1283,6 +1437,12 @@ function galleryCellRenderer() {
       el._gFav = fav;
       el._gActions = actions;
       el._gToken = 0;
+      // Aperçu VIDÉO au survol (cf. galleryCellVideo*).
+      el._gItem = null;
+      el._gVideo = null;
+      el._gVideoTimer = null;
+      el.addEventListener('mouseenter', galleryCellVideoEnter);
+      el.addEventListener('mouseleave', galleryCellVideoLeave);
       // Reprise de vignette : URL attendue + drapeau « déjà retenté » (borné).
       el._gExpectedUrl = '';
       el._gThumbRetried = false;
@@ -1319,6 +1479,9 @@ function galleryCellRenderer() {
     update: function (el, item, ctx) {
       var token = ++el._gToken;
       el.dataset.mediaId = String(item.id);
+      // La cellule change de média : on stoppe tout aperçu vidéo de l'ancien.
+      galleryCellVideoStop(el);
+      el._gItem = item;
       // Type + durée (ms) mémorisés sur la cellule : le handler d'erreur peut
       // ainsi choisir le visuel VIDÉO (▶ + durée) sans dépendre de `item`.
       el._gKind = item.kind || '';
@@ -1414,6 +1577,8 @@ function galleryCellRenderer() {
 
     release: function (el) {
       el._gToken++;
+      galleryCellVideoStop(el);
+      el._gItem = null;
       el._gExpectedUrl = '';
       el._gThumbRetried = false;
       el._gKind = '';
@@ -2097,6 +2262,134 @@ function galleryInputValue(id) {
   return String(el.value).trim();
 }
 
+/** Écrit la valeur d'un champ de filtre (silencieux si le champ est absent). */
+function gallerySetInputValue(id, value) {
+  var el = galleryById(id);
+  if (el && value !== undefined && value !== null) el.value = String(value);
+}
+
+/* ── Persistance de l'ÉTAT DE TRAVAIL (localStorage) ─────────────────────── */
+
+/** Date 'YYYY-MM-DD' (sinon '') — miroir du format <input type="date">. */
+function galleryNormalizeDate(v) {
+  var s = (typeof v === 'string') ? v.trim() : '';
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : '';
+}
+
+/** Liste de chaînes propres (dédup, non vides, bornée). PUR (testable). */
+function galleryNormalizeStringList(v) {
+  if (!Array.isArray(v)) return [];
+  var out = [];
+  var seen = {};
+  for (var i = 0; i < v.length && out.length < GALLERY_STATE_LIST_MAX; i++) {
+    if (typeof v[i] !== 'string' || !v[i]) continue;
+    var s = v[i];
+    if (Object.prototype.hasOwnProperty.call(seen, s)) continue;
+    seen[s] = true;
+    out.push(s);
+  }
+  return out;
+}
+
+/** Position de défilement valide (finie, ≥ 0) sinon 0. PUR (testable). */
+function galleryNormalizeScroll(v) {
+  var n = Number(v);
+  return (isFinite(n) && n > 0) ? Math.floor(n) : 0;
+}
+
+/**
+ * Normalise l'état persisté lu : toute valeur invalide/obsolète est ramenée à
+ * son DÉFAUT (aucun throw). PUR — exporté pour les tests.
+ * @param {*} raw objet JSON (potentiellement corrompu)
+ */
+function galleryNormalizePersistedState(raw) {
+  var d = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
+  var kind = (typeof d.kind === 'string' && GALLERY_KINDS.indexOf(d.kind) !== -1) ? d.kind : '';
+  var sort = (typeof d.sort === 'string' && GALLERY_SORTS.indexOf(d.sort) !== -1) ? d.sort : 'created_at_desc';
+  return {
+    view: (d.view === 'trash') ? 'trash' : 'normal',
+    sort: sort,
+    kind: kind,
+    q: (typeof d.q === 'string') ? d.q.slice(0, 500) : '',
+    from: galleryNormalizeDate(d.from),
+    to: galleryNormalizeDate(d.to),
+    selectedFolders: galleryNormalizeStringList(d.selectedFolders),
+    selectedTags: galleryNormalizeStringList(d.selectedTags),
+    favoriteOnly: d.favoriteOnly === true,
+    scrollTop: galleryNormalizeScroll(d.scrollTop),
+  };
+}
+
+/** Lit l'état persisté (normalisé) ou null si absent/corrompu. */
+function galleryReadPersistedState() {
+  var raw = null;
+  try { raw = localStorage.getItem(GALLERY_STATE_KEY); } catch (e) { return null; }
+  if (!raw) return null;
+  var parsed = null;
+  try { parsed = JSON.parse(raw); } catch (e) { return null; }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  return galleryNormalizePersistedState(parsed);
+}
+
+/** Écrit l'état de travail courant (filtres + vue + défilement). */
+function galleryPersistState() {
+  var gridEl = galleryById('gallery-grid');
+  var payload = {
+    view: galleryState.view,
+    sort: galleryState.sort,
+    kind: galleryInputValue('gallery-filter-kind'),
+    q: galleryInputValue('gallery-search'),
+    from: galleryInputValue('gallery-filter-from'),
+    to: galleryInputValue('gallery-filter-to'),
+    selectedFolders: (galleryState.selectedFolders || []).slice(),
+    selectedTags: (galleryState.selectedTags || []).slice(),
+    favoriteOnly: !!galleryState.favoriteOnly,
+    scrollTop: gridEl ? (gridEl.scrollTop || 0) : 0,
+  };
+  try { localStorage.setItem(GALLERY_STATE_KEY, JSON.stringify(payload)); } catch (e) { /* ignore */ }
+  return payload;
+}
+
+/** Écrit l'état après la fin du défilement (débounce, une écriture). */
+function galleryPersistScroll() {
+  if (galleryScrollTimer) clearTimeout(galleryScrollTimer);
+  galleryScrollTimer = setTimeout(function () {
+    galleryScrollTimer = null;
+    // En Node (tests headless), le timer est un objet Timeout : unref() évite de
+    // maintenir la boucle d'événements vivante. En navigateur : un nombre.
+    galleryPersistState();
+  }, GALLERY_SCROLL_PERSIST_MS);
+  if (galleryScrollTimer && typeof galleryScrollTimer.unref === 'function') galleryScrollTimer.unref();
+}
+
+/**
+ * Applique l'état persisté (DOM + galleryState) AVANT le premier chargement.
+ * @returns {null|object} l'état appliqué, ou null si rien de mémorisé.
+ */
+function galleryRestoreState() {
+  var s = galleryReadPersistedState();
+  if (!s) return null;
+  gallerySetInputValue('gallery-filter-kind', s.kind);
+  gallerySetInputValue('gallery-search', s.q);
+  gallerySetInputValue('gallery-filter-from', s.from);
+  gallerySetInputValue('gallery-filter-to', s.to);
+  gallerySetInputValue('gallery-filter-sort', s.sort);
+  galleryState.sort = s.sort;
+  galleryState.view = s.view;
+  galleryState.selectedFolders = s.selectedFolders.slice();
+  galleryState.selectedTags = s.selectedTags.slice();
+  galleryState.favoriteOnly = s.favoriteOnly;
+  // La position de défilement est appliquée au PREMIER chargement (le sizer
+  // doit connaître le total pour que scrollTop soit valable).
+  galleryState.pendingScrollTop = s.scrollTop;
+  galleryState.restoreScrollPending = s.scrollTop > 0;
+  galleryUpdateViewToggle();
+  galleryUpdateFoldersButton();
+  galleryUpdateTagsButton();
+  galleryUpdateFavoriteButton();
+  return s;
+}
+
 /** Un item est-il en corbeille ? (le backend expose status ET trashed). */
 function galleryIsTrashed(item) {
   return !!(item && (item.status === 'trashed' || item.trashed === true));
@@ -2135,6 +2428,7 @@ function galleryReadFilterInputs() {
 
 /** Un changement de filtre = RELOAD COMPLET de la liste (reset + page 1). */
 function galleryApplyFilterChange() {
+  galleryPersistState(); // mémorise les filtres/tri avant le reload
   galleryReload();
 }
 
@@ -2231,6 +2525,7 @@ function galleryApplyFolders(list) {
   clean.sort();
   galleryState.selectedFolders = clean;
   galleryUpdateFoldersButton();
+  galleryPersistState();
   return galleryReload();
 }
 
@@ -2242,6 +2537,7 @@ function galleryApplyFolders(list) {
 function galleryToggleFavoriteFilter() {
   galleryState.favoriteOnly = !galleryState.favoriteOnly;
   galleryUpdateFavoriteButton();
+  galleryPersistState();
   return galleryReload();
 }
 
@@ -2467,6 +2763,7 @@ function galleryApplyTags(list) {
   clean.sort();
   galleryState.selectedTags = clean;
   galleryUpdateTagsButton();
+  galleryPersistState();
   return galleryReload();
 }
 
@@ -2634,6 +2931,7 @@ function galleryResetFilters() {
   galleryUpdateTagsButton();
   galleryState.favoriteOnly = false;
   galleryUpdateFavoriteButton();
+  galleryPersistState();
   galleryReload();
 }
 
@@ -2643,6 +2941,7 @@ function gallerySetView(view) {
   if (galleryState.view === view && galleryState.started) return;
   galleryState.view = view;
   galleryUpdateViewToggle();
+  galleryPersistState();
   galleryReload();
 }
 
@@ -3790,6 +4089,15 @@ window.AppGallery = {
   setView: gallerySetView,
   resetFilters: galleryResetFilters,
   readFilters: galleryReadFilterInputs,
+  // ÉTAT DE TRAVAIL persisté (localStorage) : lecture/normalisation/écriture/
+  // restauration — exposés pour les tests headless.
+  readPersistedState: galleryReadPersistedState,
+  normalizePersistedState: galleryNormalizePersistedState,
+  persistState: galleryPersistState,
+  restoreState: galleryRestoreState,
+  // MINIATURES ANIMÉES des vidéos : arrêt global (onglet masqué) + compte.
+  pauseAllVideoPreviews: galleryVideoPreviewPauseAll,
+  videoPreviewCount: function () { return galleryVideoPreviewEls.size; },
   // FILTRE DOSSIERS (bouton + modale multi-dossiers)
   openFoldersModal: galleryOpenFoldersModal,
   applyFolders: galleryApplyFolders,
@@ -3863,6 +4171,12 @@ window.AppGallery = {
     POLL_LIMIT: GALLERY_POLL_LIMIT,
     SORTS: GALLERY_SORTS.slice(),
     TAG_MAX_LEN: GALLERY_TAG_MAX_LEN,
+    STATE_KEY: GALLERY_STATE_KEY,
+    KINDS: GALLERY_KINDS.slice(),
+    STATE_LIST_MAX: GALLERY_STATE_LIST_MAX,
+    SCROLL_PERSIST_MS: GALLERY_SCROLL_PERSIST_MS,
+    VIDEO_PREVIEW_MAX: GALLERY_VIDEO_PREVIEW_MAX,
+    VIDEO_PREVIEW_DELAY: GALLERY_VIDEO_PREVIEW_DELAY,
     GRID_BUFFER_FACTOR: GALLERY_GRID_BUFFER_FACTOR,
     GRID_GAP: GALLERY_GRID_GAP,
     PRELOAD_EXTRA_ROWS: GALLERY_PRELOAD_EXTRA_ROWS,
