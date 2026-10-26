@@ -527,6 +527,9 @@ var galleryState = {
   favoriteOnly: false,
   // Verrou d'actions pendant un appel réseau (désactive les boutons).
   busy: false,
+  // Retrait optimiste en vol : la vérité LOCALE a changé mais le serveur ne l'a
+  // pas encore appliquée → toute demande de PAGE est gelée (cf. onVisibleRange).
+  removalPending: false,
   // Rafraîchissement automatique : timer du poll + listener de visibilité.
   pollTimer: null,
   visibilityHandler: null,
@@ -1600,7 +1603,14 @@ function galleryOnVisibleRange(start, end, ids) {
   var cache = galleryState.thumbCache;
   var pre = galleryState.preload;
   if (cache && ids && ids.length) cache.onVisible(ids);
-  if (col && end >= start) col.ensureRange(start, end);
+  // Aucune demande de PAGE tant qu'un retrait OPTIMISTE est en vol : la vérité
+  // locale vient de changer et le serveur ne l'a pas encore appliquée — une
+  // page partie maintenant démentirait le retrait (média ré-injecté dans la
+  // fenêtre, total rétabli). La réparation du bord
+  // (galleryRepairLoadedWindows) recharge ce qu'il faut APRÈS confirmation, via
+  // ensureIndex (non gelé). Depuis holaf-collection 0.2.0 la frontière 'append'
+  // ne bloque plus ces re-demandes : ce gel est donc nécessaire.
+  if (col && end >= start && !galleryState.removalPending) col.ensureRange(start, end);
   // Sens du défilement : la plage visible se DÉPLACE (start qui avance ou
   // recule). Un start identique (même rangée) conserve le sens mémorisé.
   if (pre && end >= start) {
@@ -1658,7 +1668,7 @@ function galleryPrefetchAround(start, end) {
   // qui pré-charge alors ses pixels.
   if (rows.length) {
     var tail = Math.min(total - 1, (Math.max.apply(null, rows) + 1) * cols - 1);
-    if (tail > end && typeof col.ensureRange === 'function') col.ensureRange(start, tail);
+    if (tail > end && typeof col.ensureRange === 'function' && !galleryState.removalPending) col.ensureRange(start, tail);
   }
   var scheduled = 0;
   for (var r = 0; r < rows.length && scheduled < GALLERY_PRELOAD_MAX_ITEMS; r++) {
@@ -3372,13 +3382,18 @@ function galleryAddTag(item, raw) {
 function galleryDeleteItem(item) {
   if (!item || galleryState.busy) return Promise.resolve(false);
   var id = item.id;
+  gallerySetBusy(true);
+  // Le re-rendu du retrait local ne doit pas partir chercher de PAGE (cf.
+  // galleryOnVisibleRange) : une page partie avant que le serveur n'ait traité
+  // ce DELETE contiendrait encore le média supprimé et son ancien total.
+  galleryState.removalPending = true;
   var starts = galleryRemoveIdsLocally([id]);
   var optimistic = (starts !== null);
   if (optimistic) galleryAfterLocalRemoval();
 
-  gallerySetBusy(true);
   return galleryApiRequest('DELETE', '/media/' + encodeURIComponent(id))
     .then(function () {
+      galleryState.removalPending = false; // DELETE confirmé : les pages sont fiables
       galleryToast('Média envoyé à la corbeille.', 'success');
       if (!optimistic) galleryReload(); // retrait local impossible → on resynchronise
       else {
@@ -3390,6 +3405,7 @@ function galleryDeleteItem(item) {
       return true;
     })
     .catch(function (err) {
+      galleryState.removalPending = false; // échec : le rollback recharge la vérité
       if (optimistic) galleryReload(); // ROLLBACK : on recharge la vérité serveur
       galleryToast('Suppression impossible : ' + galleryErrorMessage(err), 'error');
       return false;
